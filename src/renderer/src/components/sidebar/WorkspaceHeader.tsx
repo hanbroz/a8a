@@ -1,18 +1,18 @@
-import { useState, useRef, useEffect } from 'react'
-import { IcoPlus, IcoChevD, IcoTrash } from '../Icon'
+import { IcoPlus, IcoChevD, IcoTrash, IcoPencil } from '../Icon'
 import { useSidebarOpen } from '../../hooks/useSidebarOpen'
 
-export type WorkspaceItem = { id: string; name: string }
+export type WorkspaceItem = { id: string; name: string; description: string }
 
 interface WorkspaceRowProps {
   workspace: WorkspaceItem
   isActive: boolean
   onSelect: () => void
+  onEditRequest: () => void
   onDeleteRequest: () => void
   children?: React.ReactNode
 }
 
-function WorkspaceRow({ workspace, isActive, onSelect, onDeleteRequest, children }: WorkspaceRowProps): JSX.Element {
+function WorkspaceRow({ workspace, isActive, onSelect, onEditRequest, onDeleteRequest, children }: WorkspaceRowProps): JSX.Element {
   const [open, toggleOpen] = useSidebarOpen(`ws-item-${workspace.id}`, true)
 
   const handleRowClick = (): void => {
@@ -38,8 +38,16 @@ function WorkspaceRow({ workspace, isActive, onSelect, onDeleteRequest, children
         <span className="ws-item-name">{workspace.name}</span>
         <button
           className="btn ghost icon ws-item-del"
+          onClick={e => { e.stopPropagation(); onEditRequest() }}
+          title="워크스페이스 수정"
+        >
+          <IcoPencil size={12} />
+        </button>
+        <button
+          className="btn ghost icon ws-item-del"
           onClick={e => { e.stopPropagation(); onDeleteRequest() }}
           title="워크스페이스 삭제"
+          style={{ color: 'var(--state-danger, #f85149)' }}
         >
           <IcoTrash size={12} />
         </button>
@@ -57,32 +65,14 @@ interface Props {
   workspaces: WorkspaceItem[]
   activeId: string
   onSelect: (id: string) => void
-  onAdd: (name: string) => void
+  onAdd: () => void
+  onEditRequest: (id: string) => void
   onDeleteRequest: (id: string) => void
   renderContent: (wsId: string) => React.ReactNode
 }
 
-export default function WorkspaceHeader({ workspaces, activeId, onSelect, onAdd, onDeleteRequest, renderContent }: Props): JSX.Element {
+export default function WorkspaceHeader({ workspaces, activeId, onSelect, onAdd, onEditRequest, onDeleteRequest, renderContent }: Props): JSX.Element {
   const [open, toggleOpen] = useSidebarOpen('workspace')
-  const [adding, setAdding] = useState(false)
-  const [newName, setNewName] = useState('')
-  const inputRef = useRef<HTMLInputElement>(null)
-
-  useEffect(() => {
-    if (adding) inputRef.current?.focus()
-  }, [adding])
-
-  const handleAdd = (): void => {
-    const name = newName.trim()
-    if (name) onAdd(name)
-    setNewName('')
-    setAdding(false)
-  }
-
-  const handleKeyDown = (e: React.KeyboardEvent): void => {
-    if (e.key === 'Enter') handleAdd()
-    if (e.key === 'Escape') { setAdding(false); setNewName('') }
-  }
 
   return (
     <div className="sidebar-section ws-section">
@@ -99,7 +89,7 @@ export default function WorkspaceHeader({ workspaces, activeId, onSelect, onAdd,
         <span className="sidebar-section-title">Workspace</span>
         <button
           className="btn ghost icon sidebar-section-add"
-          onClick={e => { e.stopPropagation(); setAdding(true) }}
+          onClick={e => { e.stopPropagation(); onAdd() }}
           title="워크스페이스 추가"
         >
           <IcoPlus size={13} />
@@ -114,25 +104,12 @@ export default function WorkspaceHeader({ workspaces, activeId, onSelect, onAdd,
               workspace={ws}
               isActive={ws.id === activeId}
               onSelect={() => onSelect(ws.id)}
+              onEditRequest={() => onEditRequest(ws.id)}
               onDeleteRequest={() => onDeleteRequest(ws.id)}
             >
               {renderContent(ws.id)}
             </WorkspaceRow>
           ))}
-
-          {adding && (
-            <div className="ws-add-form">
-              <input
-                ref={inputRef}
-                className="ws-add-input"
-                value={newName}
-                onChange={e => setNewName(e.target.value)}
-                onKeyDown={handleKeyDown}
-                onBlur={handleAdd}
-                placeholder="워크스페이스 이름"
-              />
-            </div>
-          )}
         </>
       )}
     </div>

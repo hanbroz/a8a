@@ -1,4 +1,4 @@
-import { IcoChevD, IcoPlus, IcoPencil } from '../Icon'
+import { IcoChevD, IcoPlus, IcoPencil, IcoTrash } from '../Icon'
 import { useSidebarOpen } from '../../hooks/useSidebarOpen'
 
 export type EnvVar = {
@@ -13,6 +13,7 @@ export type Environment = {
   name: string
   isBase: boolean
   color: string
+  initial: string
   vars: EnvVar[]
 }
 
@@ -22,9 +23,10 @@ interface Props {
   onSelect: (id: string) => void
   onAdd: () => void
   onEdit: (env: Environment) => void
+  onDelete: (env: Environment) => void
 }
 
-export default function EnvSection({ environments, activeEnvId, onSelect, onAdd, onEdit }: Props): JSX.Element {
+export default function EnvSection({ environments, activeEnvId, onSelect, onAdd, onEdit, onDelete }: Props): JSX.Element {
   const [open, toggleOpen] = useSidebarOpen('environment')
 
   const baseEnv = environments.find(e => e.isBase)
@@ -80,7 +82,7 @@ export default function EnvSection({ environments, activeEnvId, onSelect, onAdd,
                 className="env-item-badge"
                 style={{ background: env.color, color: '#fff' }}
               >
-                {env.name.charAt(0).toUpperCase()}
+                {(env.initial || env.name.charAt(0)).toUpperCase()}
               </span>
               <span className="env-item-name">{env.name}</span>
               <button
@@ -89,6 +91,14 @@ export default function EnvSection({ environments, activeEnvId, onSelect, onAdd,
                 title="편집"
               >
                 <IcoPencil size={12} />
+              </button>
+              <button
+                className="btn ghost icon env-item-edit"
+                onClick={e => { e.stopPropagation(); onDelete(env) }}
+                title="삭제"
+                style={{ color: 'var(--state-danger, #f85149)' }}
+              >
+                <IcoTrash size={12} />
               </button>
             </div>
           ))}

@@ -10,12 +10,20 @@ interface ApiEnv {
   name: string
   isBase: boolean
   color: string
+  initial: string
   vars: ApiEnvVar[]
 }
 
 interface ApiWorkspace {
   id: string
   name: string
+  description: string
+}
+
+interface ApiProject {
+  id: string
+  name: string
+  description: string
 }
 
 interface ApiModule {
@@ -26,13 +34,19 @@ interface ApiModule {
 interface AppApi {
   workspace: {
     list: () => Promise<ApiWorkspace[]>
-    create: (name: string) => Promise<ApiWorkspace>
-    rename: (id: string, name: string) => Promise<void>
+    create: (name: string, description: string) => Promise<ApiWorkspace>
+    update: (id: string, name: string, description: string) => Promise<void>
     delete: (id: string) => Promise<void>
   }
   environment: {
     list: (workspaceId: string) => Promise<ApiEnv[]>
     upsert: (workspaceId: string, env: ApiEnv) => Promise<void>
+    delete: (id: string) => Promise<void>
+  }
+  project: {
+    list: (workspaceId: string) => Promise<ApiProject[]>
+    create: (workspaceId: string, name: string, description: string) => Promise<ApiProject>
+    update: (id: string, name: string, description: string) => Promise<void>
     delete: (id: string) => Promise<void>
   }
   module: {

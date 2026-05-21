@@ -3,15 +3,21 @@ import { electronAPI } from '@electron-toolkit/preload'
 
 const api = {
   workspace: {
-    list: (): Promise<{ id: string; name: string }[]> => ipcRenderer.invoke('ws:list'),
-    create: (name: string): Promise<{ id: string; name: string }> => ipcRenderer.invoke('ws:create', name),
-    rename: (id: string, name: string): Promise<void> => ipcRenderer.invoke('ws:rename', id, name),
+    list: (): Promise<{ id: string; name: string; description: string }[]> => ipcRenderer.invoke('ws:list'),
+    create: (name: string, description: string): Promise<{ id: string; name: string; description: string }> => ipcRenderer.invoke('ws:create', name, description),
+    update: (id: string, name: string, description: string): Promise<void> => ipcRenderer.invoke('ws:update', id, name, description),
     delete: (id: string): Promise<void> => ipcRenderer.invoke('ws:delete', id)
   },
   environment: {
     list: (workspaceId: string): Promise<unknown[]> => ipcRenderer.invoke('env:list', workspaceId),
     upsert: (workspaceId: string, env: unknown): Promise<void> => ipcRenderer.invoke('env:upsert', workspaceId, env),
     delete: (id: string): Promise<void> => ipcRenderer.invoke('env:delete', id)
+  },
+  project: {
+    list: (workspaceId: string): Promise<unknown[]> => ipcRenderer.invoke('proj:list', workspaceId),
+    create: (workspaceId: string, name: string, description: string): Promise<unknown> => ipcRenderer.invoke('proj:create', workspaceId, name, description),
+    update: (id: string, name: string, description: string): Promise<void> => ipcRenderer.invoke('proj:update', id, name, description),
+    delete: (id: string): Promise<void> => ipcRenderer.invoke('proj:delete', id)
   },
   module: {
     list: (): Promise<{ id: string; name: string }[]> => ipcRenderer.invoke('mod:list'),

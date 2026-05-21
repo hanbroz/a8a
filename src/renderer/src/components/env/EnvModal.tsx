@@ -34,6 +34,7 @@ export default function EnvModal({ env, onSave, onClose }: Props): JSX.Element {
   const [step, setStep] = useState<'select' | 'edit'>(isNew ? 'select' : 'edit')
   const [name, setName] = useState(env?.name ?? '')
   const [color, setColor] = useState(env?.color ?? ENV_COLORS[0])
+  const [initial, setInitial] = useState(env?.initial ?? '')
   const [vars, setVars] = useState<EnvVar[]>(
     env && env.vars.length > 0 ? env.vars : [makeVar()]
   )
@@ -61,6 +62,7 @@ export default function EnvModal({ env, onSave, onClose }: Props): JSX.Element {
       name: finalName,
       isBase: isBase,
       color: isBase ? '#4493f8' : color,
+      initial: isBase ? 'B' : (initial.trim() || finalName.charAt(0)).toUpperCase().slice(0, 2),
       vars: vars.filter(v => v.key.trim() !== '')
     })
   }
@@ -69,9 +71,10 @@ export default function EnvModal({ env, onSave, onClose }: Props): JSX.Element {
     e.preventDefault()
     const startX = e.clientX
     const startPct = keyPct
+    let mounted = true
 
     const onMove = (ev: MouseEvent): void => {
-      if (!containerRef.current) return
+      if (!mounted || !containerRef.current) return
       const rect = containerRef.current.getBoundingClientRect()
       const available = rect.width - 36 - 36 - 1
       const delta = ev.clientX - startX
@@ -80,6 +83,7 @@ export default function EnvModal({ env, onSave, onClose }: Props): JSX.Element {
     }
 
     const onUp = (): void => {
+      mounted = false
       document.removeEventListener('mousemove', onMove)
       document.removeEventListener('mouseup', onUp)
     }
@@ -103,9 +107,12 @@ export default function EnvModal({ env, onSave, onClose }: Props): JSX.Element {
               <button
                 key={p}
                 className="env-preset-item"
-                onClick={() => { setName(p); setColor(PRESET_COLORS[p] ?? ENV_COLORS[0]); setStep('edit') }}
+                onClick={() => { setName(p); setColor(PRESET_COLORS[p] ?? ENV_COLORS[0]); setInitial(p.charAt(0)); setStep('edit') }}
               >
-                <span className="env-item-badge env-item-badge-custom env-preset-badge">
+                <span
+                  className="env-item-badge env-preset-badge"
+                  style={{ background: PRESET_COLORS[p] ?? ENV_COLORS[0], color: '#fff' }}
+                >
                   {p.charAt(0)}
                 </span>
                 <span className="env-preset-name">{p}</span>
@@ -120,42 +127,65 @@ export default function EnvModal({ env, onSave, onClose }: Props): JSX.Element {
   return (
     <div className="modal-overlay" onClick={onClose}>
       <div className="env-modal" onClick={e => e.stopPropagation()}>
-        {/* Header */}
-        <div className="env-modal-hd">
-          {isBase ? (
+        {/* Header — BASE only; custom env uses identity row */}
+        {isBase ? (
+          <div className="env-modal-hd">
             <div className="env-modal-base-title">
               <span className="env-item-badge">B</span>
               <span className="env-modal-base-label">BASE</span>
               <span className="env-modal-base-hint">모든 Environment가 이 값을 기본으로 상속합니다</span>
             </div>
-          ) : (
-            <input
-              className="env-modal-name-input"
-              value={name}
-              onChange={e => setName(e.target.value)}
-              placeholder="Environment 이름"
-              autoFocus
-            />
-          )}
-          <button className="btn ghost icon" onClick={onClose} title="닫기">
-            <IcoX size={15} />
-          </button>
-        </div>
+            <button className="btn ghost icon" onClick={onClose} title="닫기">
+              <IcoX size={15} />
+            </button>
+          </div>
+        ) : null}
 
-        {/* Color picker (custom env only) */}
+        {/* Icon preview + name + initial + color (custom env only) */}
         {!isBase && (
-          <div className="env-color-row">
-            <span className="env-color-label">색상</span>
-            <div className="env-color-swatches">
-              {ENV_COLORS.map(c => (
-                <button
-                  key={c}
-                  className={`env-color-swatch${color === c ? ' env-color-swatch-active' : ''}`}
-                  style={{ background: c }}
-                  onClick={() => setColor(c)}
-                  title={c}
+          <div className="env-identity-row">
+            <span
+              className="env-identity-preview"
+              style={{ background: color }}
+            >
+              {(initial.trim() || name.charAt(0) || '?').toUpperCase().slice(0, 2)}
+            </span>
+            <div className="env-identity-fields">
+              <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                <input
+                  className="env-modal-name-input"
+                  value={name}
+                  onChange={e => setName(e.target.value)}
+                  placeholder="Environment 이름"
+                  autoFocus
                 />
-              ))}
+                <button className="btn ghost icon" onClick={onClose} title="닫기" style={{ flexShrink: 0 }}>
+                  <IcoX size={15} />
+                </button>
+              </div>
+              <div className="env-identity-bottom">
+                <div className="env-initial-wrap">
+                  <span className="env-color-label">이니셜</span>
+                  <input
+                    className="env-initial-input"
+                    value={initial}
+                    onChange={e => setInitial(e.target.value.slice(0, 2))}
+                    placeholder={name.charAt(0).toUpperCase() || '?'}
+                    maxLength={2}
+                  />
+                </div>
+                <div className="env-color-swatches">
+                  {ENV_COLORS.map(c => (
+                    <button
+                      key={c}
+                      className={`env-color-swatch${color === c ? ' env-color-swatch-active' : ''}`}
+                      style={{ background: c }}
+                      onClick={() => setColor(c)}
+                      title={c}
+                    />
+                  ))}
+                </div>
+              </div>
             </div>
           </div>
         )}

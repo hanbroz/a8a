@@ -77,6 +77,7 @@ function createSchema(): void {
       id           TEXT PRIMARY KEY,
       workspace_id TEXT NOT NULL,
       name         TEXT NOT NULL,
+      description  TEXT DEFAULT '',
       sort         INTEGER DEFAULT 0
     );
     CREATE TABLE IF NOT EXISTS modules (
@@ -87,9 +88,16 @@ function createSchema(): void {
   `)
   try {
     db.run("ALTER TABLE environments ADD COLUMN color TEXT DEFAULT '#4493f8'")
-  } catch {
-    // column already exists
-  }
+  } catch { /* column already exists */ }
+  try {
+    db.run("ALTER TABLE projects ADD COLUMN description TEXT DEFAULT ''")
+  } catch { /* column already exists */ }
+  try {
+    db.run("ALTER TABLE workspaces ADD COLUMN description TEXT DEFAULT ''")
+  } catch { /* column already exists */ }
+  try {
+    db.run("ALTER TABLE environments ADD COLUMN initial TEXT DEFAULT ''")
+  } catch { /* column already exists */ }
 }
 
 function seedIfEmpty(): void {
@@ -102,23 +110,23 @@ function seedIfEmpty(): void {
 }
 
 // ── Workspace ─────────────────────────────────────
-export type WsRow = { id: string; name: string }
+export type WsRow = { id: string; name: string; description: string }
 
 export function listWorkspaces(): WsRow[] {
-  return queryAll<WsRow>('SELECT id, name FROM workspaces ORDER BY sort, rowid')
+  return queryAll<WsRow>('SELECT id, name, COALESCE(description, \'\') as description FROM workspaces ORDER BY sort, rowid')
 }
 
-export function createWorkspace(name: string): WsRow {
+export function createWorkspace(name: string, description = ''): WsRow {
   const id = randomUUID()
   const envId = randomUUID()
-  db.run('INSERT INTO workspaces (id, name) VALUES (?, ?)', [id, name])
+  db.run('INSERT INTO workspaces (id, name, description) VALUES (?, ?, ?)', [id, name, description])
   db.run('INSERT INTO environments (id, workspace_id, name, is_base) VALUES (?, ?, ?, ?)', [envId, id, 'BASE', 1])
   save()
-  return { id, name }
+  return { id, name, description }
 }
 
-export function renameWorkspace(id: string, name: string): void {
-  db.run('UPDATE workspaces SET name = ? WHERE id = ?', [name, id])
+export function updateWorkspace(id: string, name: string, description: string): void {
+  db.run('UPDATE workspaces SET name = ?, description = ? WHERE id = ?', [name, description, id])
   save()
 }
 
@@ -133,11 +141,11 @@ export function deleteWorkspace(id: string): void {
 
 // ── Environment ───────────────────────────────────
 export type EnvVarRow = { id: string; key: string; value: string; enabled: boolean }
-export type EnvRow = { id: string; name: string; isBase: boolean; color: string; vars: EnvVarRow[] }
+export type EnvRow = { id: string; name: string; isBase: boolean; color: string; initial: string; vars: EnvVarRow[] }
 
 export function listEnvironments(workspaceId: string): EnvRow[] {
-  const envs = queryAll<{ id: string; name: string; is_base: number; color: string }>(
-    'SELECT id, name, is_base, color FROM environments WHERE workspace_id = ? ORDER BY is_base DESC, sort, rowid',
+  const envs = queryAll<{ id: string; name: string; is_base: number; color: string; initial: string }>(
+    'SELECT id, name, is_base, color, COALESCE(initial, \'\') as initial FROM environments WHERE workspace_id = ? ORDER BY is_base DESC, sort, rowid',
     [workspaceId]
   )
   return envs.map(e => ({
@@ -145,6 +153,7 @@ export function listEnvironments(workspaceId: string): EnvRow[] {
     name: e.name,
     isBase: e.is_base === 1,
     color: e.color ?? '#4493f8',
+    initial: e.initial ?? '',
     vars: queryAll<{ id: string; key: string; value: string; enabled: number }>(
       'SELECT id, key, value, enabled FROM env_vars WHERE environment_id = ? ORDER BY sort, rowid',
       [e.id]
@@ -155,11 +164,11 @@ export function listEnvironments(workspaceId: string): EnvRow[] {
 export function upsertEnvironment(workspaceId: string, env: EnvRow): void {
   const exists = queryOne('SELECT id FROM environments WHERE id = ?', [env.id])
   if (exists) {
-    db.run('UPDATE environments SET name = ?, color = ? WHERE id = ?', [env.name, env.color, env.id])
+    db.run('UPDATE environments SET name = ?, color = ?, initial = ? WHERE id = ?', [env.name, env.color, env.initial, env.id])
   } else {
     db.run(
-      'INSERT INTO environments (id, workspace_id, name, is_base, color) VALUES (?, ?, ?, ?, ?)',
-      [env.id, workspaceId, env.name, env.isBase ? 1 : 0, env.color]
+      'INSERT INTO environments (id, workspace_id, name, is_base, color, initial) VALUES (?, ?, ?, ?, ?, ?)',
+      [env.id, workspaceId, env.name, env.isBase ? 1 : 0, env.color, env.initial]
     )
   }
   db.run('DELETE FROM env_vars WHERE environment_id = ?', [env.id])
@@ -173,8 +182,35 @@ export function upsertEnvironment(workspaceId: string, env: EnvRow): void {
 }
 
 export function deleteEnvironment(id: string): void {
-  db.run('DELETE FROM env_vars WHERE environment_id = ?', [id])
-  db.run('DELETE FROM environments WHERE id = ?', [id])
+  db.run('DELETE FROM env_vars WHERE environment_id = ? AND environment_id IN (SELECT id FROM environments WHERE is_base = 0)', [id])
+  db.run('DELETE FROM environments WHERE id = ? AND is_base = 0', [id])
+  save()
+}
+
+// ── Project ───────────────────────────────────────
+export type ProjectRow = { id: string; name: string; description: string }
+
+export function listProjects(workspaceId: string): ProjectRow[] {
+  return queryAll<ProjectRow>(
+    'SELECT id, name, description FROM projects WHERE workspace_id = ? ORDER BY sort, rowid',
+    [workspaceId]
+  )
+}
+
+export function createProject(workspaceId: string, name: string, description: string): ProjectRow {
+  const id = randomUUID()
+  db.run('INSERT INTO projects (id, workspace_id, name, description) VALUES (?, ?, ?, ?)', [id, workspaceId, name, description])
+  save()
+  return { id, name, description }
+}
+
+export function updateProject(id: string, name: string, description: string): void {
+  db.run('UPDATE projects SET name = ?, description = ? WHERE id = ?', [name, description, id])
+  save()
+}
+
+export function deleteProject(id: string): void {
+  db.run('DELETE FROM projects WHERE id = ?', [id])
   save()
 }
 
