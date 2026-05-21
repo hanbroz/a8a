@@ -1,0 +1,140 @@
+import { useState, useRef, useEffect } from 'react'
+import { IcoPlus, IcoChevD, IcoTrash } from '../Icon'
+import { useSidebarOpen } from '../../hooks/useSidebarOpen'
+
+export type WorkspaceItem = { id: string; name: string }
+
+interface WorkspaceRowProps {
+  workspace: WorkspaceItem
+  isActive: boolean
+  onSelect: () => void
+  onDeleteRequest: () => void
+  children?: React.ReactNode
+}
+
+function WorkspaceRow({ workspace, isActive, onSelect, onDeleteRequest, children }: WorkspaceRowProps): JSX.Element {
+  const [open, toggleOpen] = useSidebarOpen(`ws-item-${workspace.id}`, true)
+
+  const handleRowClick = (): void => {
+    onSelect()
+    toggleOpen()
+  }
+
+  return (
+    <div className="ws-item">
+      <div
+        className={`ws-item-hd${isActive ? ' ws-item-hd-active' : ''}`}
+        onClick={handleRowClick}
+      >
+        <IcoChevD
+          size={11}
+          style={{
+            color: 'var(--text-3)',
+            transform: open ? 'none' : 'rotate(-90deg)',
+            transition: 'transform 0.15s',
+            flexShrink: 0
+          }}
+        />
+        <span className="ws-item-name">{workspace.name}</span>
+        <button
+          className="btn ghost icon ws-item-del"
+          onClick={e => { e.stopPropagation(); onDeleteRequest() }}
+          title="워크스페이스 삭제"
+        >
+          <IcoTrash size={12} />
+        </button>
+      </div>
+      {open && children && (
+        <div className="ws-item-body">
+          {children}
+        </div>
+      )}
+    </div>
+  )
+}
+
+interface Props {
+  workspaces: WorkspaceItem[]
+  activeId: string
+  onSelect: (id: string) => void
+  onAdd: (name: string) => void
+  onDeleteRequest: (id: string) => void
+  renderContent: (wsId: string) => React.ReactNode
+}
+
+export default function WorkspaceHeader({ workspaces, activeId, onSelect, onAdd, onDeleteRequest, renderContent }: Props): JSX.Element {
+  const [open, toggleOpen] = useSidebarOpen('workspace')
+  const [adding, setAdding] = useState(false)
+  const [newName, setNewName] = useState('')
+  const inputRef = useRef<HTMLInputElement>(null)
+
+  useEffect(() => {
+    if (adding) inputRef.current?.focus()
+  }, [adding])
+
+  const handleAdd = (): void => {
+    const name = newName.trim()
+    if (name) onAdd(name)
+    setNewName('')
+    setAdding(false)
+  }
+
+  const handleKeyDown = (e: React.KeyboardEvent): void => {
+    if (e.key === 'Enter') handleAdd()
+    if (e.key === 'Escape') { setAdding(false); setNewName('') }
+  }
+
+  return (
+    <div className="sidebar-section ws-section">
+      <div className="sidebar-section-hd" onClick={toggleOpen}>
+        <IcoChevD
+          size={11}
+          style={{
+            color: 'var(--text-3)',
+            transform: open ? 'none' : 'rotate(-90deg)',
+            transition: 'transform 0.15s',
+            flexShrink: 0
+          }}
+        />
+        <span className="sidebar-section-title">Workspace</span>
+        <button
+          className="btn ghost icon sidebar-section-add"
+          onClick={e => { e.stopPropagation(); setAdding(true) }}
+          title="워크스페이스 추가"
+        >
+          <IcoPlus size={13} />
+        </button>
+      </div>
+
+      {open && (
+        <>
+          {workspaces.map(ws => (
+            <WorkspaceRow
+              key={ws.id}
+              workspace={ws}
+              isActive={ws.id === activeId}
+              onSelect={() => onSelect(ws.id)}
+              onDeleteRequest={() => onDeleteRequest(ws.id)}
+            >
+              {renderContent(ws.id)}
+            </WorkspaceRow>
+          ))}
+
+          {adding && (
+            <div className="ws-add-form">
+              <input
+                ref={inputRef}
+                className="ws-add-input"
+                value={newName}
+                onChange={e => setNewName(e.target.value)}
+                onKeyDown={handleKeyDown}
+                onBlur={handleAdd}
+                placeholder="워크스페이스 이름"
+              />
+            </div>
+          )}
+        </>
+      )}
+    </div>
+  )
+}

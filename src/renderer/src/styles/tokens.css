@@ -1,0 +1,107 @@
+@import url("https://cdn.jsdelivr.net/gh/orioncactus/pretendard@v1.3.9/dist/web/static/pretendard.min.css");
+@import url("https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600&display=swap");
+
+:root {
+  --font-sans: "Pretendard", -apple-system, BlinkMacSystemFont, "Apple SD Gothic Neo",
+    "Noto Sans KR", sans-serif;
+  --font-mono: "JetBrains Mono", ui-monospace, "SF Mono", Consolas, monospace;
+}
+
+[data-theme="dark"] {
+  --bg-0: #0a0d12;
+  --bg-1: #0d1117;
+  --bg-2: #161b22;
+  --bg-3: #1c2330;
+  --bg-hover: #21262d;
+  --bg-selected: #2a3140;
+  --border-1: #232a34;
+  --border-2: #30363d;
+  --border-3: #3e4754;
+  --text-1: #e6edf3;
+  --text-2: #adb6c2;
+  --text-3: #768390;
+  --text-4: #545d6a;
+
+  --accent-data: #4493f8;
+  --accent-data-bg: rgba(56, 139, 253, 0.12);
+  --accent-data-border: rgba(56, 139, 253, 0.35);
+  --accent-api: #3fb950;
+  --accent-api-bg: rgba(63, 185, 80, 0.12);
+  --accent-api-border: rgba(63, 185, 80, 0.35);
+  --accent-trans: #f97316;
+  --accent-trans-bg: rgba(249, 115, 22, 0.14);
+  --accent-trans-border: rgba(249, 115, 22, 0.4);
+
+  --state-running: #58a6ff;
+  --state-success: #3fb950;
+  --state-error: #f85149;
+  --state-warn: #d29922;
+
+  --shadow-panel: 0 8px 24px rgba(0, 0, 0, 0.4);
+  --shadow-node: 0 1px 0 rgba(255,255,255,0.04) inset, 0 4px 14px rgba(0,0,0,0.35);
+  --shadow-node-hover: 0 1px 0 rgba(255,255,255,0.06) inset, 0 6px 22px rgba(0,0,0,0.5);
+
+  --grid-color: rgba(255, 255, 255, 0.06);
+  --grid-color-strong: rgba(255, 255, 255, 0.09);
+}
+
+[data-theme="light"] {
+  --bg-0: #ffffff;
+  --bg-1: #f6f8fa;
+  --bg-2: #ffffff;
+  --bg-3: #f0f3f6;
+  --bg-hover: #eaeef2;
+  --bg-selected: #dde3ea;
+  --border-1: #e6e8eb;
+  --border-2: #d0d7de;
+  --border-3: #b1bac4;
+  --text-1: #1f2328;
+  --text-2: #424a53;
+  --text-3: #656d76;
+  --text-4: #8c959f;
+
+  --accent-data: #0969da;
+  --accent-data-bg: rgba(9, 105, 218, 0.08);
+  --accent-data-border: rgba(9, 105, 218, 0.35);
+  --accent-api: #1a7f37;
+  --accent-api-bg: rgba(26, 127, 55, 0.08);
+  --accent-api-border: rgba(26, 127, 55, 0.35);
+  --accent-trans: #c2410c;
+  --accent-trans-bg: rgba(249, 115, 22, 0.08);
+  --accent-trans-border: rgba(249, 115, 22, 0.4);
+
+  --state-running: #0969da;
+  --state-success: #1a7f37;
+  --state-error: #cf222e;
+  --state-warn: #9a6700;
+
+  --shadow-panel: 0 6px 20px rgba(15, 23, 42, 0.08);
+  --shadow-node: 0 1px 2px rgba(15,23,42,0.04), 0 4px 14px rgba(15,23,42,0.08);
+  --shadow-node-hover: 0 1px 2px rgba(15,23,42,0.06), 0 8px 22px rgba(15,23,42,0.14);
+
+  --grid-color: rgba(15, 23, 42, 0.06);
+  --grid-color-strong: rgba(15, 23, 42, 0.1);
+}
+
+*, *::before, *::after { box-sizing: border-box; }
+
+html, body, #root {
+  height: 100%;
+  margin: 0;
+  padding: 0;
+}
+
+body {
+  font-family: var(--font-sans);
+  font-size: 13px;
+  line-height: 1.45;
+  color: var(--text-1);
+  background: var(--bg-1);
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+  overflow: hidden;
+}
+
+button { font-family: inherit; font-size: inherit; color: inherit; }
+input, textarea, select { font-family: inherit; }
+.mono { font-family: var(--font-mono); font-feature-settings: "calt" 1; }

@@ -1,0 +1,45 @@
+{
+  "name": "a8a",
+  "version": "1.0.0",
+  "description": "Eastar Jet API Workflow Automation Tool",
+  "main": "./out/main/index.js",
+  "scripts": {
+    "start": "electron-vite preview",
+    "dev": "electron-vite dev",
+    "build": "electron-vite build",
+    "preview": "electron-vite preview",
+    "build:win": "npm run build && electron-builder --win",
+    "build:mac": "npm run build && electron-builder --mac",
+    "build:linux": "npm run build && electron-builder --linux"
+  },
+  "keywords": [
+    "electron",
+    "api",
+    "workflow"
+  ],
+  "author": "Eastar Jet",
+  "license": "MIT",
+  "main_process": "src/main/index.ts",
+  "dependencies": {
+    "electron-updater": "^6.6.2",
+    "sql.js": "^1.14.1"
+  },
+  "devDependencies": {
+    "@electron-toolkit/eslint-config-prettier": "^2.0.0",
+    "@electron-toolkit/eslint-config-ts": "^2.0.0",
+    "@electron-toolkit/preload": "^3.0.1",
+    "@electron-toolkit/utils": "^4.0.0",
+    "@electron/rebuild": "^4.0.4",
+    "@types/node": "^22.15.21",
+    "@types/react": "^19.1.5",
+    "@types/react-dom": "^19.1.5",
+    "@vitejs/plugin-react": "^4.7.0",
+    "electron": "^42.2.0",
+    "electron-builder": "^26.0.12",
+    "electron-vite": "^5.0.0",
+    "react": "^19.2.6",
+    "react-dom": "^19.2.6",
+    "typescript": "^6.0.3",
+    "vite": "^7.3.3"
+  }
+}
