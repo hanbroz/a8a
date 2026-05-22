@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef } from 'react'
+import { useState, useEffect, useRef, useCallback } from 'react'
 import { IcoPanelL, IcoPlay, IcoSave, IcoSun, IcoMoon, IcoPanelB, IcoChevD } from './components/Icon'
 import WorkspaceHeader from './components/sidebar/WorkspaceHeader'
 import ModuleSection from './components/sidebar/ModuleSection'
@@ -8,6 +8,8 @@ import WorkspaceModal from './components/sidebar/WorkspaceModal'
 import EnvSection from './components/env/EnvSection'
 import EnvModal from './components/env/EnvModal'
 import ConfirmDialog from './components/ConfirmDialog'
+import WorkflowCanvas from './components/canvas/WorkflowCanvas'
+import StartNodeModal from './components/canvas/StartNodeModal'
 import type { Environment } from './components/env/EnvSection'
 import type { ProjectItem } from './components/sidebar/ProjectModal'
 import type { WorkspaceModalItem } from './components/sidebar/WorkspaceModal'
@@ -44,6 +46,11 @@ export default function App(): JSX.Element {
   const [workspaces, setWorkspaces] = useState<Workspace[]>([])
   const [activeWsId, setActiveWsId] = useState<string>('')
   const [loading, setLoading] = useState(true)
+
+  const [activeNodes, setActiveNodes] = useState<ApiNode[]>([])
+  const [activeEdges, setActiveEdges] = useState<ApiEdge[]>([])
+  const [confirmDeleteEdge, setConfirmDeleteEdge] = useState<ApiEdge | null>(null)
+  const [editingNode, setEditingNode] = useState<ApiNode | null>(null)
 
   const [envDropdownOpen, setEnvDropdownOpen] = useState(false)
   const [envDropdownPos, setEnvDropdownPos] = useState({ top: 0, left: 0 })
@@ -128,13 +135,53 @@ export default function App(): JSX.Element {
     }
   }, [])
 
-  const toggleTheme = (): void => setTheme(t => (t === 'dark' ? 'light' : 'dark'))
-  const toggleLog = (): void => setLogState(s => (s === 'collapsed' ? 'fullscreen' : 'collapsed'))
-
   const isFull = sidebarLayout === 'full'
   const activeWs = workspaces.find(w => w.id === activeWsId)
   const activeProject = activeWs?.projects.find(p => p.id === activeWs.activeProjectId)
   const activeEnv = activeWs?.environments.find(e => e.id === activeWs.activeEnvId)
+
+  useEffect(() => {
+    if (!activeProject) { setActiveNodes([]); setActiveEdges([]); return }
+    Promise.all([
+      window.api.node.list(activeProject.id),
+      window.api.edge.list(activeProject.id)
+    ]).then(([nodes, edges]) => {
+      setActiveNodes(nodes)
+      setActiveEdges(edges)
+    }).catch(console.error)
+  }, [activeProject?.id])
+
+  const handleNodeMove = useCallback(async (id: string, x: number, y: number): Promise<void> => {
+    await window.api.node.updatePosition(id, x, y)
+    setActiveNodes(prev => prev.map(n => n.id === id ? { ...n, x, y } : n))
+  }, [])
+
+  const handleEdgeCreate = useCallback(async (sourceId: string, targetId: string): Promise<void> => {
+    if (!activeProject) return
+    if (activeEdges.some(e => e.sourceNodeId === sourceId && e.targetNodeId === targetId)) return
+    const edge = await window.api.edge.create(activeProject.id, sourceId, targetId)
+    setActiveEdges(prev => [...prev, edge])
+  }, [activeProject?.id, activeEdges])
+
+  const handleNodeOpen = useCallback((nodeId: string): void => {
+    const node = activeNodes.find(n => n.id === nodeId)
+    if (node) setEditingNode(node)
+  }, [activeNodes])
+
+  const handleNodeSave = async (nodeId: string, config: string): Promise<void> => {
+    await window.api.node.updateConfig(nodeId, config)
+    setActiveNodes(prev => prev.map(n => n.id === nodeId ? { ...n, config } : n))
+  }
+
+  const deleteEdge = async (): Promise<void> => {
+    if (!confirmDeleteEdge) return
+    await window.api.edge.delete(confirmDeleteEdge.id)
+    setActiveEdges(prev => prev.filter(e => e.id !== confirmDeleteEdge.id))
+    setConfirmDeleteEdge(null)
+  }
+
+  const toggleTheme = (): void => setTheme(t => (t === 'dark' ? 'light' : 'dark'))
+  const toggleLog = (): void => setLogState(s => (s === 'collapsed' ? 'fullscreen' : 'collapsed'))
 
   const setActiveEnvId = (wsId: string, envId: string): void => {
     setWorkspaces(prev => prev.map(w => w.id === wsId ? { ...w, activeEnvId: envId } : w))
@@ -426,9 +473,14 @@ export default function App(): JSX.Element {
           {activeProject ? (
             <div className="canvas-wrap">
               <div className="canvas-bg" />
-              <div className="canvas-placeholder">
-                캔버스 — 다음 단계에서 노드를 추가합니다
-              </div>
+              <WorkflowCanvas
+                  nodes={activeNodes}
+                  edges={activeEdges}
+                  onNodeMove={handleNodeMove}
+                  onEdgeCreate={handleEdgeCreate}
+                  onEdgeDelete={id => setConfirmDeleteEdge(activeEdges.find(e => e.id === id) ?? null)}
+                  onNodeOpen={handleNodeOpen}
+                />
             </div>
           ) : (
             <div className="workspace-empty">
@@ -535,6 +587,26 @@ export default function App(): JSX.Element {
           warning="이 작업은 되돌릴 수 없으며, 프로젝트에 포함된 모든 데이터가 함께 삭제됩니다."
           onConfirm={deleteProject}
           onCancel={() => setConfirmDeleteProject(null)}
+        />
+      )}
+
+      {/* ── Node Settings Modal ── */}
+      {editingNode?.type === 'start' && (
+        <StartNodeModal
+          node={editingNode}
+          onSave={handleNodeSave}
+          onClose={() => setEditingNode(null)}
+        />
+      )}
+
+      {/* ── Edge Delete Confirm ── */}
+      {confirmDeleteEdge && (
+        <ConfirmDialog
+          title="연결 삭제"
+          message="이 연결선을 삭제하시겠습니까?"
+          warning="삭제된 연결은 복구할 수 없습니다."
+          onConfirm={deleteEdge}
+          onCancel={() => setConfirmDeleteEdge(null)}
         />
       )}
 

@@ -4,6 +4,7 @@ import App from './App'
 import './styles/tokens.css'
 import './styles/layout.css'
 import './styles/env.css'
+import './styles/canvas.css'
 
 // 플랫폼 정보를 HTML 루트에 기록 — CSS 조건부 스타일링 용도
 const platform = (window as any).electron?.process?.platform ?? navigator.platform.toLowerCase()

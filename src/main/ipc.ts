@@ -25,4 +25,14 @@ export function registerIpcHandlers(): void {
   ipcMain.handle('mod:create', (_, name: string) => db.createModule(name))
   ipcMain.handle('mod:rename', (_, id: string, name: string) => db.renameModule(id, name))
   ipcMain.handle('mod:delete', (_, id: string) => db.deleteModule(id))
+
+  // ── Node ──
+  ipcMain.handle('node:list', (_, projectId: string) => db.listNodes(projectId))
+  ipcMain.handle('node:update-position', (_, id: string, x: number, y: number) => db.updateNodePosition(id, x, y))
+  ipcMain.handle('node:update-config', (_, id: string, config: string) => db.updateNodeConfig(id, config))
+
+  // ── Edge ──
+  ipcMain.handle('edge:list', (_, projectId: string) => db.listEdges(projectId))
+  ipcMain.handle('edge:create', (_, projectId: string, sourceNodeId: string, targetNodeId: string) => db.createEdge(projectId, sourceNodeId, targetNodeId))
+  ipcMain.handle('edge:delete', (_, id: string) => db.deleteEdge(id))
 }

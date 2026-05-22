@@ -85,7 +85,24 @@ function createSchema(): void {
       name TEXT NOT NULL,
       sort INTEGER DEFAULT 0
     );
+    CREATE TABLE IF NOT EXISTS nodes (
+      id         TEXT PRIMARY KEY,
+      project_id TEXT NOT NULL,
+      type       TEXT NOT NULL,
+      label      TEXT NOT NULL,
+      x          REAL DEFAULT 0,
+      y          REAL DEFAULT 0
+    );
+    CREATE TABLE IF NOT EXISTS edges (
+      id             TEXT PRIMARY KEY,
+      project_id     TEXT NOT NULL,
+      source_node_id TEXT NOT NULL,
+      target_node_id TEXT NOT NULL
+    );
   `)
+  try {
+    db.run("ALTER TABLE nodes ADD COLUMN config TEXT DEFAULT ''")
+  } catch { /* column already exists */ }
   try {
     db.run("ALTER TABLE environments ADD COLUMN color TEXT DEFAULT '#4493f8'")
   } catch { /* column already exists */ }
@@ -200,6 +217,8 @@ export function listProjects(workspaceId: string): ProjectRow[] {
 export function createProject(workspaceId: string, name: string, description: string): ProjectRow {
   const id = randomUUID()
   db.run('INSERT INTO projects (id, workspace_id, name, description) VALUES (?, ?, ?, ?)', [id, workspaceId, name, description])
+  db.run('INSERT INTO nodes (id, project_id, type, label, x, y) VALUES (?, ?, ?, ?, ?, ?)', [randomUUID(), id, 'start', 'Start', 80, 160])
+  db.run('INSERT INTO nodes (id, project_id, type, label, x, y) VALUES (?, ?, ?, ?, ?, ?)', [randomUUID(), id, 'end', 'End', 520, 160])
   save()
   return { id, name, description }
 }
@@ -210,7 +229,62 @@ export function updateProject(id: string, name: string, description: string): vo
 }
 
 export function deleteProject(id: string): void {
+  db.run('DELETE FROM edges WHERE project_id = ?', [id])
+  db.run('DELETE FROM nodes WHERE project_id = ?', [id])
   db.run('DELETE FROM projects WHERE id = ?', [id])
+  save()
+}
+
+// ── Node ──────────────────────────────────────────
+export type NodeRow = { id: string; projectId: string; type: string; label: string; x: number; y: number; config: string }
+
+function ensureDefaultNodes(projectId: string): void {
+  db.run('INSERT INTO nodes (id, project_id, type, label, x, y) VALUES (?, ?, ?, ?, ?, ?)', [randomUUID(), projectId, 'start', 'Start', 80, 160])
+  db.run('INSERT INTO nodes (id, project_id, type, label, x, y) VALUES (?, ?, ?, ?, ?, ?)', [randomUUID(), projectId, 'end', 'End', 520, 160])
+  save()
+}
+
+export function listNodes(projectId: string): NodeRow[] {
+  const rows = queryAll<{ id: string; project_id: string; type: string; label: string; x: number; y: number; config: string }>(
+    'SELECT id, project_id, type, label, x, y, COALESCE(config, \'\') as config FROM nodes WHERE project_id = ?',
+    [projectId]
+  )
+  if (rows.length === 0) {
+    ensureDefaultNodes(projectId)
+    return listNodes(projectId)
+  }
+  return rows.map(r => ({ id: r.id, projectId: r.project_id, type: r.type, label: r.label, x: r.x, y: r.y, config: r.config }))
+}
+
+export function updateNodePosition(id: string, x: number, y: number): void {
+  db.run('UPDATE nodes SET x = ?, y = ? WHERE id = ?', [x, y, id])
+  save()
+}
+
+export function updateNodeConfig(id: string, config: string): void {
+  db.run('UPDATE nodes SET config = ? WHERE id = ?', [config, id])
+  save()
+}
+
+// ── Edge ──────────────────────────────────────────
+export type EdgeRow = { id: string; projectId: string; sourceNodeId: string; targetNodeId: string }
+
+export function listEdges(projectId: string): EdgeRow[] {
+  return queryAll<{ id: string; project_id: string; source_node_id: string; target_node_id: string }>(
+    'SELECT id, project_id, source_node_id, target_node_id FROM edges WHERE project_id = ?',
+    [projectId]
+  ).map(r => ({ id: r.id, projectId: r.project_id, sourceNodeId: r.source_node_id, targetNodeId: r.target_node_id }))
+}
+
+export function createEdge(projectId: string, sourceNodeId: string, targetNodeId: string): EdgeRow {
+  const id = randomUUID()
+  db.run('INSERT INTO edges (id, project_id, source_node_id, target_node_id) VALUES (?, ?, ?, ?)', [id, projectId, sourceNodeId, targetNodeId])
+  save()
+  return { id, projectId, sourceNodeId, targetNodeId }
+}
+
+export function deleteEdge(id: string): void {
+  db.run('DELETE FROM edges WHERE id = ?', [id])
   save()
 }
 

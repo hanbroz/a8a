@@ -31,6 +31,36 @@ interface ApiModule {
   name: string
 }
 
+interface StartSchedule {
+  type: 'daily' | 'weekly' | 'monthly' | 'cron'
+  time: string
+  weekdays: number[]
+  monthDay: number
+  cron: string
+}
+
+interface StartConfig {
+  mode: 'manual' | 'schedule'
+  schedule: StartSchedule
+}
+
+interface ApiNode {
+  id: string
+  projectId: string
+  type: 'start' | 'end'
+  label: string
+  x: number
+  y: number
+  config: string
+}
+
+interface ApiEdge {
+  id: string
+  projectId: string
+  sourceNodeId: string
+  targetNodeId: string
+}
+
 interface AppApi {
   workspace: {
     list: () => Promise<ApiWorkspace[]>
@@ -53,6 +83,16 @@ interface AppApi {
     list: () => Promise<ApiModule[]>
     create: (name: string) => Promise<ApiModule>
     rename: (id: string, name: string) => Promise<void>
+    delete: (id: string) => Promise<void>
+  }
+  node: {
+    list: (projectId: string) => Promise<ApiNode[]>
+    updatePosition: (id: string, x: number, y: number) => Promise<void>
+    updateConfig: (id: string, config: string) => Promise<void>
+  }
+  edge: {
+    list: (projectId: string) => Promise<ApiEdge[]>
+    create: (projectId: string, sourceNodeId: string, targetNodeId: string) => Promise<ApiEdge>
     delete: (id: string) => Promise<void>
   }
 }
