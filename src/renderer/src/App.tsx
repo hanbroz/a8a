@@ -10,6 +10,7 @@ import EnvModal from './components/env/EnvModal'
 import ConfirmDialog from './components/ConfirmDialog'
 import WorkflowCanvas from './components/canvas/WorkflowCanvas'
 import StartNodeModal from './components/canvas/StartNodeModal'
+import DataNodeModal from './components/canvas/DataNodeModal'
 import type { Environment } from './components/env/EnvSection'
 import type { ProjectItem } from './components/sidebar/ProjectModal'
 import type { WorkspaceModalItem } from './components/sidebar/WorkspaceModal'
@@ -25,7 +26,6 @@ type Workspace = {
   environments: Environment[]
   activeEnvId: string
   projects: ProjectItem[]
-  activeProjectId: string
 }
 
 export default function App(): JSX.Element {
@@ -45,12 +45,15 @@ export default function App(): JSX.Element {
 
   const [workspaces, setWorkspaces] = useState<Workspace[]>([])
   const [activeWsId, setActiveWsId] = useState<string>('')
+  const [activeProjectId, setActiveProjectId] = useState<string>('')
   const [loading, setLoading] = useState(true)
 
   const [activeNodes, setActiveNodes] = useState<ApiNode[]>([])
   const [activeEdges, setActiveEdges] = useState<ApiEdge[]>([])
   const [confirmDeleteEdge, setConfirmDeleteEdge] = useState<ApiEdge | null>(null)
   const [editingNode, setEditingNode] = useState<ApiNode | null>(null)
+  const [newModuleCtx, setNewModuleCtx] = useState<{ wsId: string | null; type: string } | null>(null)
+  const [allModules, setAllModules] = useState<ApiModule[]>([])
 
   const [envDropdownOpen, setEnvDropdownOpen] = useState(false)
   const [envDropdownPos, setEnvDropdownPos] = useState({ top: 0, left: 0 })
@@ -84,13 +87,15 @@ export default function App(): JSX.Element {
               description: ws.description ?? '',
               environments: envs as Environment[],
               activeEnvId: baseEnv?.id ?? envs[0]?.id ?? '',
-              projects: projects as ProjectItem[],
-              activeProjectId: projects[0]?.id ?? ''
+              projects: projects as ProjectItem[]
             }
           })
         )
         setWorkspaces(all)
-        if (all.length > 0) setActiveWsId(all[0].id)
+        if (all.length > 0) {
+          setActiveWsId(all[0].id)
+          setActiveProjectId(all[0].projects[0]?.id ?? '')
+        }
       } catch (err) {
         console.error('Failed to load workspaces:', err)
       } finally {
@@ -137,7 +142,7 @@ export default function App(): JSX.Element {
 
   const isFull = sidebarLayout === 'full'
   const activeWs = workspaces.find(w => w.id === activeWsId)
-  const activeProject = activeWs?.projects.find(p => p.id === activeWs.activeProjectId)
+  const activeProject = workspaces.flatMap(w => w.projects).find(p => p.id === activeProjectId)
   const activeEnv = activeWs?.environments.find(e => e.id === activeWs.activeEnvId)
 
   useEffect(() => {
@@ -150,6 +155,10 @@ export default function App(): JSX.Element {
       setActiveEdges(edges)
     }).catch(console.error)
   }, [activeProject?.id])
+
+  useEffect(() => {
+    window.api.module.listAll().then(setAllModules).catch(console.error)
+  }, [])
 
   const handleNodeMove = useCallback(async (id: string, x: number, y: number): Promise<void> => {
     await window.api.node.updatePosition(id, x, y)
@@ -173,6 +182,63 @@ export default function App(): JSX.Element {
     setActiveNodes(prev => prev.map(n => n.id === nodeId ? { ...n, config } : n))
   }
 
+  const handleDataNodeSave = async (nodeId: string, label: string, config: string): Promise<void> => {
+    const node = activeNodes.find(n => n.id === nodeId)
+    if (node?.moduleId) {
+      await handleModuleUpdate(node.moduleId, label, config)
+    } else {
+      await Promise.all([
+        window.api.node.updateLabel(nodeId, label),
+        window.api.node.updateConfig(nodeId, config)
+      ])
+      setActiveNodes(prev => prev.map(n => n.id === nodeId ? { ...n, label, config } : n))
+    }
+  }
+
+  const handleCreateDataNode = useCallback((wsId: string, type = 'data'): void => {
+    setNewModuleCtx({ wsId, type })
+  }, [])
+
+  const handleCreateCommonModule = useCallback((type = 'data'): void => {
+    setNewModuleCtx({ wsId: null, type })
+  }, [])
+
+  const handleModuleDrop = useCallback(async (moduleId: string, x: number, y: number): Promise<void> => {
+    if (!activeProject) return
+    const node = await window.api.node.createFromModule(activeProject.id, moduleId, x, y)
+    setActiveNodes(prev => [...prev, node])
+  }, [activeProject?.id])
+
+  const handleModuleUpdate = useCallback(async (moduleId: string, label: string, config: string): Promise<void> => {
+    await window.api.module.update(moduleId, label, config)
+    const [mods, nodes] = await Promise.all([
+      window.api.module.listAll(),
+      activeProject ? window.api.node.list(activeProject.id) : Promise.resolve(activeNodes)
+    ])
+    setAllModules(mods)
+    setActiveNodes(nodes)
+  }, [activeProject?.id, activeNodes])
+
+  const handleSetModuleCommon = useCallback(async (id: string, isCommon: boolean, wsId: string): Promise<void> => {
+    await window.api.module.setCommon(id, isCommon, wsId)
+    const mods = await window.api.module.listAll()
+    setAllModules(mods)
+  }, [])
+
+  const handleDeleteModule = useCallback(async (id: string): Promise<void> => {
+    await window.api.module.delete(id)
+    const [mods, nodes] = await Promise.all([
+      window.api.module.listAll(),
+      activeProject ? window.api.node.list(activeProject.id) : Promise.resolve([])
+    ])
+    setAllModules(mods)
+    setActiveNodes(nodes)
+    if (activeProject) {
+      const edges = await window.api.edge.list(activeProject.id)
+      setActiveEdges(edges)
+    }
+  }, [activeProject?.id])
+
   const deleteEdge = async (): Promise<void> => {
     if (!confirmDeleteEdge) return
     await window.api.edge.delete(confirmDeleteEdge.id)
@@ -187,8 +253,9 @@ export default function App(): JSX.Element {
     setWorkspaces(prev => prev.map(w => w.id === wsId ? { ...w, activeEnvId: envId } : w))
   }
 
-  const setActiveProjectId = (wsId: string, projectId: string): void => {
-    setWorkspaces(prev => prev.map(w => w.id === wsId ? { ...w, activeProjectId: projectId } : w))
+  const selectProject = (wsId: string, projectId: string): void => {
+    setActiveWsId(wsId)
+    setActiveProjectId(projectId)
   }
 
   const saveWorkspace = async (name: string, description: string): Promise<void> => {
@@ -210,8 +277,7 @@ export default function App(): JSX.Element {
         description: ws.description ?? '',
         environments: envs as Environment[],
         activeEnvId: baseEnv?.id ?? envs[0]?.id ?? '',
-        projects: projects as ProjectItem[],
-        activeProjectId: projects[0]?.id ?? ''
+        projects: projects as ProjectItem[]
       }])
       setActiveWsId(ws.id)
     }
@@ -284,11 +350,12 @@ export default function App(): JSX.Element {
       }))
     } else {
       const created = await window.api.project.create(wsId, name, description)
+      const newProject = created as ProjectItem
       setWorkspaces(prev => prev.map(w => {
         if (w.id !== wsId) return w
-        const newProject = created as ProjectItem
-        return { ...w, projects: [...w.projects, newProject], activeProjectId: newProject.id }
+        return { ...w, projects: [...w.projects, newProject] }
       }))
+      selectProject(wsId, newProject.id)
     }
     closeProjectModal()
   }
@@ -300,9 +367,13 @@ export default function App(): JSX.Element {
     setWorkspaces(prev => prev.map(w => {
       if (w.id !== wsId) return w
       const next = w.projects.filter(p => p.id !== project.id)
-      const activeProjectId = w.activeProjectId === project.id ? (next[0]?.id ?? '') : w.activeProjectId
-      return { ...w, projects: next, activeProjectId }
+      return { ...w, projects: next }
     }))
+    if (activeProjectId === project.id) {
+      const ws = workspaces.find(w => w.id === wsId)
+      const next = (ws?.projects ?? []).filter(p => p.id !== project.id)
+      setActiveProjectId(next[0]?.id ?? '')
+    }
     setConfirmDeleteProject(null)
   }
 
@@ -354,13 +425,13 @@ export default function App(): JSX.Element {
                   {ws.projects.map(proj => (
                     <button
                       key={proj.id}
-                      className={`sidebar-proj-icon${ws.id === activeWsId && proj.id === ws.activeProjectId ? ' sidebar-proj-icon-active' : ''}`}
+                      className={`sidebar-proj-icon${proj.id === activeProjectId ? ' sidebar-proj-icon-active' : ''}`}
                       onMouseEnter={e => {
                         const rect = (e.currentTarget as HTMLButtonElement).getBoundingClientRect()
                         setIconTooltip({ text: `${ws.name} › ${proj.name}`, x: rect.right + 8, y: rect.top + rect.height / 2 })
                       }}
                       onMouseLeave={() => setIconTooltip(null)}
-                      onClick={() => { setActiveWsId(ws.id); setActiveProjectId(ws.id, proj.id) }}
+                      onClick={() => selectProject(ws.id, proj.id)}
                     >
                       {proj.name.charAt(0).toUpperCase()}
                     </button>
@@ -385,6 +456,7 @@ export default function App(): JSX.Element {
               onDeleteRequest={setConfirmDeleteWsId}
               renderContent={(wsId) => {
                 const ws = workspaces.find(w => w.id === wsId)
+                const wsModules = allModules.filter(m => m.workspaceId === wsId)
                 return (
                   <>
                     <EnvSection
@@ -397,17 +469,34 @@ export default function App(): JSX.Element {
                     />
                     <ProjectSection
                       projects={ws?.projects ?? []}
-                      activeProjectId={ws?.activeProjectId ?? ''}
-                      onSelect={(id) => { setActiveWsId(wsId); setActiveProjectId(wsId, id) }}
+                      activeProjectId={activeProjectId}
+                      onSelect={(id) => selectProject(wsId, id)}
                       onAdd={() => openAddProjectModal(wsId)}
                       onEdit={(proj) => openEditProjectModal(wsId, proj)}
                       onDelete={(proj) => setConfirmDeleteProject({ wsId, project: proj })}
+                    />
+                    <ModuleSection
+                      stateKey={`module-${wsId}`}
+                      title="Module"
+                      modules={wsModules}
+                      onAdd={(type) => handleCreateDataNode(wsId, type)}
+                      onSetCommon={(id, isCommon) => handleSetModuleCommon(id, isCommon, wsId)}
+                      onDelete={handleDeleteModule}
                     />
                   </>
                 )
               }}
             />
-            <ModuleSection />
+            <ModuleSection
+              stateKey="common-module"
+              title="공통 모듈"
+              modules={allModules.filter(m => m.workspaceId === null)}
+              onAdd={(type) => handleCreateCommonModule(type)}
+              onSetCommon={(id, isCommon) => {
+                if (!isCommon && activeWsId) handleSetModuleCommon(id, false, activeWsId)
+              }}
+              onDelete={handleDeleteModule}
+            />
           </div>
         )}
 
@@ -480,6 +569,7 @@ export default function App(): JSX.Element {
                   onEdgeCreate={handleEdgeCreate}
                   onEdgeDelete={id => setConfirmDeleteEdge(activeEdges.find(e => e.id === id) ?? null)}
                   onNodeOpen={handleNodeOpen}
+                  onModuleDrop={handleModuleDrop}
                 />
             </div>
           ) : (
@@ -596,6 +686,43 @@ export default function App(): JSX.Element {
           node={editingNode}
           onSave={handleNodeSave}
           onClose={() => setEditingNode(null)}
+        />
+      )}
+
+      {editingNode?.type === 'data' && (
+        <DataNodeModal
+          node={editingNode}
+          onSave={handleDataNodeSave}
+          onDelete={async () => {
+            if (editingNode.moduleId) {
+              await handleDeleteModule(editingNode.moduleId)
+            } else {
+              await window.api.node.delete(editingNode.id)
+              setActiveNodes(prev => prev.filter(n => n.id !== editingNode.id))
+              const edges = activeEdges.filter(e => e.sourceNodeId !== editingNode.id && e.targetNodeId !== editingNode.id)
+              setActiveEdges(edges)
+            }
+            setEditingNode(null)
+          }}
+          onClose={() => setEditingNode(null)}
+        />
+      )}
+
+      {newModuleCtx && (
+        <DataNodeModal
+          node={{ id: '__new__', projectId: '', type: 'data', label: 'Data', x: 0, y: 0, config: '{}' }}
+          isNew
+          onSave={async (_, label, config) => {
+            if (newModuleCtx.wsId) {
+              await window.api.module.create(newModuleCtx.wsId, newModuleCtx.type, label, config)
+            } else {
+              await window.api.module.createCommon(newModuleCtx.type, label, config)
+            }
+            const mods = await window.api.module.listAll()
+            setAllModules(mods)
+            setNewModuleCtx(null)
+          }}
+          onClose={() => setNewModuleCtx(null)}
         />
       )}
 

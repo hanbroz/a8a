@@ -22,7 +22,8 @@
   "main_process": "src/main/index.ts",
   "dependencies": {
     "electron-updater": "^6.6.2",
-    "sql.js": "^1.14.1"
+    "sql.js": "^1.14.1",
+    "xlsx": "^0.18.5"
   },
   "devDependencies": {
     "@electron-toolkit/eslint-config-prettier": "^2.0.0",

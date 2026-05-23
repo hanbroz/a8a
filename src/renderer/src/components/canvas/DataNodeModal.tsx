@@ -1,0 +1,428 @@
+import { useState, useRef, useCallback, useEffect } from 'react'
+import * as XLSX from 'xlsx'
+import { IcoPlus, IcoTrash, IcoX } from '../Icon'
+import { randomId } from '../../utils/id'
+
+interface Props {
+  node: ApiNode
+  isNew?: boolean
+  onSave: (nodeId: string, label: string, config: string) => Promise<void>
+  onDelete?: () => Promise<void>
+  onClose: () => void
+}
+
+type ResizeDir = 'n' | 'ne' | 'e' | 'se' | 's' | 'sw' | 'w' | 'nw'
+
+const MIN_W = 600
+const MIN_H = 360
+const RESIZE_DIRS: ResizeDir[] = ['n', 'ne', 'e', 'se', 's', 'sw', 'w', 'nw']
+
+function parseConfig(raw: string): DataConfig {
+  try {
+    const parsed = JSON.parse(raw)
+    return {
+      items: Array.isArray(parsed.items) ? parsed.items : [],
+      excelData: parsed.excelData ?? null,
+    }
+  } catch {
+    return { items: [], excelData: null }
+  }
+}
+
+function DataIcon({ size = 14 }: { size?: number }): JSX.Element {
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <ellipse cx="12" cy="5" rx="9" ry="3" />
+      <path d="M3 5v14c0 1.66 4.03 3 9 3s9-1.34 9-3V5" />
+      <path d="M3 12c0 1.66 4.03 3 9 3s9-1.34 9-3" />
+    </svg>
+  )
+}
+
+function FormatIcon(): JSX.Element {
+  return (
+    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <polyline points="4 7 4 4 20 4 20 7" />
+      <line x1="9" y1="20" x2="15" y2="20" />
+      <line x1="12" y1="4" x2="12" y2="20" />
+    </svg>
+  )
+}
+
+function ExcelIcon(): JSX.Element {
+  return (
+    <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
+      <polyline points="14 2 14 8 20 8" />
+      <line x1="8" y1="13" x2="16" y2="13" />
+      <line x1="8" y1="17" x2="16" y2="17" />
+      <line x1="8" y1="9" x2="10" y2="9" />
+    </svg>
+  )
+}
+
+function UploadIcon(): JSX.Element {
+  return (
+    <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
+      <polyline points="17 8 12 3 7 8" />
+      <line x1="12" y1="3" x2="12" y2="15" />
+    </svg>
+  )
+}
+
+function buildOutputJson(items: DataItem[], excelData: ExcelData | null | undefined): string {
+  if (excelData?.rows?.length) {
+    return JSON.stringify(excelData.rows, null, 2)
+  }
+  const values = items.map(i => i.value).filter(Boolean)
+  return JSON.stringify(values, null, 2)
+}
+
+function formatJson(raw: string): { value: string; error: boolean } {
+  const trimmed = raw.trim()
+  if (!trimmed) return { value: '', error: false }
+  try {
+    return { value: JSON.stringify(JSON.parse(trimmed), null, 2), error: false }
+  } catch {
+    return { value: raw, error: true }
+  }
+}
+
+export default function DataNodeModal({ node, isNew, onSave, onDelete, onClose }: Props): JSX.Element {
+  const initial = parseConfig(node.config)
+  const [label, setLabel] = useState(node.label)
+  const [items, setItems] = useState<DataItem[]>(initial.items)
+  const [excelData, setExcelData] = useState<ExcelData | null>(initial.excelData ?? null)
+  const [saving, setSaving] = useState(false)
+  const [dragOver, setDragOver] = useState(false)
+  const [confirmDelete, setConfirmDelete] = useState(false)
+
+  const [inputJson, setInputJson] = useState('')
+  const [inputError, setInputError] = useState(false)
+
+  const fileInputRef = useRef<HTMLInputElement>(null)
+
+  // ── Window position & size ──
+  const [rect, setRect] = useState(() => {
+    const w = Math.min(900, window.innerWidth - 48)
+    const h = Math.min(560, window.innerHeight - 80)
+    return { x: Math.round((window.innerWidth - w) / 2), y: Math.round((window.innerHeight - h) / 2), w, h }
+  })
+
+  const dragRef = useRef<{ ox: number; oy: number } | null>(null)
+  const resizeRef = useRef<{ dir: ResizeDir; ox: number; oy: number; rx: number; ry: number; rw: number; rh: number } | null>(null)
+  const splitterRef = useRef<{ which: 'left' | 'right'; startX: number; startW: number } | null>(null)
+  const bodyRef = useRef<HTMLDivElement>(null)
+  const [leftW, setLeftW] = useState(220)
+  const [rightW, setRightW] = useState(240)
+
+  const onHeaderDown = useCallback((e: React.MouseEvent) => {
+    if ((e.target as HTMLElement).closest('button')) return
+    e.preventDefault()
+    dragRef.current = { ox: e.clientX - rect.x, oy: e.clientY - rect.y }
+  }, [rect])
+
+  const onResizeDown = useCallback((e: React.MouseEvent, dir: ResizeDir) => {
+    e.preventDefault(); e.stopPropagation()
+    resizeRef.current = { dir, ox: e.clientX, oy: e.clientY, rx: rect.x, ry: rect.y, rw: rect.w, rh: rect.h }
+  }, [rect])
+
+  const onSplitterDown = useCallback((which: 'left' | 'right', e: React.MouseEvent) => {
+    e.preventDefault(); e.stopPropagation()
+    splitterRef.current = { which, startX: e.clientX, startW: which === 'left' ? leftW : rightW }
+  }, [leftW, rightW])
+
+  useEffect(() => {
+    const onMove = (e: MouseEvent) => {
+      if (dragRef.current) {
+        const d = dragRef.current
+        setRect(r => ({
+          ...r,
+          x: Math.max(0, Math.min(window.innerWidth - r.w, e.clientX - d.ox)),
+          y: Math.max(0, Math.min(window.innerHeight - r.h, e.clientY - d.oy)),
+        }))
+      }
+      if (resizeRef.current) {
+        const { dir, ox, oy, rx, ry, rw, rh } = resizeRef.current
+        const dx = e.clientX - ox, dy = e.clientY - oy
+        setRect(() => {
+          let x = rx, y = ry, w = rw, h = rh
+          if (dir.includes('e')) w = Math.max(MIN_W, rw + dx)
+          if (dir.includes('s')) h = Math.max(MIN_H, rh + dy)
+          if (dir.includes('w')) { w = Math.max(MIN_W, rw - dx); x = rx + rw - w }
+          if (dir.includes('n')) { h = Math.max(MIN_H, rh - dy); y = ry + rh - h }
+          return { x, y, w, h }
+        })
+      }
+      if (splitterRef.current) {
+        const d = splitterRef.current
+        const totalW = bodyRef.current?.offsetWidth ?? 800
+        const delta = e.clientX - d.startX
+        if (d.which === 'left') setLeftW(() => Math.max(100, Math.min(totalW - rightW - 160, d.startW + delta)))
+        else setRightW(() => Math.max(100, Math.min(totalW - leftW - 160, d.startW - delta)))
+      }
+    }
+    const onUp = () => { dragRef.current = null; resizeRef.current = null; splitterRef.current = null }
+    document.addEventListener('mousemove', onMove)
+    document.addEventListener('mouseup', onUp)
+    return () => { document.removeEventListener('mousemove', onMove); document.removeEventListener('mouseup', onUp) }
+  }, [leftW, rightW])
+
+  // ── Excel parsing ──
+  const parseExcel = useCallback((file: File) => {
+    const reader = new FileReader()
+    reader.onload = (e) => {
+      try {
+        const data = new Uint8Array(e.target?.result as ArrayBuffer)
+        const wb = XLSX.read(data, { type: 'array' })
+        const sheet = wb.Sheets[wb.SheetNames[0]]
+        const rows = XLSX.utils.sheet_to_json<Record<string, unknown>>(sheet, { defval: '' })
+        const columns = rows.length > 0 ? Object.keys(rows[0]) : []
+        setExcelData({ fileName: file.name, columns, rows })
+      } catch {
+        alert('파일을 파싱할 수 없습니다. .xlsx, .xls, .csv 파일을 사용해 주세요.')
+      }
+    }
+    reader.readAsArrayBuffer(file)
+  }, [])
+
+  const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0]
+    if (file) parseExcel(file)
+    e.target.value = ''
+  }
+
+  const handleDrop = (e: React.DragEvent) => {
+    e.preventDefault(); setDragOver(false)
+    const file = e.dataTransfer.files?.[0]
+    if (file) parseExcel(file)
+  }
+
+  const handleFormatInput = () => {
+    const result = formatJson(inputJson)
+    setInputJson(result.value); setInputError(result.error)
+  }
+
+  const addItem = () => setItems(prev => [...prev, { id: randomId(), value: '' }])
+  const updateItem = (id: string, value: string) => setItems(prev => prev.map(it => it.id === id ? { ...it, value } : it))
+  const removeItem = (id: string) => setItems(prev => prev.filter(it => it.id !== id))
+
+  const handleSave = async () => {
+    setSaving(true)
+    const config: DataConfig = { items, excelData }
+    await onSave(node.id, label.trim() || 'Data', JSON.stringify(config))
+    setSaving(false); onClose()
+  }
+
+  const outputJson = buildOutputJson(items, excelData)
+
+  return (
+    <div className="dm-overlay">
+      <input
+        ref={fileInputRef}
+        type="file"
+        accept=".xlsx,.xls,.csv"
+        style={{ display: 'none' }}
+        onChange={handleFileChange}
+      />
+
+      <div className="dm-modal" style={{ left: rect.x, top: rect.y, width: rect.w, height: rect.h }}>
+        {RESIZE_DIRS.map(dir => (
+          <div key={dir} className={`dm-resize-handle dm-resize-${dir}`} onMouseDown={e => onResizeDown(e, dir)} />
+        ))}
+
+        <div className="dm-modal-inner">
+
+          {/* Header */}
+          <div className="dm-hd" onMouseDown={onHeaderDown}>
+            <div className="dm-hd-left">
+              <div className="dm-hd-icon"><DataIcon size={13} /></div>
+              <span className="dm-hd-title">{isNew ? 'Data 모듈 추가' : 'Data 모듈 설정'}</span>
+            </div>
+            <button className="btn ghost icon dm-close-btn" onClick={onClose}><IcoX size={13} /></button>
+          </div>
+
+          {/* 3-pane body */}
+          <div className="dm-body" ref={bodyRef}>
+
+            {/* INPUT pane */}
+            <div className="dm-pane" style={{ width: leftW, flexShrink: 0 }}>
+              <div className="dm-pane-hd">
+                <span className={`dm-pane-label dm-pane-label-input${inputError ? ' dm-pane-label-error' : ''}`}>INPUT</span>
+                <div className="dm-pane-hd-actions">
+                  {inputError && <span className="dm-json-err-badge">Invalid JSON</span>}
+                  <span className="dm-pane-type">JSON</span>
+                  <button className="btn ghost icon dm-format-btn" onClick={handleFormatInput} title="JSON 정렬">
+                    <FormatIcon />
+                  </button>
+                </div>
+              </div>
+              <div className="dm-pane-body">
+                <textarea
+                  className={`dm-json-area${inputError ? ' dm-json-area-error' : ''}`}
+                  value={inputJson}
+                  onChange={e => { setInputJson(e.target.value); setInputError(false) }}
+                  placeholder="{}"
+                  spellCheck={false}
+                />
+              </div>
+            </div>
+
+            <div className="dm-splitter" onMouseDown={e => onSplitterDown('left', e)} />
+
+            {/* Settings pane */}
+            <div className="dm-pane dm-pane-settings" style={{ flex: '1 1 0', minWidth: 160 }}>
+              <div className="dm-pane-hd">
+                <span className="dm-pane-label">설정</span>
+              </div>
+              <div className="dm-pane-body dm-settings-body">
+
+                <div className="dm-field">
+                  <label className="dm-field-label">모듈 이름</label>
+                  <input className="dm-input" value={label} onChange={e => setLabel(e.target.value)} placeholder="Data" autoFocus />
+                </div>
+
+                {/* Excel upload */}
+                <div className="dm-field">
+                  <label className="dm-field-label">Excel 업로드</label>
+                  {excelData ? (
+                    <div className="dm-excel-info">
+                      <div className="dm-excel-file-row">
+                        <div className="dm-excel-file-icon"><ExcelIcon /></div>
+                        <div className="dm-excel-file-meta">
+                          <span className="dm-excel-file-name">{excelData.fileName}</span>
+                          <span className="dm-excel-file-stat">
+                            {excelData.columns.length}열 · {excelData.rows.length}행
+                          </span>
+                        </div>
+                        <button
+                          className="btn ghost icon dm-item-del"
+                          style={{ width: 22, height: 22, marginLeft: 'auto' }}
+                          onClick={() => setExcelData(null)}
+                          title="제거"
+                        >
+                          <IcoX size={11} />
+                        </button>
+                      </div>
+                      {excelData.columns.length > 0 && (
+                        <div className="dm-excel-cols">
+                          {excelData.columns.map(col => (
+                            <span key={col} className="dm-excel-col-chip">{col}</span>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+                  ) : (
+                    <div
+                      className={`dm-upload-zone${dragOver ? ' dm-upload-zone-over' : ''}`}
+                      onClick={() => fileInputRef.current?.click()}
+                      onDragOver={e => { e.preventDefault(); setDragOver(true) }}
+                      onDragLeave={() => setDragOver(false)}
+                      onDrop={handleDrop}
+                    >
+                      <div className="dm-upload-icon"><UploadIcon /></div>
+                      <span className="dm-upload-text">클릭하거나 파일을 드래그하세요</span>
+                      <span className="dm-upload-hint">.xlsx · .xls · .csv</span>
+                    </div>
+                  )}
+                </div>
+
+                {/* Manual items (visible when no Excel) */}
+                {!excelData && (
+                  <div className="dm-field dm-field-grow">
+                    <div className="dm-field-hd">
+                      <label className="dm-field-label">데이터 항목 ({items.length}개)</label>
+                      <button className="btn ghost icon" style={{ width: 20, height: 20 }} onClick={addItem} title="항목 추가">
+                        <IcoPlus size={11} />
+                      </button>
+                    </div>
+                    <div className="dm-items-list">
+                      {items.length === 0 && <div className="dm-empty-hint">+ 버튼으로 항목을 추가하세요</div>}
+                      {items.map((item, idx) => (
+                        <div key={item.id} className="dm-item-row">
+                          <span className="dm-item-idx">{idx + 1}</span>
+                          <input className="dm-input" value={item.value} onChange={e => updateItem(item.id, e.target.value)} placeholder={`항목 ${idx + 1}`} />
+                          <button className="btn ghost icon dm-item-del" style={{ width: 22, height: 22 }} onClick={() => removeItem(item.id)} title="삭제">
+                            <IcoTrash size={11} />
+                          </button>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
+
+              </div>
+            </div>
+
+            <div className="dm-splitter" onMouseDown={e => onSplitterDown('right', e)} />
+
+            {/* OUTPUT pane */}
+            <div className="dm-pane" style={{ width: rightW, flexShrink: 0 }}>
+              <div className="dm-pane-hd">
+                <span className="dm-pane-label dm-pane-label-output">OUTPUT</span>
+                <div className="dm-pane-hd-actions">
+                  <span className="dm-pane-type">JSON</span>
+                  <button
+                    className="btn ghost icon dm-format-btn"
+                    onClick={() => {/* OUTPUT is auto-generated, always formatted */}}
+                    title="JSON 정렬"
+                  >
+                    <FormatIcon />
+                  </button>
+                </div>
+              </div>
+              <div className="dm-pane-body">
+                <textarea
+                  className="dm-json-area dm-json-area-output"
+                  value={outputJson}
+                  readOnly
+                  spellCheck={false}
+                />
+              </div>
+            </div>
+
+          </div>
+
+          {/* Footer */}
+          <div className="dm-ft">
+            {onDelete && !confirmDelete && (
+              <button
+                className="btn ghost dm-delete-btn"
+                onClick={() => setConfirmDelete(true)}
+                title="모듈 삭제"
+              >
+                <IcoTrash size={13} />
+                삭제
+              </button>
+            )}
+            {confirmDelete && (
+              <>
+                <span className="dm-delete-warn">⚠ 이 모듈과 캔버스 노드가 모두 삭제됩니다.</span>
+                <button className="btn ghost" onClick={() => setConfirmDelete(false)}>취소</button>
+                <button
+                  className="btn dm-delete-confirm-btn"
+                  onClick={async () => { await onDelete!(); onClose() }}
+                >
+                  삭제 확인
+                </button>
+              </>
+            )}
+            {!confirmDelete && (
+              <>
+                <button
+                  className="btn ghost"
+                  onClick={isNew && onDelete ? async () => { await onDelete(); onClose() } : onClose}
+                >
+                  취소
+                </button>
+                <button className="btn primary" onClick={handleSave} disabled={saving}>{saving ? '저장 중…' : '저장'}</button>
+              </>
+            )}
+          </div>
+
+        </div>
+      </div>
+    </div>
+  )
+}

@@ -44,7 +44,7 @@ export default function ProjectSection({ projects, activeProjectId, onSelect, on
             projects.map(proj => (
               <div
                 key={proj.id}
-                className={`env-item${activeProjectId === proj.id ? ' env-item-active' : ''}`}
+                className={`env-item${activeProjectId === proj.id ? ' env-item-active proj-item-active' : ''}`}
                 onClick={() => onSelect(proj.id)}
                 title={proj.description || undefined}
               >

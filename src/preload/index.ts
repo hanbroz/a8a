@@ -20,15 +20,22 @@ const api = {
     delete: (id: string): Promise<void> => ipcRenderer.invoke('proj:delete', id)
   },
   module: {
-    list: (): Promise<{ id: string; name: string }[]> => ipcRenderer.invoke('mod:list'),
-    create: (name: string): Promise<{ id: string; name: string }> => ipcRenderer.invoke('mod:create', name),
-    rename: (id: string, name: string): Promise<void> => ipcRenderer.invoke('mod:rename', id, name),
+    list: (workspaceId: string): Promise<ApiModule[]> => ipcRenderer.invoke('mod:list', workspaceId),
+    listAll: (): Promise<ApiModule[]> => ipcRenderer.invoke('mod:list-all'),
+    createCommon: (type: string, label: string, config: string): Promise<ApiModule> => ipcRenderer.invoke('mod:create-common', type, label, config),
+    create: (workspaceId: string, type: string, label: string, config: string): Promise<ApiModule> => ipcRenderer.invoke('mod:create', workspaceId, type, label, config),
+    update: (id: string, label: string, config: string): Promise<void> => ipcRenderer.invoke('mod:update', id, label, config),
+    setCommon: (id: string, isCommon: boolean, workspaceId: string): Promise<void> => ipcRenderer.invoke('mod:set-common', id, isCommon, workspaceId),
     delete: (id: string): Promise<void> => ipcRenderer.invoke('mod:delete', id)
   },
   node: {
-    list: (projectId: string): Promise<{ id: string; projectId: string; type: string; label: string; x: number; y: number }[]> => ipcRenderer.invoke('node:list', projectId),
+    list: (projectId: string): Promise<ApiNode[]> => ipcRenderer.invoke('node:list', projectId),
+    create: (projectId: string, type: string, label: string, x: number, y: number): Promise<ApiNode> => ipcRenderer.invoke('node:create', projectId, type, label, x, y),
+    createFromModule: (projectId: string, moduleId: string, x: number, y: number): Promise<ApiNode> => ipcRenderer.invoke('node:create-from-module', projectId, moduleId, x, y),
     updatePosition: (id: string, x: number, y: number): Promise<void> => ipcRenderer.invoke('node:update-position', id, x, y),
-    updateConfig: (id: string, config: string): Promise<void> => ipcRenderer.invoke('node:update-config', id, config)
+    updateLabel: (id: string, label: string): Promise<void> => ipcRenderer.invoke('node:update-label', id, label),
+    updateConfig: (id: string, config: string): Promise<void> => ipcRenderer.invoke('node:update-config', id, config),
+    delete: (id: string): Promise<void> => ipcRenderer.invoke('node:delete', id)
   },
   edge: {
     list: (projectId: string): Promise<{ id: string; projectId: string; sourceNodeId: string; targetNodeId: string }[]> => ipcRenderer.invoke('edge:list', projectId),

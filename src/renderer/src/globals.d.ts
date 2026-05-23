@@ -28,7 +28,27 @@ interface ApiProject {
 
 interface ApiModule {
   id: string
-  name: string
+  workspaceId: string | null
+  type: string
+  label: string
+  config: string
+  isCommon: boolean
+}
+
+interface DataItem {
+  id: string
+  value: string
+}
+
+interface ExcelData {
+  fileName: string
+  columns: string[]
+  rows: Record<string, unknown>[]
+}
+
+interface DataConfig {
+  items: DataItem[]
+  excelData?: ExcelData | null
 }
 
 interface StartSchedule {
@@ -47,11 +67,12 @@ interface StartConfig {
 interface ApiNode {
   id: string
   projectId: string
-  type: 'start' | 'end'
+  type: 'start' | 'end' | 'data'
   label: string
   x: number
   y: number
   config: string
+  moduleId?: string | null
 }
 
 interface ApiEdge {
@@ -80,15 +101,22 @@ interface AppApi {
     delete: (id: string) => Promise<void>
   }
   module: {
-    list: () => Promise<ApiModule[]>
-    create: (name: string) => Promise<ApiModule>
-    rename: (id: string, name: string) => Promise<void>
+    list: (workspaceId: string) => Promise<ApiModule[]>
+    listAll: () => Promise<ApiModule[]>
+    createCommon: (type: string, label: string, config: string) => Promise<ApiModule>
+    create: (workspaceId: string, type: string, label: string, config: string) => Promise<ApiModule>
+    update: (id: string, label: string, config: string) => Promise<void>
+    setCommon: (id: string, isCommon: boolean, workspaceId: string) => Promise<void>
     delete: (id: string) => Promise<void>
   }
   node: {
     list: (projectId: string) => Promise<ApiNode[]>
+    create: (projectId: string, type: string, label: string, x: number, y: number) => Promise<ApiNode>
+    createFromModule: (projectId: string, moduleId: string, x: number, y: number) => Promise<ApiNode>
     updatePosition: (id: string, x: number, y: number) => Promise<void>
+    updateLabel: (id: string, label: string) => Promise<void>
     updateConfig: (id: string, config: string) => Promise<void>
+    delete: (id: string) => Promise<void>
   }
   edge: {
     list: (projectId: string) => Promise<ApiEdge[]>
