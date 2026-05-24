@@ -7,6 +7,7 @@ interface Props {
   title?: string
   modules: ApiModule[]
   onAdd: (type: string) => void
+  onEdit: (module: ApiModule) => void
   onSetCommon: (id: string, isCommon: boolean) => void
   onDelete: (id: string) => void
 }
@@ -14,8 +15,8 @@ interface Props {
 // ── Type config ───────────────────────────────────
 const MODULE_TYPES = [
   { type: 'data',   label: 'DATA',   color: '#1f6feb', bg: 'rgba(31,111,235,0.14)',  soon: false },
-  { type: 'select', label: 'SELECT', color: '#8957e5', bg: 'rgba(137,87,229,0.14)', soon: true  },
-  { type: 'api',    label: 'API',    color: '#3fb950', bg: 'rgba(63,185,80,0.14)',   soon: true  },
+  { type: 'select', label: 'SELECT', color: '#8957e5', bg: 'rgba(137,87,229,0.14)', soon: false },
+  { type: 'api',    label: 'API',    color: '#3fb950', bg: 'rgba(63,185,80,0.14)',   soon: false },
 ]
 
 function getTypeConfig(type: string) {
@@ -105,7 +106,7 @@ function TypeMenu({ onSelect, onClose }: { onSelect: (type: string) => void; onC
 }
 
 // ── Main component ────────────────────────────────
-export default function ModuleSection({ stateKey, title = 'Module', modules, onAdd, onSetCommon, onDelete }: Props): JSX.Element {
+export default function ModuleSection({ stateKey, title = 'Module', modules, onAdd, onEdit, onSetCommon, onDelete }: Props): JSX.Element {
   const [open, toggleOpen] = useSidebarOpen(stateKey ?? 'module')
   const [showMenu, setShowMenu] = useState(false)
   const addBtnRef = useRef<HTMLButtonElement>(null)
@@ -154,7 +155,12 @@ export default function ModuleSection({ stateKey, title = 'Module', modules, onA
                   key={mod.id}
                   className="module-item"
                   draggable
-                  onDragStart={e => e.dataTransfer.setData('moduleId', mod.id)}
+                  onDragStart={e => {
+                    e.dataTransfer.setData('moduleId', mod.id)
+                    e.dataTransfer.setData('moduleWsId', mod.workspaceId ?? '')
+                  }}
+                  onDoubleClick={() => onEdit(mod)}
+                  title="더블클릭하여 편집"
                 >
                   <div className="module-item-icon" style={{ background: cfg.bg, color: cfg.color }}>
                     <TypeIcon type={mod.type} />

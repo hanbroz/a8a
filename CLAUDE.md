@@ -1,0 +1,137 @@
+# a8a — API Workflow 프로젝트 가이드
+
+## 프로젝트 개요
+
+Electron 기반 API 워크플로우 자동화 도구. 사이드바에서 워크스페이스/프로젝트/모듈을 관리하고, 캔버스에서 노드를 연결하여 데이터 처리 파이프라인을 구성한다.
+
+## 개발 환경
+
+```bash
+npm run dev      # 개발 서버 실행
+npm run build    # 빌드
+./run.sh         # 백그라운드 실행 (변경사항 확인 시 사용)
+```
+
+> 코드 수정 후에는 기존 앱을 종료하고 `./run.sh`로 재시작하여 변경사항을 확인한다.
+
+## 아키텍처
+
+```
+src/
+├── main/               # Electron 메인 프로세스
+│   └── ipc.ts          # IPC 핸들러 (DB 연동)
+├── preload/
+│   └── index.ts        # window.api 브리지
+└── renderer/src/
+    ├── App.tsx          # 루트 컴포넌트 (전역 상태 관리)
+    ├── globals.d.ts     # 전역 타입 정의 (ApiNode, ApiModule 등)
+    ├── components/
+    │   ├── canvas/      # 워크플로우 캔버스 컴포넌트
+    │   └── sidebar/     # 사이드바 컴포넌트
+    └── styles/          # CSS 스타일
+```
+
+## 핵심 데이터 모델
+
+### 워크스페이스 계층 구조
+```
+Workspace
+├── Environment (BASE 포함 여러 환경)
+└── Project
+    └── Node (start / end / data / select / api)
+        └── Edge (노드 간 연결)
+```
+
+### 모듈 (Module)
+- `workspaceId: string | null` — null이면 공통 모듈, 아니면 워크스페이스 소속
+- `isCommon: boolean` — 공통 모듈 여부
+- 모듈은 재사용 가능한 기능 단위. 프로젝트 캔버스에 인스턴스(노드)로 배치된다.
+
+### 노드 (ApiNode)
+- `moduleId?: string | null` — 모듈 연결 노드면 moduleId 존재, 독립 노드면 null/undefined
+
+## 중요 설계 규칙
+
+### 1. Topbar 브레드크럼은 열린 프로젝트 기준
+캔버스 상단 `환경 | 워크스페이스 > 프로젝트`는 **사이드바에서 현재 선택된 워크스페이스가 아닌**, 현재 열려있는 프로젝트가 속한 워크스페이스/환경을 표시해야 한다.
+
+```ts
+// App.tsx — 사이드바 선택(activeWsId)과 분리된 파생값
+const activeProjectWs = workspaces.find(w => w.projects.some(p => p.id === activeProjectId))
+const activeProjectEnv = activeProjectWs?.environments.find(e => e.id === activeProjectWs.activeEnvId)
+```
+
+### 2. 모듈 드롭 제한 — 워크스페이스 단위 격리
+워크스페이스 소속 모듈은 **해당 워크스페이스의 프로젝트 캔버스에만** 드롭 가능하다. 공통 모듈(`workspaceId === null`)은 모든 워크스페이스에서 사용 가능.
+
+두 단계 가드를 통해 강제한다:
+
+**1단계 — ModuleSection (드래그 시작):**
+```ts
+onDragStart={e => {
+  e.dataTransfer.setData('moduleId', mod.id)
+  e.dataTransfer.setData('moduleWsId', mod.workspaceId ?? '') // 공통이면 ''
+}}
+```
+
+**2단계 — WorkflowCanvas (드롭 시):**
+```ts
+const moduleWsId = e.dataTransfer.getData('moduleWsId')
+if (moduleWsId && activeProjectWsId && moduleWsId !== activeProjectWsId) return
+```
+
+**3단계 — App.tsx handleModuleDrop (서버 호출 전 최종 가드):**
+```ts
+if (mod.workspaceId !== null) {
+  const projectWsId = workspaces.find(w => w.projects.some(p => p.id === activeProject.id))?.id
+  if (mod.workspaceId !== projectWsId) return
+}
+```
+
+### 3. 캔버스에서 노드 삭제 = 인스턴스만 제거
+프로젝트 캔버스에서 모듈 연결 노드를 삭제할 때 **모듈 자체는 삭제하지 않는다**. 사이드바 모듈 목록에서 계속 재사용 가능해야 한다.
+
+```ts
+// 항상 노드 인스턴스만 삭제 (moduleId 유무 무관)
+await window.api.node.delete(editingNode.id)
+setActiveNodes(prev => prev.filter(n => n.id !== editingNode.id))
+setActiveEdges(prev => prev.filter(e => e.sourceNodeId !== editingNode.id && e.targetNodeId !== editingNode.id))
+```
+
+모달의 삭제 경고 문구도 이를 반영:
+```tsx
+⚠ {node.moduleId ? '캔버스에서 노드만 제거됩니다. 모듈은 유지됩니다.' : '이 노드가 삭제됩니다.'}
+```
+
+**사이드바 모듈 삭제 버튼**(`handleDeleteModule`)은 별도 동작 — 모듈과 연결된 모든 노드를 일괄 삭제한다.
+
+### 4. Select 요소 패딩 규칙
+모든 `<select>` 요소는 `padding-right: 32px` 이상 확보한다 (드롭다운 화살표가 텍스트와 겹치지 않도록).
+
+## 노드 타입별 색상 체계
+
+| 타입 | 색상 | 용도 |
+|------|------|------|
+| data | `#1f6feb` (파랑) | 데이터 소스 (수동 입력 / Excel) |
+| select | `#8957e5` (보라) | 행 선택 필터 |
+| api | `#3fb950` (초록) | HTTP API 호출 |
+| start | 초록 테두리 | 워크플로우 시작점 |
+| end | 회색 | 워크플로우 끝점 |
+
+## window.api 인터페이스 요약
+
+```ts
+window.api.workspace.{ list, create, update, delete }
+window.api.environment.{ list, upsert, delete }
+window.api.project.{ list, create, update, delete }
+window.api.module.{ list, listAll, create, createCommon, update, setCommon, delete }
+window.api.node.{ list, create, createFromModule, updatePosition, updateLabel, updateConfig, delete }
+window.api.edge.{ list, create, delete }
+window.api.http.fetch(url, { method, headers, body? })
+```
+
+## 알려진 주의사항
+
+- 기존에 전역 타입(`ApiNode`, `JSX` 등)을 ambient declaration으로 사용 중 — tsc 구성 이슈는 코드 변경과 무관한 사전 존재 문제
+- `handleModuleDrop`의 `mod.workspaceId !== null` 체크는 strict equality. 백엔드가 `undefined`를 반환하는 경우는 현재 없으나, 필요 시 `!= null`로 변경 가능
+- 모듈 드롭 거부 시 사용자에게 시각적 피드백 없음 (추후 개선 권고)

@@ -6,6 +6,8 @@ import { randomId } from '../../utils/id'
 interface Props {
   node: ApiNode
   isNew?: boolean
+  initialInput?: string
+  onRun?: () => string
   onSave: (nodeId: string, label: string, config: string) => Promise<void>
   onDelete?: () => Promise<void>
   onClose: () => void
@@ -45,6 +47,14 @@ function FormatIcon(): JSX.Element {
       <polyline points="4 7 4 4 20 4 20 7" />
       <line x1="9" y1="20" x2="15" y2="20" />
       <line x1="12" y1="4" x2="12" y2="20" />
+    </svg>
+  )
+}
+
+function RunIcon(): JSX.Element {
+  return (
+    <svg width="10" height="10" viewBox="0 0 10 10" fill="currentColor">
+      <polygon points="2,1 9,5 2,9" />
     </svg>
   )
 }
@@ -89,7 +99,7 @@ function formatJson(raw: string): { value: string; error: boolean } {
   }
 }
 
-export default function DataNodeModal({ node, isNew, onSave, onDelete, onClose }: Props): JSX.Element {
+export default function DataNodeModal({ node, isNew, initialInput, onRun, onSave, onDelete, onClose }: Props): JSX.Element {
   const initial = parseConfig(node.config)
   const [label, setLabel] = useState(node.label)
   const [items, setItems] = useState<DataItem[]>(initial.items)
@@ -98,7 +108,7 @@ export default function DataNodeModal({ node, isNew, onSave, onDelete, onClose }
   const [dragOver, setDragOver] = useState(false)
   const [confirmDelete, setConfirmDelete] = useState(false)
 
-  const [inputJson, setInputJson] = useState('')
+  const [inputJson, setInputJson] = useState(initialInput ?? '')
   const [inputError, setInputError] = useState(false)
 
   const fileInputRef = useRef<HTMLInputElement>(null)
@@ -152,7 +162,7 @@ export default function DataNodeModal({ node, isNew, onSave, onDelete, onClose }
           if (dir.includes('s')) h = Math.max(MIN_H, rh + dy)
           if (dir.includes('w')) { w = Math.max(MIN_W, rw - dx); x = rx + rw - w }
           if (dir.includes('n')) { h = Math.max(MIN_H, rh - dy); y = ry + rh - h }
-          return { x, y, w, h }
+          return { x: Math.max(0, x), y: Math.max(0, y), w, h }
         })
       }
       if (splitterRef.current) {
@@ -253,6 +263,15 @@ export default function DataNodeModal({ node, isNew, onSave, onDelete, onClose }
                 <div className="dm-pane-hd-actions">
                   {inputError && <span className="dm-json-err-badge">Invalid JSON</span>}
                   <span className="dm-pane-type">JSON</span>
+                  {onRun && (
+                    <button
+                      className="btn ghost icon dm-format-btn dm-run-btn"
+                      onClick={() => { setInputJson(onRun()); setInputError(false) }}
+                      title="실행 — 연결된 상류 노드 데이터 가져오기"
+                    >
+                      <RunIcon />
+                    </button>
+                  )}
                   <button className="btn ghost icon dm-format-btn" onClick={handleFormatInput} title="JSON 정렬">
                     <FormatIcon />
                   </button>
@@ -398,7 +417,7 @@ export default function DataNodeModal({ node, isNew, onSave, onDelete, onClose }
             )}
             {confirmDelete && (
               <>
-                <span className="dm-delete-warn">⚠ 이 모듈과 캔버스 노드가 모두 삭제됩니다.</span>
+                <span className="dm-delete-warn">⚠ {node.moduleId ? '캔버스에서 노드만 제거됩니다. 모듈은 유지됩니다.' : '이 노드가 삭제됩니다.'}</span>
                 <button className="btn ghost" onClick={() => setConfirmDelete(false)}>취소</button>
                 <button
                   className="btn dm-delete-confirm-btn"

@@ -1,5 +1,6 @@
 import { useState, useEffect, useRef, useCallback } from 'react'
-import { IcoPanelL, IcoPlay, IcoSave, IcoSun, IcoMoon, IcoPanelB, IcoChevD } from './components/Icon'
+import { mergeEnvVars, resolveTemplate } from './utils/interpolate'
+import { IcoPanelL, IcoPlay, IcoReset, IcoSave, IcoSun, IcoMoon, IcoPanelB, IcoChevD } from './components/Icon'
 import WorkspaceHeader from './components/sidebar/WorkspaceHeader'
 import ModuleSection from './components/sidebar/ModuleSection'
 import ProjectSection from './components/sidebar/ProjectSection'
@@ -11,9 +12,194 @@ import ConfirmDialog from './components/ConfirmDialog'
 import WorkflowCanvas from './components/canvas/WorkflowCanvas'
 import StartNodeModal from './components/canvas/StartNodeModal'
 import DataNodeModal from './components/canvas/DataNodeModal'
+import SelectNodeModal from './components/canvas/SelectNodeModal'
+import ApiNodeModal from './components/canvas/ApiNodeModal'
+import SelectionPopup from './components/canvas/SelectionPopup'
 import type { Environment } from './components/env/EnvSection'
 import type { ProjectItem } from './components/sidebar/ProjectModal'
 import type { WorkspaceModalItem } from './components/sidebar/WorkspaceModal'
+
+// ── Log entry row component ───────────────────────────
+type ApiLogDetail = {
+  method: string
+  url: string
+  headers: Record<string, string>
+  body?: string
+  statusCode?: number
+  statusText?: string
+  responseText?: string
+}
+
+type LogEntry = {
+  id: string; nodeId: string; label: string; type: string
+  status: 'running' | 'success' | 'error' | 'skip'
+  input: unknown; output?: unknown; error?: string
+  startedAt: number; duration?: number
+  apiDetail?: ApiLogDetail
+}
+
+const NODE_TYPE_COLORS: Record<string, { color: string; bg: string; label: string }> = {
+  data:   { color: '#1f6feb', bg: 'rgba(31,111,235,0.15)',  label: 'DATA' },
+  select: { color: '#8957e5', bg: 'rgba(137,87,229,0.15)', label: 'SELECT' },
+  api:    { color: '#3fb950', bg: 'rgba(63,185,80,0.15)',   label: 'API' },
+}
+
+function statusCodeColor(code: number): string {
+  if (code >= 200 && code < 300) return '#3fb950'
+  if (code >= 300 && code < 400) return '#d29922'
+  if (code >= 400) return '#f85149'
+  return '#8b949e'
+}
+
+interface CanvasExecution {
+  nodeOutputs: Record<string, unknown>
+  plan: string[]
+  step: number
+  pendingSelectInput: unknown[] | null
+  pendingLogEntryId?: string | null
+}
+
+function LogEntryRow({ entry, isActive }: { entry: LogEntry; isActive?: boolean }): JSX.Element {
+  const [open, setOpen] = useState(false)
+  const cfg = NODE_TYPE_COLORS[entry.type] ?? { color: '#8b949e', bg: 'rgba(139,148,158,0.15)', label: entry.type.toUpperCase() }
+  const statusColor = entry.status === 'success' ? '#3fb950' : entry.status === 'error' ? '#f85149' : entry.status === 'skip' ? '#8b949e' : '#d29922'
+  const api = entry.apiDetail
+
+  useEffect(() => {
+    if (isActive) setOpen(true)
+  }, [isActive])
+
+  const activeColor = entry.status === 'success' ? '#3fb950'
+    : entry.status === 'error' ? '#f85149'
+    : '#2f81f7'
+
+  return (
+    <div
+      className={`log-entry${open ? ' log-entry-open' : ''}`}
+      style={isActive ? { borderLeft: `2px solid ${activeColor}`, paddingLeft: 10 } : undefined}
+      onClick={() => setOpen(v => !v)}
+      id={`log-entry-${entry.nodeId}`}
+    >
+      <div className="log-entry-row">
+        <span className="log-entry-type-badge" style={{ background: cfg.bg, color: cfg.color }}>{cfg.label}</span>
+        {api && (
+          <span className="log-entry-method-badge" style={{ color: cfg.color }}>{api.method}</span>
+        )}
+        <span className="log-entry-label">{api ? api.url : entry.label}</span>
+        {api?.statusCode !== undefined && (
+          <span className="log-entry-status-code" style={{ color: statusCodeColor(api.statusCode) }}>
+            {api.statusCode} {api.statusText}
+          </span>
+        )}
+        <span className="log-entry-status" style={{ color: statusColor }}>
+          {entry.status === 'running' ? '실행 중…' : entry.status === 'success' ? '완료' : entry.status === 'error' ? '오류' : '건너뜀'}
+        </span>
+        {entry.duration !== undefined && (
+          <span className="log-entry-dur">{entry.duration < 1000 ? `${entry.duration}ms` : `${(entry.duration / 1000).toFixed(1)}s`}</span>
+        )}
+        <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round"
+          style={{ transform: open ? 'rotate(180deg)' : 'none', transition: 'transform 0.15s', flexShrink: 0, color: 'var(--text-4)' }}>
+          <polyline points="6 9 12 15 18 9" />
+        </svg>
+      </div>
+
+      {open && (
+        <div className="log-entry-detail" onClick={e => e.stopPropagation()}>
+          {entry.error && <div className="log-entry-error">{entry.error}</div>}
+
+          {api ? (
+            <div className="log-api-detail">
+              {/* REQUEST */}
+              <div className="log-api-section">
+                <div className="log-api-section-title">REQUEST</div>
+                <div className="log-api-url-line">
+                  <span className="log-api-method" style={{ color: cfg.color }}>{api.method}</span>
+                  <span className="log-api-url">{api.url}</span>
+                </div>
+                {Object.keys(api.headers).length > 0 && (
+                  <div className="log-api-block">
+                    <div className="log-entry-io-label">HEADERS</div>
+                    <div className="log-api-kv-list">
+                      {Object.entries(api.headers).map(([k, v]) => (
+                        <div key={k} className="log-api-kv">
+                          <span className="log-api-kv-key">{k}</span>
+                          <span className="log-api-kv-val">{v}</span>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
+                {api.body && (
+                  <div className="log-api-block">
+                    <div className="log-entry-io-label">BODY</div>
+                    <pre className="log-entry-pre">{(() => { try { return JSON.stringify(JSON.parse(api.body), null, 2) } catch { return api.body } })()}</pre>
+                  </div>
+                )}
+              </div>
+
+              {/* RESPONSE */}
+              {api.statusCode !== undefined && (
+                <div className="log-api-section">
+                  <div className="log-api-section-title">RESPONSE</div>
+                  <div className="log-api-status-line">
+                    <span className="log-api-status-code" style={{ color: statusCodeColor(api.statusCode) }}>{api.statusCode}</span>
+                    <span className="log-api-status-text">{api.statusText}</span>
+                  </div>
+                  {api.responseText && (
+                    <div className="log-api-block">
+                      <div className="log-entry-io-label">BODY</div>
+                      <pre className="log-entry-pre">{(() => { try { return JSON.stringify(JSON.parse(api.responseText), null, 2) } catch { return api.responseText } })()}</pre>
+                    </div>
+                  )}
+                </div>
+              )}
+            </div>
+          ) : (
+            <div className="log-entry-io">
+              <div className="log-entry-io-col">
+                <div className="log-entry-io-label">INPUT</div>
+                <pre className="log-entry-pre">{entry.input === null || entry.input === undefined ? 'null' : JSON.stringify(entry.input, null, 2)}</pre>
+              </div>
+              {entry.output !== undefined && (
+                <div className="log-entry-io-col">
+                  <div className="log-entry-io-label">OUTPUT</div>
+                  <pre className="log-entry-pre">{JSON.stringify(entry.output, null, 2)}</pre>
+                </div>
+              )}
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  )
+}
+
+function executeNodeOutput(nodeId: string, nodes: ApiNode[], edges: ApiEdge[]): string {
+  const node = nodes.find(n => n.id === nodeId)
+  if (!node) return '[]'
+  const inEdge = edges.find(e => e.targetNodeId === nodeId)
+  const upstreamJson = inEdge ? executeNodeOutput(inEdge.sourceNodeId, nodes, edges) : '[]'
+  if (node.type === 'data') {
+    try {
+      const cfg = JSON.parse(node.config || '{}') as DataConfig
+      if (cfg.excelData?.rows?.length) return JSON.stringify(cfg.excelData.rows, null, 2)
+      return JSON.stringify((cfg.items ?? []).map(i => i.value).filter(Boolean), null, 2)
+    } catch { return '[]' }
+  }
+  if (node.type === 'select') {
+    try {
+      const cfg = JSON.parse(node.config || '{}') as SelectConfig
+      const input = JSON.parse(upstreamJson) as unknown[]
+      if (!Array.isArray(input) || input.length === 0 || cfg.selectedRowIndices.length === 0) return upstreamJson
+      const filtered = cfg.selectedRowIndices.map(i => input[i]).filter(Boolean)
+      return JSON.stringify(filtered[0] ?? null, null, 2)
+    } catch { return upstreamJson }
+  }
+  if (node.type === 'api') {
+    return upstreamJson
+  }
+  return upstreamJson
+}
 
 type Theme = 'dark' | 'light'
 type SidebarLayout = 'full' | 'icons'
@@ -53,6 +239,9 @@ export default function App(): JSX.Element {
   const [confirmDeleteEdge, setConfirmDeleteEdge] = useState<ApiEdge | null>(null)
   const [editingNode, setEditingNode] = useState<ApiNode | null>(null)
   const [newModuleCtx, setNewModuleCtx] = useState<{ wsId: string | null; type: string } | null>(null)
+  const [editingModule, setEditingModule] = useState<ApiModule | null>(null)
+  const [nodeRunInputs, setNodeRunInputs] = useState<Record<string, string>>({})
+  const [nodeRunOutputs, setNodeRunOutputs] = useState<Record<string, string>>({})
   const [allModules, setAllModules] = useState<ApiModule[]>([])
 
   const [envDropdownOpen, setEnvDropdownOpen] = useState(false)
@@ -69,6 +258,12 @@ export default function App(): JSX.Element {
   const [confirmDeleteEnv, setConfirmDeleteEnv] = useState<{ wsId: string; env: Environment } | null>(null)
   const [iconTooltip, setIconTooltip] = useState<{ text: string; x: number; y: number } | null>(null)
 
+  // ── Canvas execution ──
+  const [canvasExecution, setCanvasExecution] = useState<CanvasExecution | null>(null)
+  const [execLogs, setExecLogs] = useState<LogEntry[]>([])
+  const [nodeStatuses, setNodeStatuses] = useState<Record<string, 'running' | 'success' | 'error'>>({})
+  const [activeLogNodeId, setActiveLogNodeId] = useState<string | null>(null)
+
   // ── Load from DB on mount ──
   useEffect(() => {
     async function init(): Promise<void> {
@@ -81,12 +276,14 @@ export default function App(): JSX.Element {
               window.api.project.list(ws.id)
             ])
             const baseEnv = envs.find(e => e.isBase)
+            const savedEnvId = localStorage.getItem(`ws_active_env_${ws.id}`)
+            const savedEnv = savedEnvId ? envs.find(e => e.id === savedEnvId) : null
             return {
               id: ws.id,
               name: ws.name,
               description: ws.description ?? '',
               environments: envs as Environment[],
-              activeEnvId: baseEnv?.id ?? envs[0]?.id ?? '',
+              activeEnvId: savedEnv?.id ?? baseEnv?.id ?? envs[0]?.id ?? '',
               projects: projects as ProjectItem[]
             }
           })
@@ -143,6 +340,9 @@ export default function App(): JSX.Element {
   const isFull = sidebarLayout === 'full'
   const activeWs = workspaces.find(w => w.id === activeWsId)
   const activeProject = workspaces.flatMap(w => w.projects).find(p => p.id === activeProjectId)
+  // topbar는 현재 열린 프로젝트의 워크스페이스/환경을 표시 (사이드바 선택과 무관)
+  const activeProjectWs = workspaces.find(w => w.projects.some(p => p.id === activeProjectId))
+  const activeProjectEnv = activeProjectWs?.environments.find(e => e.id === activeProjectWs.activeEnvId)
   const activeEnv = activeWs?.environments.find(e => e.id === activeWs.activeEnvId)
 
   useEffect(() => {
@@ -205,12 +405,26 @@ export default function App(): JSX.Element {
 
   const handleModuleDrop = useCallback(async (moduleId: string, x: number, y: number): Promise<void> => {
     if (!activeProject) return
+    const mod = allModules.find(m => m.id === moduleId)
+    if (!mod) return
+    // 공통 모듈이 아닌 경우, 현재 프로젝트의 워크스페이스 소속 모듈만 허용
+    if (mod.workspaceId !== null) {
+      const projectWsId = workspaces.find(w => w.projects.some(p => p.id === activeProject.id))?.id
+      if (mod.workspaceId !== projectWsId) return
+    }
     const node = await window.api.node.createFromModule(activeProject.id, moduleId, x, y)
     setActiveNodes(prev => [...prev, node])
-  }, [activeProject?.id])
+  }, [activeProject?.id, allModules, workspaces])
 
   const handleModuleUpdate = useCallback(async (moduleId: string, label: string, config: string): Promise<void> => {
     await window.api.module.update(moduleId, label, config)
+    const linkedNodes = activeNodes.filter(n => n.moduleId === moduleId)
+    if (linkedNodes.length > 0) {
+      await Promise.all(linkedNodes.flatMap(n => [
+        window.api.node.updateLabel(n.id, label),
+        window.api.node.updateConfig(n.id, config),
+      ]))
+    }
     const [mods, nodes] = await Promise.all([
       window.api.module.listAll(),
       activeProject ? window.api.node.list(activeProject.id) : Promise.resolve(activeNodes)
@@ -246,10 +460,250 @@ export default function App(): JSX.Element {
     setConfirmDeleteEdge(null)
   }
 
+  const handleNodeRun = useCallback((nodeId: string) => {
+    const inEdge = activeEdges.find(e => e.targetNodeId === nodeId)
+    const inputJson = inEdge ? executeNodeOutput(inEdge.sourceNodeId, activeNodes, activeEdges) : ''
+    setNodeRunInputs(prev => ({ ...prev, [nodeId]: inputJson }))
+    const node = activeNodes.find(n => n.id === nodeId)
+    if (node) setEditingNode(node)
+  }, [activeNodes, activeEdges])
+
+  const handleEdgeReconnect = useCallback(async (edgeId: string, newSourceId: string, newTargetId: string): Promise<void> => {
+    if (!activeProject) return
+    const alreadyExists = activeEdges.some(e => e.sourceNodeId === newSourceId && e.targetNodeId === newTargetId && e.id !== edgeId)
+    await window.api.edge.delete(edgeId)
+    if (!alreadyExists) {
+      const newEdge = await window.api.edge.create(activeProject.id, newSourceId, newTargetId)
+      setActiveEdges(prev => [...prev.filter(e => e.id !== edgeId), newEdge])
+    } else {
+      setActiveEdges(prev => prev.filter(e => e.id !== edgeId))
+    }
+  }, [activeProject?.id, activeEdges])
+
+  function buildExecutionPlan(nodes: ApiNode[], edges: ApiEdge[]): string[] {
+    const start = nodes.find(n => n.type === 'start')
+    if (!start) return []
+    const plan: string[] = []
+    const visited = new Set<string>()
+    const queue = [start.id]
+    while (queue.length > 0) {
+      const id = queue.shift()!
+      if (visited.has(id)) continue
+      visited.add(id)
+      plan.push(id)
+      const outEdges = edges.filter(e => e.sourceNodeId === id)
+      outEdges.forEach(e => queue.push(e.targetNodeId))
+    }
+    return plan
+  }
+
+  const advanceExecution = useCallback(async (exec: CanvasExecution, selectedRows?: unknown[]) => {
+    const nodeOutputs = { ...exec.nodeOutputs }
+    let { step, plan } = exec
+
+    if (selectedRows !== undefined && step > 0) {
+      const prevNodeId = plan[step - 1]
+      nodeOutputs[prevNodeId] = selectedRows[0] ?? null
+      setNodeRunOutputs(prev => ({ ...prev, [prevNodeId]: JSON.stringify(selectedRows[0] ?? null, null, 2) }))
+      if (exec.pendingLogEntryId) {
+        const sel = selectedRows[0] ?? null
+        setExecLogs(prev => prev.map(e =>
+          e.id === exec.pendingLogEntryId
+            ? { ...e, status: 'success', output: sel, duration: Date.now() - e.startedAt }
+            : e
+        ))
+        setNodeStatuses(prev => ({ ...prev, [prevNodeId]: 'success' }))
+      }
+    }
+
+    while (step < plan.length) {
+      const nodeId = plan[step]
+      const node = activeNodes.find(n => n.id === nodeId)
+      if (!node) { step++; continue }
+
+      const inEdge = activeEdges.find(e => e.targetNodeId === nodeId)
+      const rawInput = inEdge ? (nodeOutputs[inEdge.sourceNodeId] ?? null) : null
+      const inputArray: unknown[] = rawInput === null ? [] : Array.isArray(rawInput) ? rawInput : [rawInput]
+
+      if (node.type === 'start' || node.type === 'end') {
+        setNodeStatuses(prev => ({ ...prev, [nodeId]: 'success' }))
+        step++; continue
+      }
+
+      const startedAt = Date.now()
+      const entryId = `${nodeId}-${startedAt}`
+      setExecLogs(prev => [...prev, {
+        id: entryId, nodeId, label: node.label, type: node.type,
+        status: 'running', input: rawInput, startedAt
+      }])
+      setNodeStatuses(prev => ({ ...prev, [nodeId]: 'running' }))
+
+      if (node.type === 'data') {
+        setNodeRunInputs(prev => ({ ...prev, [nodeId]: JSON.stringify(rawInput, null, 2) }))
+        try {
+          const cfg = JSON.parse(node.config || '{}') as DataConfig
+          const output = cfg.excelData?.rows?.length
+            ? cfg.excelData.rows
+            : (cfg.items ?? []).map((i: DataItem) => i.value).filter(Boolean)
+          nodeOutputs[nodeId] = output
+          setExecLogs(prev => prev.map(e => e.id === entryId
+            ? { ...e, status: 'success', output, duration: Date.now() - startedAt } : e))
+          setNodeStatuses(prev => ({ ...prev, [nodeId]: 'success' }))
+        } catch (err) {
+          nodeOutputs[nodeId] = []
+          setExecLogs(prev => prev.map(e => e.id === entryId
+            ? { ...e, status: 'error', error: String(err), duration: Date.now() - startedAt } : e))
+          setNodeStatuses(prev => ({ ...prev, [nodeId]: 'error' }))
+        }
+        step++; continue
+      }
+
+      if (node.type === 'select') {
+        setNodeRunInputs(prev => ({ ...prev, [nodeId]: JSON.stringify(rawInput, null, 2) }))
+        const selCfg = JSON.parse(node.config || '{}') as SelectConfig
+        if (selCfg.autoSelect && selCfg.selectedRowIndices.length > 0 && inputArray.length > 0) {
+          const idx = selCfg.selectedRowIndices[0]
+          const autoRow = inputArray[idx] ?? inputArray[0]
+          nodeOutputs[nodeId] = autoRow
+          setNodeRunOutputs(prev => ({ ...prev, [nodeId]: JSON.stringify(autoRow, null, 2) }))
+          setExecLogs(prev => prev.map(e => e.id === entryId
+            ? { ...e, status: 'success', output: autoRow, duration: Date.now() - startedAt } : e))
+          setNodeStatuses(prev => ({ ...prev, [nodeId]: 'success' }))
+          step++; continue
+        }
+        setCanvasExecution({ nodeOutputs, plan, step: step + 1, pendingSelectInput: inputArray, pendingLogEntryId: entryId })
+        return
+      }
+
+      if (node.type === 'api') {
+        setNodeRunInputs(prev => ({ ...prev, [nodeId]: JSON.stringify(rawInput, null, 2) }))
+        let lastApiDetail: ApiLogDetail | undefined
+        try {
+          const cfg = JSON.parse(node.config || '{}') as ApiConfig
+          if (!cfg.url.trim()) {
+            nodeOutputs[nodeId] = null
+            setExecLogs(prev => prev.map(e => e.id === entryId
+              ? { ...e, status: 'skip', output: null, duration: Date.now() - startedAt } : e))
+            step++; continue
+          }
+
+          const ws = workspaces.find(w => w.id === activeWsId)
+          const envVarsForExec = ws
+            ? mergeEnvVars(
+                ws.environments as Array<{ id: string; isBase: boolean; vars: Array<{ key: string; value: string; enabled: boolean }> }>,
+                ws.activeEnvId,
+              )
+            : {}
+
+          const items: Array<Record<string, unknown>> =
+            inputArray.length > 0
+              ? inputArray.map(d =>
+                  typeof d === 'object' && d !== null && !Array.isArray(d)
+                    ? (d as Record<string, unknown>)
+                    : {},
+                )
+              : [{}]
+
+          const allResults: unknown[] = []
+
+          for (const item of items) {
+            let fullUrl = resolveTemplate(cfg.url.trim(), envVarsForExec, item)
+            const enabledParams = (cfg.params ?? []).filter(p => p.enabled && p.key)
+            if (enabledParams.length > 0) {
+              const qs = new URLSearchParams(enabledParams.map(p => [p.key, resolveTemplate(p.value, envVarsForExec, item)]))
+              fullUrl += (fullUrl.includes('?') ? '&' : '?') + qs.toString()
+            }
+            const hdrs: Record<string, string> = {}
+            ;(cfg.headers ?? []).filter(h => h.enabled && h.key).forEach(h => {
+              hdrs[h.key] = resolveTemplate(h.value, envVarsForExec, item)
+            })
+            let bodyStr: string | undefined
+            if (['POST', 'PUT', 'PATCH'].includes(cfg.method) && cfg.body?.trim()) {
+              if (cfg.bodyType === 'json' && !hdrs['Content-Type'] && !hdrs['content-type']) {
+                hdrs['Content-Type'] = 'application/json'
+              }
+              bodyStr = resolveTemplate(cfg.body, envVarsForExec, item)
+            }
+
+            lastApiDetail = { method: cfg.method, url: fullUrl, headers: hdrs, body: bodyStr }
+
+            const res = await window.api.http.fetch(fullUrl, { method: cfg.method, headers: hdrs, body: bodyStr })
+            lastApiDetail = { ...lastApiDetail, statusCode: res.status, statusText: res.statusText, responseText: res.text }
+
+            if (!res.ok) {
+              throw new Error(`HTTP ${res.status} ${res.statusText}: ${res.text.slice(0, 300)}`)
+            }
+            try {
+              const data = JSON.parse(res.text) as unknown
+              if (Array.isArray(data)) allResults.push(...data)
+              else allResults.push(data)
+            } catch {
+              allResults.push(res.text)
+            }
+          }
+
+          nodeOutputs[nodeId] = allResults
+          setNodeRunOutputs(prev => ({ ...prev, [nodeId]: JSON.stringify(allResults, null, 2) }))
+          setExecLogs(prev => prev.map(e => e.id === entryId
+            ? { ...e, status: 'success', output: allResults, duration: Date.now() - startedAt, apiDetail: lastApiDetail } : e))
+          setNodeStatuses(prev => ({ ...prev, [nodeId]: 'success' }))
+        } catch (err) {
+          nodeOutputs[nodeId] = null
+          const errStr = String(err)
+          setNodeRunOutputs(prev => ({ ...prev, [nodeId]: errStr }))
+          setExecLogs(prev => prev.map(e => e.id === entryId
+            ? { ...e, status: 'error', error: errStr, duration: Date.now() - startedAt, apiDetail: lastApiDetail } : e))
+          setNodeStatuses(prev => ({ ...prev, [nodeId]: 'error' }))
+          setCanvasExecution(null)
+          return
+        }
+        step++; continue
+      }
+
+      step++
+    }
+
+    setCanvasExecution(null)
+  }, [activeNodes, activeEdges, workspaces, activeWsId])
+
+  const handleCanvasRun = useCallback(() => {
+    if (!activeProject) return
+    const plan = buildExecutionPlan(activeNodes, activeEdges)
+    if (plan.length === 0) return
+    setExecLogs([])
+    setNodeStatuses({})
+    setActiveLogNodeId(null)
+    const execution: CanvasExecution = { nodeOutputs: {}, plan, step: 0, pendingSelectInput: null }
+    advanceExecution(execution)
+  }, [activeNodes, activeEdges, activeProject, advanceExecution])
+
+  const handleCanvasReset = useCallback(() => {
+    setExecLogs([])
+    setNodeStatuses({})
+    setActiveLogNodeId(null)
+    setLogState('collapsed')
+    setNodeRunInputs({})
+    setNodeRunOutputs({})
+  }, [])
+
+  const onNodeStatusClick = useCallback((nodeId: string) => {
+    setLogState('fullscreen')
+    setActiveLogNodeId(nodeId)
+  }, [])
+
+  useEffect(() => {
+    if (activeLogNodeId && logState === 'fullscreen') {
+      requestAnimationFrame(() => {
+        document.getElementById(`log-entry-${activeLogNodeId}`)?.scrollIntoView({ behavior: 'smooth', block: 'center' })
+      })
+    }
+  }, [activeLogNodeId, logState])
+
   const toggleTheme = (): void => setTheme(t => (t === 'dark' ? 'light' : 'dark'))
   const toggleLog = (): void => setLogState(s => (s === 'collapsed' ? 'fullscreen' : 'collapsed'))
 
   const setActiveEnvId = (wsId: string, envId: string): void => {
+    localStorage.setItem(`ws_active_env_${wsId}`, envId)
     setWorkspaces(prev => prev.map(w => w.id === wsId ? { ...w, activeEnvId: envId } : w))
   }
 
@@ -480,6 +934,7 @@ export default function App(): JSX.Element {
                       title="Module"
                       modules={wsModules}
                       onAdd={(type) => handleCreateDataNode(wsId, type)}
+                      onEdit={setEditingModule}
                       onSetCommon={(id, isCommon) => handleSetModuleCommon(id, isCommon, wsId)}
                       onDelete={handleDeleteModule}
                     />
@@ -492,6 +947,7 @@ export default function App(): JSX.Element {
               title="공통 모듈"
               modules={allModules.filter(m => m.workspaceId === null)}
               onAdd={(type) => handleCreateCommonModule(type)}
+              onEdit={setEditingModule}
               onSetCommon={(id, isCommon) => {
                 if (!isCommon && activeWsId) handleSetModuleCommon(id, false, activeWsId)
               }}
@@ -518,7 +974,7 @@ export default function App(): JSX.Element {
           <div className="topbar-left no-drag">
             {activeProject && (
               <div className="topbar-breadcrumb">
-                {activeEnv && activeWs && (
+                {activeProjectEnv && activeProjectWs && (
                   <div className="topbar-env-picker">
                     <button
                       ref={envBtnRef}
@@ -530,14 +986,14 @@ export default function App(): JSX.Element {
                       }}
                       title="환경 변경"
                     >
-                      <span className="topbar-bc-env-dot" style={{ background: activeEnv.color }} />
-                      <span className="topbar-bc-env" style={{ color: activeEnv.color }}>{activeEnv.name}</span>
+                      <span className="topbar-bc-env-dot" style={{ background: activeProjectEnv.color }} />
+                      <span className="topbar-bc-env" style={{ color: activeProjectEnv.color }}>{activeProjectEnv.name}</span>
                       <IcoChevD size={10} style={{ color: 'var(--text-4)', marginLeft: 2 }} />
                     </button>
                   </div>
                 )}
                 <span className="topbar-bc-sep topbar-bc-divider">|</span>
-                <span className="topbar-bc-ws">{activeWs?.name}</span>
+                <span className="topbar-bc-ws">{activeProjectWs?.name}</span>
                 <span className="topbar-bc-sep">›</span>
                 <span className="topbar-bc-proj">{activeProject.name}</span>
               </div>
@@ -551,10 +1007,17 @@ export default function App(): JSX.Element {
               <IcoSave size={14} />
               저장
             </button>
-            <button className="btn primary">
-              <IcoPlay size={13} />
-              실행
-            </button>
+            {Object.keys(nodeStatuses).length > 0 ? (
+              <button className="btn" onClick={handleCanvasReset}>
+                <IcoReset size={13} />
+                초기화
+              </button>
+            ) : (
+              <button className="btn primary" onClick={handleCanvasRun}>
+                <IcoPlay size={13} />
+                실행
+              </button>
+            )}
           </div>
         </header>
 
@@ -568,8 +1031,13 @@ export default function App(): JSX.Element {
                   onNodeMove={handleNodeMove}
                   onEdgeCreate={handleEdgeCreate}
                   onEdgeDelete={id => setConfirmDeleteEdge(activeEdges.find(e => e.id === id) ?? null)}
+                  onEdgeReconnect={handleEdgeReconnect}
+                  onNodeRun={handleNodeRun}
                   onNodeOpen={handleNodeOpen}
                   onModuleDrop={handleModuleDrop}
+                  nodeStatuses={nodeStatuses}
+                  onNodeStatusClick={onNodeStatusClick}
+                  activeProjectWsId={activeProjectWs?.id}
                 />
             </div>
           ) : (
@@ -594,23 +1062,33 @@ export default function App(): JSX.Element {
             />
           </div>
           {logState === 'fullscreen' && (
-            <div className="log-body">로그 패널 — 다음 단계에서 구성합니다</div>
+            <div className="log-body">
+              {execLogs.length === 0 ? (
+                <span className="log-empty">실행하면 로그가 표시됩니다</span>
+              ) : (
+                <div className="log-entries">
+                  {execLogs.map(entry => (
+                    <LogEntryRow key={entry.id} entry={entry} isActive={activeLogNodeId === entry.nodeId} />
+                  ))}
+                </div>
+              )}
+            </div>
           )}
         </div>
       </div>
 
       {/* ── Env Dropdown (fixed) ── */}
-      {envDropdownOpen && activeWs && (
+      {envDropdownOpen && activeProjectWs && (
         <div
           ref={envDropdownRef}
           className="topbar-env-dropdown"
           style={{ position: 'fixed', top: envDropdownPos.top, left: envDropdownPos.left }}
         >
-          {activeWs.environments.map(env => (
+          {activeProjectWs.environments.map(env => (
             <button
               key={env.id}
-              className={`topbar-env-option${env.id === activeWs.activeEnvId ? ' topbar-env-option-active' : ''}`}
-              onClick={() => { setActiveEnvId(activeWsId, env.id); setEnvDropdownOpen(false) }}
+              className={`topbar-env-option${env.id === activeProjectWs.activeEnvId ? ' topbar-env-option-active' : ''}`}
+              onClick={() => { setActiveEnvId(activeProjectWs.id, env.id); setEnvDropdownOpen(false) }}
             >
               <span className="topbar-bc-env-dot" style={{ background: env.color }} />
               <span>{env.name}</span>
@@ -692,23 +1170,72 @@ export default function App(): JSX.Element {
       {editingNode?.type === 'data' && (
         <DataNodeModal
           node={editingNode}
+          initialInput={nodeRunInputs[editingNode.id]}
+          onRun={() => {
+            const inEdge = activeEdges.find(e => e.targetNodeId === editingNode.id)
+            return inEdge ? executeNodeOutput(inEdge.sourceNodeId, activeNodes, activeEdges) : ''
+          }}
           onSave={handleDataNodeSave}
           onDelete={async () => {
-            if (editingNode.moduleId) {
-              await handleDeleteModule(editingNode.moduleId)
-            } else {
-              await window.api.node.delete(editingNode.id)
-              setActiveNodes(prev => prev.filter(n => n.id !== editingNode.id))
-              const edges = activeEdges.filter(e => e.sourceNodeId !== editingNode.id && e.targetNodeId !== editingNode.id)
-              setActiveEdges(edges)
-            }
+            // 모듈 연결 노드는 캔버스에서 인스턴스만 제거 (모듈 자체는 유지)
+            await window.api.node.delete(editingNode.id)
+            setActiveNodes(prev => prev.filter(n => n.id !== editingNode.id))
+            setActiveEdges(prev => prev.filter(e => e.sourceNodeId !== editingNode.id && e.targetNodeId !== editingNode.id))
             setEditingNode(null)
           }}
           onClose={() => setEditingNode(null)}
         />
       )}
 
-      {newModuleCtx && (
+      {editingNode?.type === 'select' && (
+        <SelectNodeModal
+          node={editingNode}
+          initialInput={nodeRunInputs[editingNode.id]}
+          onRun={() => {
+            const inEdge = activeEdges.find(e => e.targetNodeId === editingNode.id)
+            return inEdge ? executeNodeOutput(inEdge.sourceNodeId, activeNodes, activeEdges) : ''
+          }}
+          onSave={handleDataNodeSave}
+          onDelete={async () => {
+            await window.api.node.delete(editingNode.id)
+            setActiveNodes(prev => prev.filter(n => n.id !== editingNode.id))
+            setActiveEdges(prev => prev.filter(e => e.sourceNodeId !== editingNode.id && e.targetNodeId !== editingNode.id))
+            setEditingNode(null)
+          }}
+          onClose={() => setEditingNode(null)}
+        />
+      )}
+
+      {editingNode?.type === 'api' && (
+        <ApiNodeModal
+          node={editingNode}
+          initialInput={nodeRunInputs[editingNode.id]}
+          initialOutput={nodeRunOutputs[editingNode.id]}
+          envVars={(() => {
+            const ws = workspaces.find(w => w.id === activeWsId)
+            return ws
+              ? mergeEnvVars(
+                  ws.environments as Array<{ id: string; isBase: boolean; vars: Array<{ key: string; value: string; enabled: boolean }> }>,
+                  ws.activeEnvId,
+                )
+              : {}
+          })()}
+          onRun={() => {
+            const inEdge = activeEdges.find(e => e.targetNodeId === editingNode.id)
+            return inEdge ? executeNodeOutput(inEdge.sourceNodeId, activeNodes, activeEdges) : ''
+          }}
+          onSave={handleDataNodeSave}
+          onDelete={async () => {
+            await window.api.node.delete(editingNode.id)
+            setActiveNodes(prev => prev.filter(n => n.id !== editingNode.id))
+            setActiveEdges(prev => prev.filter(e => e.sourceNodeId !== editingNode.id && e.targetNodeId !== editingNode.id))
+            setEditingNode(null)
+          }}
+          onClose={() => setEditingNode(null)}
+        />
+      )}
+
+      {newModuleCtx && newModuleCtx.type === 'data' && (
         <DataNodeModal
           node={{ id: '__new__', projectId: '', type: 'data', label: 'Data', x: 0, y: 0, config: '{}' }}
           isNew
@@ -723,6 +1250,110 @@ export default function App(): JSX.Element {
             setNewModuleCtx(null)
           }}
           onClose={() => setNewModuleCtx(null)}
+        />
+      )}
+
+      {newModuleCtx && newModuleCtx.type === 'api' && (
+        <ApiNodeModal
+          node={{ id: '__new__', projectId: '', type: 'api', label: 'API', x: 0, y: 0, config: '{}' }}
+          isNew
+          envVars={(() => {
+            const ws = workspaces.find(w => w.id === activeWsId)
+            return ws
+              ? mergeEnvVars(
+                  ws.environments as Array<{ id: string; isBase: boolean; vars: Array<{ key: string; value: string; enabled: boolean }> }>,
+                  ws.activeEnvId,
+                )
+              : {}
+          })()}
+          onSave={async (_, label, config) => {
+            if (newModuleCtx.wsId) {
+              await window.api.module.create(newModuleCtx.wsId, newModuleCtx.type, label, config)
+            } else {
+              await window.api.module.createCommon(newModuleCtx.type, label, config)
+            }
+            const mods = await window.api.module.listAll()
+            setAllModules(mods)
+            setNewModuleCtx(null)
+          }}
+          onClose={() => setNewModuleCtx(null)}
+        />
+      )}
+
+      {newModuleCtx && newModuleCtx.type === 'select' && (
+        <SelectNodeModal
+          node={{ id: '__new__', projectId: '', type: 'select', label: 'Select', x: 0, y: 0, config: '{}' }}
+          isNew
+          onSave={async (_, label, config) => {
+            if (newModuleCtx.wsId) {
+              await window.api.module.create(newModuleCtx.wsId, newModuleCtx.type, label, config)
+            } else {
+              await window.api.module.createCommon(newModuleCtx.type, label, config)
+            }
+            const mods = await window.api.module.listAll()
+            setAllModules(mods)
+            setNewModuleCtx(null)
+          }}
+          onClose={() => setNewModuleCtx(null)}
+        />
+      )}
+
+      {/* ── Canvas Execution SelectionPopup ── */}
+      {canvasExecution?.pendingSelectInput !== null && canvasExecution !== null && (
+        <SelectionPopup
+          data={canvasExecution.pendingSelectInput as Record<string, unknown>[] ?? []}
+          onConfirm={(selectedRows) => {
+            advanceExecution(canvasExecution, selectedRows)
+          }}
+          onCancel={() => setCanvasExecution(null)}
+        />
+      )}
+
+      {/* ── Module Edit Modals (from sidebar double-click) ── */}
+      {editingModule && editingModule.type === 'data' && (
+        <DataNodeModal
+          node={{ id: editingModule.id, projectId: '', type: 'data', label: editingModule.label, x: 0, y: 0, config: editingModule.config, moduleId: editingModule.id }}
+          onSave={async (_, label, config) => {
+            await handleModuleUpdate(editingModule.id, label, config)
+            setEditingModule(null)
+          }}
+          onDelete={async () => {
+            await handleDeleteModule(editingModule.id)
+            setEditingModule(null)
+          }}
+          onClose={() => setEditingModule(null)}
+        />
+      )}
+      {editingModule && editingModule.type === 'select' && (
+        <SelectNodeModal
+          node={{ id: editingModule.id, projectId: '', type: 'select', label: editingModule.label, x: 0, y: 0, config: editingModule.config, moduleId: editingModule.id }}
+          onSave={async (_, label, config) => {
+            await handleModuleUpdate(editingModule.id, label, config)
+            setEditingModule(null)
+          }}
+          onDelete={async () => {
+            await handleDeleteModule(editingModule.id)
+            setEditingModule(null)
+          }}
+          onClose={() => setEditingModule(null)}
+        />
+      )}
+      {editingModule && editingModule.type === 'api' && (
+        <ApiNodeModal
+          node={{ id: editingModule.id, projectId: '', type: 'api', label: editingModule.label, x: 0, y: 0, config: editingModule.config, moduleId: editingModule.id }}
+          envVars={(() => {
+            const ws = workspaces.find(w => w.id === activeWsId)
+            return ws ? mergeEnvVars(ws.environments, ws.activeEnvId) : {}
+          })()}
+          onSave={async (_, label, config) => {
+            await handleModuleUpdate(editingModule.id, label, config)
+            setEditingModule(null)
+          }}
+          onDelete={async () => {
+            await handleDeleteModule(editingModule.id)
+            setEditingModule(null)
+          }}
+          onClose={() => setEditingModule(null)}
         />
       )}
 
