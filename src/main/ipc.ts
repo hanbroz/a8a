@@ -42,4 +42,11 @@ export function registerIpcHandlers(): void {
   ipcMain.handle('edge:list', (_, projectId: string) => db.listEdges(projectId))
   ipcMain.handle('edge:create', (_, projectId: string, sourceNodeId: string, targetNodeId: string) => db.createEdge(projectId, sourceNodeId, targetNodeId))
   ipcMain.handle('edge:delete', (_, id: string) => db.deleteEdge(id))
+
+  // ── HTTP Fetch (CORS-free via main process) ──
+  ipcMain.handle('http:fetch', async (_, url: string, options: { method: string; headers: Record<string, string>; body?: string }) => {
+    const res = await fetch(url, { method: options.method, headers: options.headers, body: options.body })
+    const text = await res.text()
+    return { status: res.status, statusText: res.statusText, text, ok: res.ok }
+  })
 }

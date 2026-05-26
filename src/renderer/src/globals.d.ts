@@ -64,10 +64,32 @@ interface StartConfig {
   schedule: StartSchedule
 }
 
+interface SelectConfig {
+  selectedRowIndices: number[]
+  autoSelect?: boolean
+  lastInput?: Record<string, unknown>[]
+}
+
+interface ApiKvItem {
+  id: string
+  key: string
+  value: string
+  enabled: boolean
+}
+
+interface ApiConfig {
+  method: 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE'
+  url: string
+  headers: ApiKvItem[]
+  params: ApiKvItem[]
+  body: string
+  bodyType: 'none' | 'json' | 'raw'
+}
+
 interface ApiNode {
   id: string
   projectId: string
-  type: 'start' | 'end' | 'data'
+  type: 'start' | 'end' | 'data' | 'select' | 'api'
   label: string
   x: number
   y: number
@@ -122,6 +144,9 @@ interface AppApi {
     list: (projectId: string) => Promise<ApiEdge[]>
     create: (projectId: string, sourceNodeId: string, targetNodeId: string) => Promise<ApiEdge>
     delete: (id: string) => Promise<void>
+  }
+  http: {
+    fetch: (url: string, options: { method: string; headers: Record<string, string>; body?: string }) => Promise<{ status: number; statusText: string; text: string; ok: boolean }>
   }
 }
 

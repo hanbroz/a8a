@@ -23,6 +23,9 @@ if [ -f "$PID_FILE" ]; then
   rm -f "$PID_FILE"
 fi
 pkill -f "Electron.*a8a" 2>/dev/null || true
+# Kill any lingering Electron processes from this project
+pkill -f "electron/dist/Electron.app.*Contents/MacOS/Electron \." 2>/dev/null || true
+sleep 0.5
 
 # ── 빌드 ───────────────────────────────────────────────
 echo "[a8a] 빌드 중..."

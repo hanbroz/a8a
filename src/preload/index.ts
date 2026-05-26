@@ -41,6 +41,10 @@ const api = {
     list: (projectId: string): Promise<{ id: string; projectId: string; sourceNodeId: string; targetNodeId: string }[]> => ipcRenderer.invoke('edge:list', projectId),
     create: (projectId: string, sourceNodeId: string, targetNodeId: string): Promise<{ id: string; projectId: string; sourceNodeId: string; targetNodeId: string }> => ipcRenderer.invoke('edge:create', projectId, sourceNodeId, targetNodeId),
     delete: (id: string): Promise<void> => ipcRenderer.invoke('edge:delete', id)
+  },
+  http: {
+    fetch: (url: string, options: { method: string; headers: Record<string, string>; body?: string }): Promise<{ status: number; statusText: string; text: string; ok: boolean }> =>
+      ipcRenderer.invoke('http:fetch', url, options)
   }
 }
 
