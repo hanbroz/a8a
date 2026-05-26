@@ -1,5 +1,5 @@
 import { useState, useRef, useCallback, useEffect } from 'react'
-import * as XLSX from 'xlsx'
+import ExcelJS from 'exceljs'
 import { IcoPlus, IcoTrash, IcoX } from '../Icon'
 import { randomId } from '../../utils/id'
 
@@ -182,14 +182,38 @@ export default function DataNodeModal({ node, isNew, initialInput, onRun, onSave
   // ── Excel parsing ──
   const parseExcel = useCallback((file: File) => {
     const reader = new FileReader()
-    reader.onload = (e) => {
+    reader.onload = async (e) => {
       try {
-        const data = new Uint8Array(e.target?.result as ArrayBuffer)
-        const wb = XLSX.read(data, { type: 'array' })
-        const sheet = wb.Sheets[wb.SheetNames[0]]
-        const rows = XLSX.utils.sheet_to_json<Record<string, unknown>>(sheet, { defval: '' })
-        const columns = rows.length > 0 ? Object.keys(rows[0]) : []
-        setExcelData({ fileName: file.name, columns, rows })
+        const buffer = e.target?.result as ArrayBuffer
+        if (file.name.toLowerCase().endsWith('.csv')) {
+          const text = new TextDecoder('utf-8').decode(buffer)
+          const lines = text.split(/\r?\n/).filter(l => l.trim())
+          if (lines.length === 0) { setExcelData({ fileName: file.name, columns: [], rows: [] }); return }
+          const columns = lines[0].split(',').map(h => h.trim().replace(/^"|"$/g, ''))
+          const rows = lines.slice(1).map(line => {
+            const vals = line.split(',')
+            const obj: Record<string, unknown> = {}
+            columns.forEach((h, i) => { obj[h] = (vals[i] ?? '').trim().replace(/^"|"$/g, '') })
+            return obj
+          })
+          setExcelData({ fileName: file.name, columns, rows })
+        } else {
+          const workbook = new ExcelJS.Workbook()
+          await workbook.xlsx.load(buffer)
+          const sheet = workbook.worksheets[0]
+          const columns: string[] = []
+          sheet.getRow(1).eachCell({ includeEmpty: false }, cell => {
+            columns.push(String(cell.value ?? ''))
+          })
+          const rows: Record<string, unknown>[] = []
+          sheet.eachRow((row, rowNum) => {
+            if (rowNum === 1) return
+            const obj: Record<string, unknown> = {}
+            columns.forEach((h, i) => { obj[h] = row.getCell(i + 1).value ?? '' })
+            rows.push(obj)
+          })
+          setExcelData({ fileName: file.name, columns, rows })
+        }
       } catch {
         alert('파일을 파싱할 수 없습니다. .xlsx, .xls, .csv 파일을 사용해 주세요.')
       }

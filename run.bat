@@ -1,4 +1,5 @@
 @echo off
+chcp 65001 >nul
 cd /d "%~dp0"
 
 echo [a8a] 기존 프로세스 종료 중...
