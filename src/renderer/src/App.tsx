@@ -1,5 +1,8 @@
 import { useState, useEffect, useRef, useCallback } from 'react'
 import { mergeEnvVars, resolveTemplate } from './utils/interpolate'
+import { runPreRequest, runPostResponse } from './utils/scriptRuntime'
+import { generateReport, fillFilenameTemplate } from './utils/reportGenerator'
+import type { ReportNode, ReportApiDetail } from './utils/reportGenerator'
 import { IcoPanelL, IcoPlay, IcoReset, IcoSave, IcoSun, IcoMoon, IcoPanelB, IcoChevD } from './components/Icon'
 import WorkspaceHeader from './components/sidebar/WorkspaceHeader'
 import ModuleSection from './components/sidebar/ModuleSection'
@@ -11,6 +14,7 @@ import EnvModal from './components/env/EnvModal'
 import ConfirmDialog from './components/ConfirmDialog'
 import WorkflowCanvas from './components/canvas/WorkflowCanvas'
 import StartNodeModal from './components/canvas/StartNodeModal'
+import EndNodeModal from './components/canvas/EndNodeModal'
 import DataNodeModal from './components/canvas/DataNodeModal'
 import SelectNodeModal from './components/canvas/SelectNodeModal'
 import ApiNodeModal from './components/canvas/ApiNodeModal'
@@ -18,6 +22,20 @@ import SelectionPopup from './components/canvas/SelectionPopup'
 import type { Environment } from './components/env/EnvSection'
 import type { ProjectItem } from './components/sidebar/ProjectModal'
 import type { WorkspaceModalItem } from './components/sidebar/WorkspaceModal'
+
+// Read a DATA node's output value. Accepts both new shape (`{ output: string }`)
+// and legacy shape (`{ items, excelData }`). On any failure returns an empty array.
+function readDataNodeOutput(rawConfig: string): unknown {
+  try {
+    const cfg = JSON.parse(rawConfig || '{}') as DataConfig & LegacyDataConfig
+    if (typeof cfg.output === 'string') {
+      try { return JSON.parse(cfg.output) } catch { return [] }
+    }
+    if (cfg.excelData?.rows?.length) return cfg.excelData.rows
+    if (Array.isArray(cfg.items)) return cfg.items.map(i => i.value).filter(Boolean)
+    return []
+  } catch { return [] }
+}
 
 // ── Log entry row component ───────────────────────────
 type ApiLogDetail = {
@@ -53,6 +71,9 @@ function statusCodeColor(code: number): string {
 
 interface CanvasExecution {
   nodeOutputs: Record<string, unknown>
+  moduleVars: Record<string, Record<string, unknown>>
+  execLogs: LogEntry[]
+  startedAt: number
   plan: string[]
   step: number
   pendingSelectInput: unknown[] | null
@@ -180,11 +201,7 @@ function executeNodeOutput(nodeId: string, nodes: ApiNode[], edges: ApiEdge[]): 
   const inEdge = edges.find(e => e.targetNodeId === nodeId)
   const upstreamJson = inEdge ? executeNodeOutput(inEdge.sourceNodeId, nodes, edges) : '[]'
   if (node.type === 'data') {
-    try {
-      const cfg = JSON.parse(node.config || '{}') as DataConfig
-      if (cfg.excelData?.rows?.length) return JSON.stringify(cfg.excelData.rows, null, 2)
-      return JSON.stringify((cfg.items ?? []).map(i => i.value).filter(Boolean), null, 2)
-    } catch { return '[]' }
+    return JSON.stringify(readDataNodeOutput(node.config), null, 2)
   }
   if (node.type === 'select') {
     try {
@@ -256,6 +273,7 @@ export default function App(): JSX.Element {
   const [confirmDeleteWsId, setConfirmDeleteWsId] = useState<string | null>(null)
   const [confirmDeleteProject, setConfirmDeleteProject] = useState<{ wsId: string; project: ProjectItem } | null>(null)
   const [confirmDeleteEnv, setConfirmDeleteEnv] = useState<{ wsId: string; env: Environment } | null>(null)
+  const [confirmDeleteModule, setConfirmDeleteModule] = useState<ApiModule | null>(null)
   const [iconTooltip, setIconTooltip] = useState<{ text: string; x: number; y: number } | null>(null)
 
   // ── Canvas execution ──
@@ -263,6 +281,13 @@ export default function App(): JSX.Element {
   const [execLogs, setExecLogs] = useState<LogEntry[]>([])
   const [nodeStatuses, setNodeStatuses] = useState<Record<string, 'running' | 'success' | 'error'>>({})
   const [activeLogNodeId, setActiveLogNodeId] = useState<string | null>(null)
+
+  // Preview-mode select wait: when previewUpToNode hits a select without auto,
+  // we surface a popup and pause until the user resolves the chosen rows.
+  const [pendingPreviewSelect, setPendingPreviewSelect] = useState<{
+    data: Record<string, unknown>[]
+    resolve: (rows: unknown[]) => void
+  } | null>(null)
 
   // ── Load from DB on mount ──
   useEffect(() => {
@@ -480,6 +505,124 @@ export default function App(): JSX.Element {
     }
   }, [activeProject?.id, activeEdges])
 
+  // Run upstream nodes for real and return the immediate parent's output as
+  // JSON. Used by the INPUT ▶ button so users can preview live data without
+  // running the whole canvas. setEnv during preview mutates a local env copy
+  // only — workspace env is NOT persisted.
+  const previewUpToNode = useCallback(async (targetNodeId: string): Promise<string> => {
+    const inEdge = activeEdges.find(e => e.targetNodeId === targetNodeId)
+    if (!inEdge) return ''
+
+    const ws = workspaces.find(w => w.id === activeWsId)
+    const envVars: Record<string, string> = ws
+      ? mergeEnvVars(
+          ws.environments as Array<{ id: string; isBase: boolean; vars: Array<{ key: string; value: string; enabled: boolean }> }>,
+          ws.activeEnvId,
+        )
+      : {}
+    const moduleVarsMap: Record<string, Record<string, unknown>> = {}
+
+    const runNode = async (nodeId: string): Promise<unknown> => {
+      const node = activeNodes.find(n => n.id === nodeId)
+      if (!node) return null
+      const upstreamEdge = activeEdges.find(e => e.targetNodeId === nodeId)
+      const upstream = upstreamEdge ? await runNode(upstreamEdge.sourceNodeId) : null
+      const upstreamModuleVars = upstreamEdge ? (moduleVarsMap[upstreamEdge.sourceNodeId] ?? {}) : {}
+      const inputArray: unknown[] = upstream === null ? [] : Array.isArray(upstream) ? upstream : [upstream]
+
+      if (node.type === 'start' || node.type === 'end') {
+        moduleVarsMap[nodeId] = { ...upstreamModuleVars }
+        return upstream
+      }
+      if (node.type === 'data') {
+        moduleVarsMap[nodeId] = { ...upstreamModuleVars }
+        return readDataNodeOutput(node.config)
+      }
+      if (node.type === 'select') {
+        moduleVarsMap[nodeId] = { ...upstreamModuleVars }
+        const cfg = JSON.parse(node.config || '{}') as SelectConfig
+        if (cfg.autoSelect && cfg.selectedRowIndices.length > 0 && inputArray.length > 0) {
+          return inputArray[cfg.selectedRowIndices[0]] ?? inputArray[0]
+        }
+        if (inputArray.length === 0) return inputArray
+        const rows = await new Promise<unknown[]>(resolve => {
+          setPendingPreviewSelect({ data: inputArray as Record<string, unknown>[], resolve })
+        })
+        return rows[0] ?? null
+      }
+      if (node.type === 'api') {
+        const cfg = JSON.parse(node.config || '{}') as ApiConfig
+        if (!cfg.url.trim()) { moduleVarsMap[nodeId] = { ...upstreamModuleVars }; return null }
+
+        let preInputVars: Record<string, unknown> = {}
+        if (cfg.preScript && cfg.preScript.trim()) {
+          const r = await runPreRequest(cfg.preScript, { input: upstream, envVars })
+          preInputVars = r.inputVars
+          for (const [k, v] of Object.entries(r.envUpdates)) envVars[k] = v
+        }
+
+        const items: Array<Record<string, unknown>> =
+          inputArray.length > 0
+            ? inputArray.map(d =>
+                typeof d === 'object' && d !== null && !Array.isArray(d)
+                  ? (d as Record<string, unknown>)
+                  : {},
+              )
+            : [{}]
+
+        const allResults: unknown[] = []
+        for (const row of items) {
+          const item: Record<string, unknown> = { ...row, ...upstreamModuleVars, ...preInputVars }
+          let fullUrl = resolveTemplate(cfg.url.trim(), envVars, item)
+          const enabledParams = (cfg.params ?? []).filter(p => p.enabled && p.key)
+          if (enabledParams.length > 0) {
+            const qs = new URLSearchParams(enabledParams.map(p => [p.key, resolveTemplate(p.value, envVars, item)]))
+            fullUrl += (fullUrl.includes('?') ? '&' : '?') + qs.toString()
+          }
+          const hdrs: Record<string, string> = {}
+          ;(cfg.headers ?? []).filter(h => h.enabled && h.key).forEach(h => {
+            hdrs[h.key] = resolveTemplate(h.value, envVars, item)
+          })
+          let bodyStr: string | undefined
+          if (['POST', 'PUT', 'PATCH'].includes(cfg.method) && cfg.body?.trim()) {
+            if (cfg.bodyType === 'json' && !hdrs['Content-Type'] && !hdrs['content-type']) {
+              hdrs['Content-Type'] = 'application/json'
+            }
+            bodyStr = resolveTemplate(cfg.body, envVars, item)
+          }
+          const res = await window.api.http.fetch(fullUrl, { method: cfg.method, headers: hdrs, body: bodyStr })
+          if (!res.ok) throw new Error(`HTTP ${res.status} ${res.statusText}: ${res.text.slice(0, 200)}`)
+          try {
+            const data = JSON.parse(res.text) as unknown
+            if (Array.isArray(data)) allResults.push(...data)
+            else allResults.push(data)
+          } catch { allResults.push(res.text) }
+        }
+
+        let postOutputVars: Record<string, unknown> = {}
+        if (cfg.postScript && cfg.postScript.trim()) {
+          const r = await runPostResponse(cfg.postScript, {
+            input: upstream,
+            output: allResults.length === 1 ? allResults[0] : allResults,
+            envVars,
+          })
+          postOutputVars = r.outputVars
+          for (const [k, v] of Object.entries(r.envUpdates)) envVars[k] = v
+        }
+        moduleVarsMap[nodeId] = { ...upstreamModuleVars, ...postOutputVars }
+        return allResults
+      }
+      return upstream
+    }
+
+    try {
+      const result = await runNode(inEdge.sourceNodeId)
+      return JSON.stringify(result, null, 2)
+    } catch (err) {
+      return JSON.stringify({ __previewError: String((err as Error)?.message ?? err) }, null, 2)
+    }
+  }, [activeNodes, activeEdges, workspaces, activeWsId])
+
   function buildExecutionPlan(nodes: ApiNode[], edges: ApiEdge[]): string[] {
     const start = nodes.find(n => n.type === 'start')
     if (!start) return []
@@ -499,6 +642,17 @@ export default function App(): JSX.Element {
 
   const advanceExecution = useCallback(async (exec: CanvasExecution, selectedRows?: unknown[]) => {
     const nodeOutputs = { ...exec.nodeOutputs }
+    const moduleVars: Record<string, Record<string, unknown>> = { ...(exec.moduleVars ?? {}) }
+    const localLogs: LogEntry[] = [...(exec.execLogs ?? [])]
+    const pushLog = (entry: LogEntry): void => {
+      localLogs.push(entry)
+      setExecLogs(prev => [...prev, entry])
+    }
+    const updateLog = (id: string, patch: Partial<LogEntry>): void => {
+      const idx = localLogs.findIndex(e => e.id === id)
+      if (idx >= 0) localLogs[idx] = { ...localLogs[idx], ...patch }
+      setExecLogs(prev => prev.map(e => e.id === id ? { ...e, ...patch } : e))
+    }
     let { step, plan } = exec
 
     if (selectedRows !== undefined && step > 0) {
@@ -507,11 +661,8 @@ export default function App(): JSX.Element {
       setNodeRunOutputs(prev => ({ ...prev, [prevNodeId]: JSON.stringify(selectedRows[0] ?? null, null, 2) }))
       if (exec.pendingLogEntryId) {
         const sel = selectedRows[0] ?? null
-        setExecLogs(prev => prev.map(e =>
-          e.id === exec.pendingLogEntryId
-            ? { ...e, status: 'success', output: sel, duration: Date.now() - e.startedAt }
-            : e
-        ))
+        const entry = localLogs.find(e => e.id === exec.pendingLogEntryId)
+        updateLog(exec.pendingLogEntryId, { status: 'success', output: sel, duration: Date.now() - (entry?.startedAt ?? Date.now()) })
         setNodeStatuses(prev => ({ ...prev, [prevNodeId]: 'success' }))
       }
     }
@@ -525,34 +676,106 @@ export default function App(): JSX.Element {
       const rawInput = inEdge ? (nodeOutputs[inEdge.sourceNodeId] ?? null) : null
       const inputArray: unknown[] = rawInput === null ? [] : Array.isArray(rawInput) ? rawInput : [rawInput]
 
-      if (node.type === 'start' || node.type === 'end') {
+      const upstreamModuleVars = inEdge ? (moduleVars[inEdge.sourceNodeId] ?? {}) : {}
+      moduleVars[nodeId] = { ...upstreamModuleVars }
+
+      if (node.type === 'start') {
         setNodeStatuses(prev => ({ ...prev, [nodeId]: 'success' }))
+        step++; continue
+      }
+
+      if (node.type === 'end') {
+        setNodeStatuses(prev => ({ ...prev, [nodeId]: 'success' }))
+        try {
+          const endCfg = JSON.parse(node.config || '{}') as Partial<EndNodeConfig>
+          const fmt = endCfg.reportFormat
+          if ((fmt === 'html' || fmt === 'markdown') && endCfg.savePath && endCfg.savePath.trim()) {
+            const ws = workspaces.find(w => w.id === activeWsId)
+            const envName = ws?.environments.find(e => e.id === ws.activeEnvId)?.name ?? 'BASE'
+            const wsName = ws?.name ?? ''
+            const projectName = activeProject?.name ?? ''
+            const executedAt = new Date(exec.startedAt)
+            const totalDuration = Date.now() - exec.startedAt
+            const hasError = localLogs.some(e => e.status === 'error')
+            const overallStatus: 'success' | 'error' | 'partial' = hasError
+              ? (localLogs.some(e => e.status === 'success') ? 'partial' : 'error')
+              : 'success'
+            // Only plan-connected modules participate in the report. If user
+            // saved with previously-connected IDs that are now disconnected,
+            // they're silently dropped here.
+            const planSet = new Set(plan)
+            const connectedModuleIds = activeNodes
+              .filter(n => planSet.has(n.id) && n.type !== 'start' && n.type !== 'end')
+              .map(n => n.id)
+            const selectedSet = endCfg.selectedModuleIds && endCfg.selectedModuleIds.length > 0
+              ? new Set(endCfg.selectedModuleIds.filter(id => planSet.has(id)))
+              : new Set(connectedModuleIds)
+            const reportNodes: ReportNode[] = plan.map(pid => {
+              const pn = activeNodes.find(n => n.id === pid)
+              const logEntry = localLogs.find(e => e.nodeId === pid)
+              const pcfg = pn && pn.type === 'api' ? (JSON.parse(pn.config || '{}') as ApiConfig) : undefined
+              return {
+                nodeId: pid,
+                label: pn?.label ?? pid,
+                type: (pn?.type ?? 'data') as ReportNode['type'],
+                status: (logEntry?.status as ReportNode['status']) ?? 'success',
+                input: logEntry?.input ?? null,
+                output: logEntry?.output,
+                error: logEntry?.error,
+                duration: logEntry?.duration,
+                apiDetail: logEntry?.apiDetail as ReportApiDetail | undefined,
+                preScript: pcfg?.preScript,
+                postScript: pcfg?.postScript,
+              }
+            })
+            const content = generateReport(fmt, {
+              meta: {
+                environment: envName,
+                workspace: wsName,
+                project: projectName,
+                executedAt,
+                totalDuration,
+                overallStatus,
+              },
+              nodes: reportNodes,
+              selectedModuleIds: selectedSet,
+            })
+            const tpl = endCfg.filenameTemplate && endCfg.filenameTemplate.trim() ? endCfg.filenameTemplate : '{env}_{ws}_{project}_{ts}'
+            const filename = fillFilenameTemplate(tpl, { env: envName, ws: wsName, project: projectName, ts: executedAt })
+            const ext = fmt === 'html' ? '.html' : '.md'
+            const sep = endCfg.savePath.includes('/') && !endCfg.savePath.includes('\\') ? '/' : '\\'
+            const fullPath = endCfg.savePath.replace(/[\\/]+$/, '') + sep + filename + ext
+            const writeResult = await window.api.file.write(fullPath, content)
+            if (writeResult.ok) {
+              console.log('[리포트 저장 완료]', writeResult.path)
+            } else {
+              console.error('[리포트 저장 실패]', writeResult.error)
+            }
+          }
+        } catch (err) {
+          console.error('[리포트 생성 오류]', err)
+        }
         step++; continue
       }
 
       const startedAt = Date.now()
       const entryId = `${nodeId}-${startedAt}`
-      setExecLogs(prev => [...prev, {
+      pushLog({
         id: entryId, nodeId, label: node.label, type: node.type,
-        status: 'running', input: rawInput, startedAt
-      }])
+        status: 'running', input: rawInput, startedAt,
+      })
       setNodeStatuses(prev => ({ ...prev, [nodeId]: 'running' }))
 
       if (node.type === 'data') {
         setNodeRunInputs(prev => ({ ...prev, [nodeId]: JSON.stringify(rawInput, null, 2) }))
         try {
-          const cfg = JSON.parse(node.config || '{}') as DataConfig
-          const output = cfg.excelData?.rows?.length
-            ? cfg.excelData.rows
-            : (cfg.items ?? []).map((i: DataItem) => i.value).filter(Boolean)
+          const output = readDataNodeOutput(node.config)
           nodeOutputs[nodeId] = output
-          setExecLogs(prev => prev.map(e => e.id === entryId
-            ? { ...e, status: 'success', output, duration: Date.now() - startedAt } : e))
+          updateLog(entryId, { status: 'success', output, duration: Date.now() - startedAt })
           setNodeStatuses(prev => ({ ...prev, [nodeId]: 'success' }))
         } catch (err) {
           nodeOutputs[nodeId] = []
-          setExecLogs(prev => prev.map(e => e.id === entryId
-            ? { ...e, status: 'error', error: String(err), duration: Date.now() - startedAt } : e))
+          updateLog(entryId, { status: 'error', error: String(err), duration: Date.now() - startedAt })
           setNodeStatuses(prev => ({ ...prev, [nodeId]: 'error' }))
         }
         step++; continue
@@ -566,12 +789,11 @@ export default function App(): JSX.Element {
           const autoRow = inputArray[idx] ?? inputArray[0]
           nodeOutputs[nodeId] = autoRow
           setNodeRunOutputs(prev => ({ ...prev, [nodeId]: JSON.stringify(autoRow, null, 2) }))
-          setExecLogs(prev => prev.map(e => e.id === entryId
-            ? { ...e, status: 'success', output: autoRow, duration: Date.now() - startedAt } : e))
+          updateLog(entryId, { status: 'success', output: autoRow, duration: Date.now() - startedAt })
           setNodeStatuses(prev => ({ ...prev, [nodeId]: 'success' }))
           step++; continue
         }
-        setCanvasExecution({ nodeOutputs, plan, step: step + 1, pendingSelectInput: inputArray, pendingLogEntryId: entryId })
+        setCanvasExecution({ nodeOutputs, moduleVars, execLogs: localLogs, startedAt: exec.startedAt, plan, step: step + 1, pendingSelectInput: inputArray, pendingLogEntryId: entryId })
         return
       }
 
@@ -582,18 +804,49 @@ export default function App(): JSX.Element {
           const cfg = JSON.parse(node.config || '{}') as ApiConfig
           if (!cfg.url.trim()) {
             nodeOutputs[nodeId] = null
-            setExecLogs(prev => prev.map(e => e.id === entryId
-              ? { ...e, status: 'skip', output: null, duration: Date.now() - startedAt } : e))
+            updateLog(entryId, { status: 'skip', output: null, duration: Date.now() - startedAt })
             step++; continue
           }
 
           const ws = workspaces.find(w => w.id === activeWsId)
-          const envVarsForExec = ws
+          const envVarsForExec: Record<string, string> = ws
             ? mergeEnvVars(
                 ws.environments as Array<{ id: string; isBase: boolean; vars: Array<{ key: string; value: string; enabled: boolean }> }>,
                 ws.activeEnvId,
               )
             : {}
+
+          const persistEnvUpdates = async (updates: Record<string, string>): Promise<void> => {
+            if (!ws) return
+            const baseEnv = ws.environments.find(e => e.isBase)
+            const activeEnv = ws.environments.find(e => e.id === ws.activeEnvId && !e.isBase)
+            const target = activeEnv ?? baseEnv
+            if (!target) return
+            const updatedVars = [...target.vars]
+            for (const [k, v] of Object.entries(updates)) {
+              const idx = updatedVars.findIndex(x => x.key === k)
+              if (idx >= 0) updatedVars[idx] = { ...updatedVars[idx], value: v, enabled: true }
+              else updatedVars.push({ key: k, value: v, enabled: true })
+            }
+            const updated = { ...target, vars: updatedVars }
+            await window.api.environment.upsert(ws.id, updated)
+            setWorkspaces(prev => prev.map(w => w.id === ws.id
+              ? { ...w, environments: w.environments.map(e => e.id === target.id ? (updated as Environment) : e) }
+              : w))
+          }
+
+          // ── Pre Request script ─────────────────────────
+          let preInputVars: Record<string, unknown> = {}
+          if (cfg.preScript && cfg.preScript.trim()) {
+            try {
+              const r = await runPreRequest(cfg.preScript, { input: rawInput, envVars: envVarsForExec })
+              preInputVars = r.inputVars
+              for (const [k, v] of Object.entries(r.envUpdates)) envVarsForExec[k] = v
+              if (Object.keys(r.envUpdates).length > 0) await persistEnvUpdates(r.envUpdates)
+            } catch (err) {
+              throw new Error(`Pre Request 스크립트 오류: ${String((err as Error)?.message ?? err)}`)
+            }
+          }
 
           const items: Array<Record<string, unknown>> =
             inputArray.length > 0
@@ -606,7 +859,8 @@ export default function App(): JSX.Element {
 
           const allResults: unknown[] = []
 
-          for (const item of items) {
+          for (const row of items) {
+            const item: Record<string, unknown> = { ...row, ...upstreamModuleVars, ...preInputVars }
             let fullUrl = resolveTemplate(cfg.url.trim(), envVarsForExec, item)
             const enabledParams = (cfg.params ?? []).filter(p => p.enabled && p.key)
             if (enabledParams.length > 0) {
@@ -642,17 +896,32 @@ export default function App(): JSX.Element {
             }
           }
 
+          // ── Post Response script ───────────────────────
+          let postOutputVars: Record<string, unknown> = {}
+          if (cfg.postScript && cfg.postScript.trim()) {
+            try {
+              const r = await runPostResponse(cfg.postScript, {
+                input: rawInput,
+                output: allResults.length === 1 ? allResults[0] : allResults,
+                envVars: envVarsForExec,
+              })
+              postOutputVars = r.outputVars
+              if (Object.keys(r.envUpdates).length > 0) await persistEnvUpdates(r.envUpdates)
+            } catch (err) {
+              throw new Error(`Post Response 스크립트 오류: ${String((err as Error)?.message ?? err)}`)
+            }
+          }
+
           nodeOutputs[nodeId] = allResults
+          moduleVars[nodeId] = { ...upstreamModuleVars, ...postOutputVars }
           setNodeRunOutputs(prev => ({ ...prev, [nodeId]: JSON.stringify(allResults, null, 2) }))
-          setExecLogs(prev => prev.map(e => e.id === entryId
-            ? { ...e, status: 'success', output: allResults, duration: Date.now() - startedAt, apiDetail: lastApiDetail } : e))
+          updateLog(entryId, { status: 'success', output: allResults, duration: Date.now() - startedAt, apiDetail: lastApiDetail })
           setNodeStatuses(prev => ({ ...prev, [nodeId]: 'success' }))
         } catch (err) {
           nodeOutputs[nodeId] = null
           const errStr = String(err)
           setNodeRunOutputs(prev => ({ ...prev, [nodeId]: errStr }))
-          setExecLogs(prev => prev.map(e => e.id === entryId
-            ? { ...e, status: 'error', error: errStr, duration: Date.now() - startedAt, apiDetail: lastApiDetail } : e))
+          updateLog(entryId, { status: 'error', error: errStr, duration: Date.now() - startedAt, apiDetail: lastApiDetail })
           setNodeStatuses(prev => ({ ...prev, [nodeId]: 'error' }))
           setCanvasExecution(null)
           return
@@ -673,7 +942,7 @@ export default function App(): JSX.Element {
     setExecLogs([])
     setNodeStatuses({})
     setActiveLogNodeId(null)
-    const execution: CanvasExecution = { nodeOutputs: {}, plan, step: 0, pendingSelectInput: null }
+    const execution: CanvasExecution = { nodeOutputs: {}, moduleVars: {}, execLogs: [], startedAt: Date.now(), plan, step: 0, pendingSelectInput: null }
     advanceExecution(execution)
   }, [activeNodes, activeEdges, activeProject, advanceExecution])
 
@@ -936,7 +1205,10 @@ export default function App(): JSX.Element {
                       onAdd={(type) => handleCreateDataNode(wsId, type)}
                       onEdit={setEditingModule}
                       onSetCommon={(id, isCommon) => handleSetModuleCommon(id, isCommon, wsId)}
-                      onDelete={handleDeleteModule}
+                      onDelete={id => {
+                const mod = allModules.find(m => m.id === id)
+                if (mod) setConfirmDeleteModule(mod)
+              }}
                     />
                   </>
                 )
@@ -951,7 +1223,10 @@ export default function App(): JSX.Element {
               onSetCommon={(id, isCommon) => {
                 if (!isCommon && activeWsId) handleSetModuleCommon(id, false, activeWsId)
               }}
-              onDelete={handleDeleteModule}
+              onDelete={id => {
+                const mod = allModules.find(m => m.id === id)
+                if (mod) setConfirmDeleteModule(mod)
+              }}
             />
           </div>
         )}
@@ -1147,6 +1422,21 @@ export default function App(): JSX.Element {
         />
       )}
 
+      {/* ── Module Delete Confirm ── */}
+      {confirmDeleteModule && (
+        <ConfirmDialog
+          title="모듈 삭제"
+          message={`"${confirmDeleteModule.label}" 모듈을 삭제하시겠습니까?`}
+          warning="이 작업은 되돌릴 수 없으며, 캔버스에서 이 모듈을 사용 중인 모든 노드 인스턴스도 함께 삭제됩니다."
+          onConfirm={async () => {
+            const mod = confirmDeleteModule
+            setConfirmDeleteModule(null)
+            await handleDeleteModule(mod.id)
+          }}
+          onCancel={() => setConfirmDeleteModule(null)}
+        />
+      )}
+
       {/* ── Project Delete Confirm ── */}
       {confirmDeleteProject && (
         <ConfirmDialog
@@ -1166,6 +1456,25 @@ export default function App(): JSX.Element {
           onClose={() => setEditingNode(null)}
         />
       )}
+
+      {editingNode?.type === 'end' && (() => {
+        const connectedIds = new Set(buildExecutionPlan(activeNodes, activeEdges))
+        // Modules listed in the End modal are restricted to nodes reachable
+        // from Start in edge-connected order. Disconnected modules can't be
+        // selected and aren't part of the report.
+        const ordered = buildExecutionPlan(activeNodes, activeEdges)
+          .map(id => activeNodes.find(n => n.id === id))
+          .filter((n): n is ApiNode => !!n && n.type !== 'start' && n.type !== 'end' && connectedIds.has(n.id))
+          .map(n => ({ id: n.id, label: n.label, type: n.type }))
+        return (
+          <EndNodeModal
+            node={editingNode}
+            moduleNodes={ordered}
+            onSave={handleDataNodeSave}
+            onClose={() => setEditingNode(null)}
+          />
+        )
+      })()}
 
       {editingNode?.type === 'data' && (
         <DataNodeModal
@@ -1220,10 +1529,7 @@ export default function App(): JSX.Element {
                 )
               : {}
           })()}
-          onRun={() => {
-            const inEdge = activeEdges.find(e => e.targetNodeId === editingNode.id)
-            return inEdge ? executeNodeOutput(inEdge.sourceNodeId, activeNodes, activeEdges) : ''
-          }}
+          onRun={() => previewUpToNode(editingNode.id)}
           onSave={handleDataNodeSave}
           onDelete={async () => {
             await window.api.node.delete(editingNode.id)
@@ -1309,6 +1615,21 @@ export default function App(): JSX.Element {
         />
       )}
 
+      {/* ── Preview Mode SelectionPopup ── */}
+      {pendingPreviewSelect && (
+        <SelectionPopup
+          data={pendingPreviewSelect.data}
+          onConfirm={rows => {
+            pendingPreviewSelect.resolve(rows)
+            setPendingPreviewSelect(null)
+          }}
+          onCancel={() => {
+            pendingPreviewSelect.resolve([])
+            setPendingPreviewSelect(null)
+          }}
+        />
+      )}
+
       {/* ── Module Edit Modals (from sidebar double-click) ── */}
       {editingModule && editingModule.type === 'data' && (
         <DataNodeModal
@@ -1338,24 +1659,31 @@ export default function App(): JSX.Element {
           onClose={() => setEditingModule(null)}
         />
       )}
-      {editingModule && editingModule.type === 'api' && (
-        <ApiNodeModal
-          node={{ id: editingModule.id, projectId: '', type: 'api', label: editingModule.label, x: 0, y: 0, config: editingModule.config, moduleId: editingModule.id }}
-          envVars={(() => {
-            const ws = workspaces.find(w => w.id === activeWsId)
-            return ws ? mergeEnvVars(ws.environments, ws.activeEnvId) : {}
-          })()}
-          onSave={async (_, label, config) => {
-            await handleModuleUpdate(editingModule.id, label, config)
-            setEditingModule(null)
-          }}
-          onDelete={async () => {
-            await handleDeleteModule(editingModule.id)
-            setEditingModule(null)
-          }}
-          onClose={() => setEditingModule(null)}
-        />
-      )}
+      {editingModule && editingModule.type === 'api' && (() => {
+        const instance = activeNodes.find(n => n.moduleId === editingModule.id)
+        const instanceInEdge = instance ? activeEdges.find(e => e.targetNodeId === instance.id) : undefined
+        return (
+          <ApiNodeModal
+            node={{ id: editingModule.id, projectId: '', type: 'api', label: editingModule.label, x: 0, y: 0, config: editingModule.config, moduleId: editingModule.id }}
+            initialInput={instance ? nodeRunInputs[instance.id] : undefined}
+            initialOutput={instance ? nodeRunOutputs[instance.id] : undefined}
+            envVars={(() => {
+              const ws = workspaces.find(w => w.id === activeWsId)
+              return ws ? mergeEnvVars(ws.environments, ws.activeEnvId) : {}
+            })()}
+            onRun={instance ? () => previewUpToNode(instance.id) : undefined}
+            onSave={async (_, label, config) => {
+              await handleModuleUpdate(editingModule.id, label, config)
+              setEditingModule(null)
+            }}
+            onDelete={async () => {
+              await handleDeleteModule(editingModule.id)
+              setEditingModule(null)
+            }}
+            onClose={() => setEditingModule(null)}
+          />
+        )
+      })()}
 
       {/* ── Edge Delete Confirm ── */}
       {confirmDeleteEdge && (

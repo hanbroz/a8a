@@ -1,8 +1,20 @@
-import { useState, useRef, useCallback, useEffect, useMemo } from 'react'
+import { useState, useRef, useCallback, useEffect, useMemo, lazy, Suspense } from 'react'
 import { IcoPlus, IcoTrash, IcoX } from '../Icon'
 import { randomId } from '../../utils/id'
 import { parseTemplate, resolveTemplate } from '../../utils/interpolate'
 import type { Token } from '../../utils/interpolate'
+
+// Monaco is loaded only when this modal is rendered. The side-effect import
+// (`monacoSetup`) wires up bundled workers and must complete before Editor
+// mounts — chaining via `await` inside lazy() guarantees the order.
+const MonacoEditor = lazy(async () => {
+  await import('../../utils/monacoSetup')
+  return import('@monaco-editor/react')
+})
+
+function MonacoFallback(): JSX.Element {
+  return <div className="dm-monaco-loading">에디터 로드 중…</div>
+}
 
 interface Props {
   node: ApiNode
@@ -10,7 +22,7 @@ interface Props {
   initialInput?: string
   initialOutput?: string
   envVars?: Record<string, string>
-  onRun?: () => string
+  onRun?: () => string | Promise<string>
   onSave: (nodeId: string, label: string, config: string) => Promise<void>
   onDelete?: () => Promise<void>
   onClose: () => void
@@ -23,6 +35,24 @@ const MIN_W = 720
 const MIN_H = 420
 const RESIZE_DIRS: ResizeDir[] = ['n', 'ne', 'e', 'se', 's', 'sw', 'w', 'nw']
 const HTTP_METHODS = ['GET', 'POST', 'PUT', 'PATCH', 'DELETE'] as const
+
+const MONACO_OPTIONS = {
+  minimap: { enabled: false },
+  fontSize: 12,
+  fontFamily: 'JetBrains Mono, Cascadia Code, Consolas, monospace',
+  automaticLayout: true,
+  scrollBeyondLastLine: false,
+  lineNumbers: 'on' as const,
+  wordWrap: 'on' as const,
+  tabSize: 2,
+  insertSpaces: true,
+  folding: true,
+  renderLineHighlight: 'line' as const,
+  smoothScrolling: true,
+  cursorBlinking: 'smooth' as const,
+  padding: { top: 8, bottom: 8 },
+  scrollbar: { verticalScrollbarSize: 8, horizontalScrollbarSize: 8 },
+}
 
 function parseConfig(raw: string): ApiConfig {
   try {
@@ -38,9 +68,11 @@ function parseConfig(raw: string): ApiConfig {
       bodyType: (['none', 'json', 'raw'].includes(parsed.bodyType)
         ? parsed.bodyType
         : 'json') as ApiConfig['bodyType'],
+      preScript: typeof parsed.preScript === 'string' ? parsed.preScript : '',
+      postScript: typeof parsed.postScript === 'string' ? parsed.postScript : '',
     }
   } catch {
-    return { method: 'GET', url: '', headers: [], params: [], body: '', bodyType: 'json' }
+    return { method: 'GET', url: '', headers: [], params: [], body: '', bodyType: 'json', preScript: '', postScript: '' }
   }
 }
 
@@ -315,10 +347,16 @@ export default function ApiNodeModal({
   const [label, setLabel] = useState(node.label)
   const [method, setMethod] = useState<ApiConfig['method']>(initial.method)
   const [url, setUrl] = useState(initial.url)
-  const [headers, setHeaders] = useState<ApiKvItem[]>(initial.headers)
+  const [headers, setHeaders] = useState<ApiKvItem[]>(
+    isNew && initial.headers.length === 0
+      ? [{ id: randomId(), key: 'Content-Type', value: 'application/json', enabled: true }]
+      : initial.headers,
+  )
   const [params, setParams] = useState<ApiKvItem[]>(initial.params)
   const [body, setBody] = useState(initial.body)
   const [bodyType] = useState<ApiConfig['bodyType']>(initial.bodyType)
+  const [preScript, setPreScript] = useState<string>(initial.preScript ?? '')
+  const [postScript, setPostScript] = useState<string>(initial.postScript ?? '')
   const [activeTab, setActiveTab] = useState<SettingsTab>('headers')
   const [saving, setSaving] = useState(false)
   const [confirmDelete, setConfirmDelete] = useState(false)
@@ -336,17 +374,27 @@ export default function ApiNodeModal({
 
   // Window position & size
   const [rect, setRect] = useState(() => {
-    const w = Math.min(1000, window.innerWidth - 48)
-    const h = Math.min(600, window.innerHeight - 80)
-    return { x: Math.round((window.innerWidth - w) / 2), y: Math.round((window.innerHeight - h) / 2), w, h }
+    const ww = window.innerWidth
+    const wh = window.innerHeight
+    const w = Math.min(ww - 48, Math.max(800, Math.round(ww * 0.85)))
+    const h = Math.min(wh - 80, Math.max(500, Math.round(wh * 0.85)))
+    return { x: Math.round((ww - w) / 2), y: Math.round((wh - h) / 2), w, h }
   })
 
   const dragRef = useRef<{ ox: number; oy: number } | null>(null)
   const resizeRef = useRef<{ dir: ResizeDir; ox: number; oy: number; rx: number; ry: number; rw: number; rh: number } | null>(null)
-  const splitterRef = useRef<{ which: 'left' | 'right'; startX: number; startW: number } | null>(null)
+  const splitterRef = useRef<
+    | { kind: 'v'; which: 'left' | 'right'; startX: number; startW: number }
+    | { kind: 'h'; which: 'inputPre' | 'outputPost'; startY: number; startH: number }
+    | null
+  >(null)
   const bodyRef = useRef<HTMLDivElement>(null)
-  const [leftW, setLeftW] = useState(240)
-  const [rightW, setRightW] = useState(280)
+  const leftColRef = useRef<HTMLDivElement>(null)
+  const rightColRef = useRef<HTMLDivElement>(null)
+  const [leftW, setLeftW] = useState(() => Math.round(rect.w / 3))
+  const [rightW, setRightW] = useState(() => Math.round(rect.w / 3))
+  const [inputH, setInputH] = useState<number>(() => Math.round((rect.h - 100) * 0.45))
+  const [outputH, setOutputH] = useState<number>(() => Math.round((rect.h - 100) * 0.45))
 
   // Parse inputJson into a flat object for interpolation
   const inputData = useMemo<Record<string, unknown>>(() => {
@@ -408,8 +456,13 @@ export default function ApiNodeModal({
 
   const onSplitterDown = useCallback((which: 'left' | 'right', e: React.MouseEvent) => {
     e.preventDefault(); e.stopPropagation()
-    splitterRef.current = { which, startX: e.clientX, startW: which === 'left' ? leftW : rightW }
+    splitterRef.current = { kind: 'v', which, startX: e.clientX, startW: which === 'left' ? leftW : rightW }
   }, [leftW, rightW])
+
+  const onHSplitterDown = useCallback((which: 'inputPre' | 'outputPost', e: React.MouseEvent) => {
+    e.preventDefault(); e.stopPropagation()
+    splitterRef.current = { kind: 'h', which, startY: e.clientY, startH: which === 'inputPre' ? inputH : outputH }
+  }, [inputH, outputH])
 
   useEffect(() => {
     const onMove = (e: MouseEvent) => {
@@ -434,18 +487,26 @@ export default function ApiNodeModal({
         })
       }
       if (splitterRef.current) {
-        const d = splitterRef.current
-        const totalW = bodyRef.current?.offsetWidth ?? 900
-        const delta = e.clientX - d.startX
-        if (d.which === 'left') setLeftW(() => Math.max(120, Math.min(totalW - rightW - 200, d.startW + delta)))
-        else setRightW(() => Math.max(160, Math.min(totalW - leftW - 200, d.startW - delta)))
+        const s = splitterRef.current
+        if (s.kind === 'v') {
+          const totalW = bodyRef.current?.offsetWidth ?? 900
+          const delta = e.clientX - s.startX
+          if (s.which === 'left') setLeftW(() => Math.max(160, Math.min(totalW - rightW - 220, s.startW + delta)))
+          else setRightW(() => Math.max(160, Math.min(totalW - leftW - 220, s.startW - delta)))
+        } else {
+          const colH = (s.which === 'inputPre' ? leftColRef : rightColRef).current?.offsetHeight ?? 400
+          const delta = e.clientY - s.startY
+          const next = Math.max(80, Math.min(colH - 100, s.startH + delta))
+          if (s.which === 'inputPre') setInputH(next)
+          else setOutputH(next)
+        }
       }
     }
     const onUp = () => { dragRef.current = null; resizeRef.current = null; splitterRef.current = null }
     document.addEventListener('mousemove', onMove)
     document.addEventListener('mouseup', onUp)
     return () => { document.removeEventListener('mousemove', onMove); document.removeEventListener('mouseup', onUp) }
-  }, [leftW, rightW])
+  }, [leftW, rightW, inputH, outputH])
 
   // KV helpers
   const addKv = (setter: React.Dispatch<React.SetStateAction<ApiKvItem[]>>) => {
@@ -517,7 +578,11 @@ export default function ApiNodeModal({
 
   const handleSave = async () => {
     setSaving(true)
-    const config: ApiConfig = { method, url: url.trim(), headers, params, body, bodyType }
+    const config: ApiConfig = {
+      method, url: url.trim(), headers, params, body, bodyType,
+      preScript: preScript ?? '',
+      postScript: postScript ?? '',
+    }
     await onSave(node.id, label.trim() || 'API', JSON.stringify(config))
     setSaving(false)
     onClose()
@@ -552,43 +617,70 @@ export default function ApiNodeModal({
           {/* 3-pane body */}
           <div className="dm-body" ref={bodyRef}>
 
-            {/* INPUT pane */}
-            <div className="dm-pane" style={{ width: leftW, flexShrink: 0 }}>
-              <div className="dm-pane-hd">
-                <span className={`dm-pane-label dm-pane-label-input${inputError ? ' dm-pane-label-error' : ''}`}>INPUT</span>
-                <div className="dm-pane-hd-actions">
-                  {inputError && <span className="dm-json-err-badge">Invalid JSON</span>}
-                  <span className="dm-pane-type">JSON</span>
-                  {onRun && (
-                    <button
-                      className="btn ghost icon dm-format-btn dm-run-btn"
-                      onClick={() => { setInputJson(onRun()); setInputError(false) }}
-                      title="연결된 상류 노드 데이터 가져오기"
-                    >
-                      <RunIcon />
+            {/* LEFT column: INPUT (top) + Pre Request (bottom) */}
+            <div className="dm-pane-col" ref={leftColRef} style={{ width: leftW, flexShrink: 0 }}>
+              <div className="dm-pane" style={{ height: inputH, flexShrink: 0 }}>
+                <div className="dm-pane-hd">
+                  <span className={`dm-pane-label dm-pane-label-input${inputError ? ' dm-pane-label-error' : ''}`}>INPUT</span>
+                  <div className="dm-pane-hd-actions">
+                    {inputError && <span className="dm-json-err-badge">Invalid JSON</span>}
+                    <span className="dm-pane-type">JSON</span>
+                    {onRun && (
+                      <button
+                        className="btn ghost icon dm-format-btn dm-run-btn"
+                        onClick={async () => {
+                          const out = await onRun()
+                          setInputJson(out)
+                          setInputError(false)
+                        }}
+                        title="상류 노드를 실행해 데이터 미리보기"
+                      >
+                        <RunIcon />
+                      </button>
+                    )}
+                    <button className="btn ghost icon dm-format-btn" onClick={handleFormatInput} title="JSON 정렬">
+                      <FormatIcon />
                     </button>
-                  )}
-                  <button className="btn ghost icon dm-format-btn" onClick={handleFormatInput} title="JSON 정렬">
-                    <FormatIcon />
-                  </button>
-                  <button
-                    className="btn ghost icon api-test-btn"
-                    onClick={handleTest}
-                    disabled={testing || !url.trim()}
-                    title="API 테스트 실행"
-                  >
-                    {testing ? <span className="api-testing-dot" /> : <SendIcon />}
-                  </button>
+                    <button
+                      className="btn ghost icon api-test-btn"
+                      onClick={handleTest}
+                      disabled={testing || !url.trim()}
+                      title="API 테스트 실행"
+                    >
+                      {testing ? <span className="api-testing-dot" /> : <SendIcon />}
+                    </button>
+                  </div>
+                </div>
+                <div className="dm-pane-body">
+                  <textarea
+                    className={`dm-json-area${inputError ? ' dm-json-area-error' : ''}`}
+                    value={inputJson}
+                    onChange={e => { setInputJson(e.target.value); setInputError(false) }}
+                    placeholder="{}"
+                    spellCheck={false}
+                  />
                 </div>
               </div>
-              <div className="dm-pane-body">
-                <textarea
-                  className={`dm-json-area${inputError ? ' dm-json-area-error' : ''}`}
-                  value={inputJson}
-                  onChange={e => { setInputJson(e.target.value); setInputError(false) }}
-                  placeholder="{}"
-                  spellCheck={false}
-                />
+
+              <div className="dm-splitter-h" onMouseDown={e => onHSplitterDown('inputPre', e)} />
+
+              <div className="dm-pane" style={{ flex: '1 1 0', minHeight: 0 }}>
+                <div className="dm-pane-hd">
+                  <span className="dm-pane-label dm-pane-label-pre">PRE REQUEST</span>
+                  <span className="dm-pane-type">JavaScript</span>
+                </div>
+                <div className="dm-pane-body dm-pane-body-monaco">
+                  <Suspense fallback={<MonacoFallback />}>
+                    <MonacoEditor
+                      height="100%"
+                      language="javascript"
+                      theme="vs-dark"
+                      value={preScript}
+                      onChange={(v: string | undefined) => setPreScript(v ?? '')}
+                      options={MONACO_OPTIONS}
+                    />
+                  </Suspense>
+                </div>
               </div>
             </div>
 
@@ -624,7 +716,13 @@ export default function ApiNodeModal({
                       style={{ color: methodColor(method) }}
                     >
                       {HTTP_METHODS.map(m => (
-                        <option key={m} value={m}>{m}</option>
+                        <option
+                          key={m}
+                          value={m}
+                          style={{ color: methodColor(m), background: 'var(--bg-2)', fontWeight: 700 }}
+                        >
+                          {m}
+                        </option>
                       ))}
                     </select>
                     <AutocompleteField
@@ -766,30 +864,53 @@ export default function ApiNodeModal({
 
             <div className="dm-splitter" onMouseDown={e => onSplitterDown('right', e)} />
 
-            {/* OUTPUT pane */}
-            <div className="dm-pane" style={{ width: rightW, flexShrink: 0 }}>
-              <div className="dm-pane-hd">
-                <span className="dm-pane-label api-pane-label-output">OUTPUT</span>
-                <div className="dm-pane-hd-actions">
-                  {testStatus && (
-                    <span
-                      className="api-status-badge"
-                      style={{ color: statusColor ?? undefined, borderColor: `${statusColor}44` }}
-                    >
-                      {testStatus.code} · {testStatus.ms}ms
-                    </span>
-                  )}
-                  <span className="dm-pane-type">JSON</span>
+            {/* RIGHT column: OUTPUT (top) + Post Response (bottom) */}
+            <div className="dm-pane-col" ref={rightColRef} style={{ width: rightW, flexShrink: 0 }}>
+              <div className="dm-pane" style={{ height: outputH, flexShrink: 0 }}>
+                <div className="dm-pane-hd">
+                  <span className="dm-pane-label api-pane-label-output">OUTPUT</span>
+                  <div className="dm-pane-hd-actions">
+                    {testStatus && (
+                      <span
+                        className="api-status-badge"
+                        style={{ color: statusColor ?? undefined, borderColor: `${statusColor}44` }}
+                      >
+                        {testStatus.code} · {testStatus.ms}ms
+                      </span>
+                    )}
+                    <span className="dm-pane-type">JSON</span>
+                  </div>
+                </div>
+                <div className="dm-pane-body">
+                  <textarea
+                    className="dm-json-area api-json-area-output"
+                    value={testError ?? testResponse ?? ''}
+                    readOnly
+                    placeholder={url.trim() ? 'INPUT 패널의 → 버튼으로 API를 실행하세요' : 'URL을 입력하세요'}
+                    spellCheck={false}
+                  />
                 </div>
               </div>
-              <div className="dm-pane-body">
-                <textarea
-                  className="dm-json-area api-json-area-output"
-                  value={testError ?? testResponse ?? ''}
-                  readOnly
-                  placeholder={url.trim() ? 'INPUT 패널의 → 버튼으로 API를 실행하세요' : 'URL을 입력하세요'}
-                  spellCheck={false}
-                />
+
+              <div className="dm-splitter-h" onMouseDown={e => onHSplitterDown('outputPost', e)} />
+
+              <div className="dm-pane" style={{ flex: '1 1 0', minHeight: 0 }}>
+                <div className="dm-pane-hd">
+                  <span className="dm-pane-label dm-pane-label-post">POST RESPONSE</span>
+                  <span className="dm-pane-type">JavaScript</span>
+                </div>
+                <div className="dm-pane-body dm-pane-body-monaco">
+                  <Suspense fallback={<MonacoFallback />}>
+                    <MonacoEditor
+                      height="100%"
+                      language="javascript"
+                      theme="vs-dark"
+                      value={postScript}
+                      onChange={(v: string | undefined) => setPostScript(v ?? '')}
+                      options={MONACO_OPTIONS}
+                    />
+                  </Suspense>
+                </div>
               </div>
             </div>
 

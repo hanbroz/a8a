@@ -1,7 +1,6 @@
 import { useState, useRef, useCallback, useEffect } from 'react'
 import ExcelJS from 'exceljs'
-import { IcoPlus, IcoTrash, IcoX } from '../Icon'
-import { randomId } from '../../utils/id'
+import { IcoTrash, IcoX } from '../Icon'
 
 interface Props {
   node: ApiNode
@@ -19,15 +18,19 @@ const MIN_W = 600
 const MIN_H = 360
 const RESIZE_DIRS: ResizeDir[] = ['n', 'ne', 'e', 'se', 's', 'sw', 'w', 'nw']
 
+// Reads node.config and returns the new-shape DataConfig.
+// Migrates legacy `{ items, excelData }` shape to a single `output` JSON string.
 function parseConfig(raw: string): DataConfig {
   try {
-    const parsed = JSON.parse(raw)
-    return {
-      items: Array.isArray(parsed.items) ? parsed.items : [],
-      excelData: parsed.excelData ?? null,
+    const parsed = JSON.parse(raw) as DataConfig & LegacyDataConfig
+    if (typeof parsed.output === 'string') return { output: parsed.output }
+    if (parsed.excelData?.rows?.length) return { output: JSON.stringify(parsed.excelData.rows, null, 2) }
+    if (Array.isArray(parsed.items)) {
+      return { output: JSON.stringify(parsed.items.map(i => i.value).filter(Boolean), null, 2) }
     }
+    return { output: '' }
   } catch {
-    return { items: [], excelData: null }
+    return { output: '' }
   }
 }
 
@@ -81,14 +84,6 @@ function UploadIcon(): JSX.Element {
   )
 }
 
-function buildOutputJson(items: DataItem[], excelData: ExcelData | null | undefined): string {
-  if (excelData?.rows?.length) {
-    return JSON.stringify(excelData.rows, null, 2)
-  }
-  const values = items.map(i => i.value).filter(Boolean)
-  return JSON.stringify(values, null, 2)
-}
-
 function formatJson(raw: string): { value: string; error: boolean } {
   const trimmed = raw.trim()
   if (!trimmed) return { value: '', error: false }
@@ -99,11 +94,18 @@ function formatJson(raw: string): { value: string; error: boolean } {
   }
 }
 
+interface ExcelInfo {
+  fileName: string
+  columns: string[]
+  rowCount: number
+}
+
 export default function DataNodeModal({ node, isNew, initialInput, onRun, onSave, onDelete, onClose }: Props): JSX.Element {
   const initial = parseConfig(node.config)
   const [label, setLabel] = useState(node.label)
-  const [items, setItems] = useState<DataItem[]>(initial.items)
-  const [excelData, setExcelData] = useState<ExcelData | null>(initial.excelData ?? null)
+  const [outputJson, setOutputJson] = useState(initial.output)
+  const [outputError, setOutputError] = useState(false)
+  const [excelInfo, setExcelInfo] = useState<ExcelInfo | null>(null)
   const [saving, setSaving] = useState(false)
   const [dragOver, setDragOver] = useState(false)
   const [confirmDelete, setConfirmDelete] = useState(false)
@@ -115,17 +117,19 @@ export default function DataNodeModal({ node, isNew, initialInput, onRun, onSave
 
   // ── Window position & size ──
   const [rect, setRect] = useState(() => {
-    const w = Math.min(900, window.innerWidth - 48)
-    const h = Math.min(560, window.innerHeight - 80)
-    return { x: Math.round((window.innerWidth - w) / 2), y: Math.round((window.innerHeight - h) / 2), w, h }
+    const ww = window.innerWidth
+    const wh = window.innerHeight
+    const w = Math.min(ww - 48, Math.max(720, Math.round(ww * 0.8)))
+    const h = Math.min(wh - 80, Math.max(480, Math.round(wh * 0.8)))
+    return { x: Math.round((ww - w) / 2), y: Math.round((wh - h) / 2), w, h }
   })
 
   const dragRef = useRef<{ ox: number; oy: number } | null>(null)
   const resizeRef = useRef<{ dir: ResizeDir; ox: number; oy: number; rx: number; ry: number; rw: number; rh: number } | null>(null)
   const splitterRef = useRef<{ which: 'left' | 'right'; startX: number; startW: number } | null>(null)
   const bodyRef = useRef<HTMLDivElement>(null)
-  const [leftW, setLeftW] = useState(220)
-  const [rightW, setRightW] = useState(240)
+  const [leftW, setLeftW] = useState(() => Math.round(rect.w / 3))
+  const [rightW, setRightW] = useState(() => Math.round(rect.w / 3))
 
   const onHeaderDown = useCallback((e: React.MouseEvent) => {
     if ((e.target as HTMLElement).closest('button')) return
@@ -179,7 +183,13 @@ export default function DataNodeModal({ node, isNew, initialInput, onRun, onSave
     return () => { document.removeEventListener('mousemove', onMove); document.removeEventListener('mouseup', onUp) }
   }, [leftW, rightW])
 
-  // ── Excel parsing ──
+  // ── Excel parsing — populates OUTPUT JSON and stores local-only Excel info ──
+  const applyExcelData = (fileName: string, columns: string[], rows: Record<string, unknown>[]) => {
+    setExcelInfo({ fileName, columns, rowCount: rows.length })
+    setOutputJson(JSON.stringify(rows, null, 2))
+    setOutputError(false)
+  }
+
   const parseExcel = useCallback((file: File) => {
     const reader = new FileReader()
     reader.onload = async (e) => {
@@ -188,7 +198,10 @@ export default function DataNodeModal({ node, isNew, initialInput, onRun, onSave
         if (file.name.toLowerCase().endsWith('.csv')) {
           const text = new TextDecoder('utf-8').decode(buffer)
           const lines = text.split(/\r?\n/).filter(l => l.trim())
-          if (lines.length === 0) { setExcelData({ fileName: file.name, columns: [], rows: [] }); return }
+          if (lines.length === 0) {
+            applyExcelData(file.name, [], [])
+            return
+          }
           const columns = lines[0].split(',').map(h => h.trim().replace(/^"|"$/g, ''))
           const rows = lines.slice(1).map(line => {
             const vals = line.split(',')
@@ -196,7 +209,7 @@ export default function DataNodeModal({ node, isNew, initialInput, onRun, onSave
             columns.forEach((h, i) => { obj[h] = (vals[i] ?? '').trim().replace(/^"|"$/g, '') })
             return obj
           })
-          setExcelData({ fileName: file.name, columns, rows })
+          applyExcelData(file.name, columns, rows)
         } else {
           const workbook = new ExcelJS.Workbook()
           await workbook.xlsx.load(buffer)
@@ -212,7 +225,7 @@ export default function DataNodeModal({ node, isNew, initialInput, onRun, onSave
             columns.forEach((h, i) => { obj[h] = row.getCell(i + 1).value ?? '' })
             rows.push(obj)
           })
-          setExcelData({ fileName: file.name, columns, rows })
+          applyExcelData(file.name, columns, rows)
         }
       } catch {
         alert('파일을 파싱할 수 없습니다. .xlsx, .xls, .csv 파일을 사용해 주세요.')
@@ -238,18 +251,17 @@ export default function DataNodeModal({ node, isNew, initialInput, onRun, onSave
     setInputJson(result.value); setInputError(result.error)
   }
 
-  const addItem = () => setItems(prev => [...prev, { id: randomId(), value: '' }])
-  const updateItem = (id: string, value: string) => setItems(prev => prev.map(it => it.id === id ? { ...it, value } : it))
-  const removeItem = (id: string) => setItems(prev => prev.filter(it => it.id !== id))
+  const handleFormatOutput = () => {
+    const result = formatJson(outputJson)
+    setOutputJson(result.value); setOutputError(result.error)
+  }
 
   const handleSave = async () => {
     setSaving(true)
-    const config: DataConfig = { items, excelData }
+    const config: DataConfig = { output: outputJson }
     await onSave(node.id, label.trim() || 'Data', JSON.stringify(config))
     setSaving(false); onClose()
   }
-
-  const outputJson = buildOutputJson(items, excelData)
 
   return (
     <div className="dm-overlay">
@@ -326,31 +338,31 @@ export default function DataNodeModal({ node, isNew, initialInput, onRun, onSave
                   <input className="dm-input" value={label} onChange={e => setLabel(e.target.value)} placeholder="Data" autoFocus />
                 </div>
 
-                {/* Excel upload */}
+                {/* Excel upload — populates OUTPUT on success; info chip is local-only */}
                 <div className="dm-field">
                   <label className="dm-field-label">Excel 업로드</label>
-                  {excelData ? (
+                  {excelInfo ? (
                     <div className="dm-excel-info">
                       <div className="dm-excel-file-row">
                         <div className="dm-excel-file-icon"><ExcelIcon /></div>
                         <div className="dm-excel-file-meta">
-                          <span className="dm-excel-file-name">{excelData.fileName}</span>
+                          <span className="dm-excel-file-name">{excelInfo.fileName}</span>
                           <span className="dm-excel-file-stat">
-                            {excelData.columns.length}열 · {excelData.rows.length}행
+                            {excelInfo.columns.length}열 · {excelInfo.rowCount}행
                           </span>
                         </div>
                         <button
                           className="btn ghost icon dm-item-del"
                           style={{ width: 22, height: 22, marginLeft: 'auto' }}
-                          onClick={() => setExcelData(null)}
-                          title="제거"
+                          onClick={() => setExcelInfo(null)}
+                          title="표시 제거 (OUTPUT 데이터는 유지)"
                         >
                           <IcoX size={11} />
                         </button>
                       </div>
-                      {excelData.columns.length > 0 && (
+                      {excelInfo.columns.length > 0 && (
                         <div className="dm-excel-cols">
-                          {excelData.columns.map(col => (
+                          {excelInfo.columns.map(col => (
                             <span key={col} className="dm-excel-col-chip">{col}</span>
                           ))}
                         </div>
@@ -366,49 +378,26 @@ export default function DataNodeModal({ node, isNew, initialInput, onRun, onSave
                     >
                       <div className="dm-upload-icon"><UploadIcon /></div>
                       <span className="dm-upload-text">클릭하거나 파일을 드래그하세요</span>
-                      <span className="dm-upload-hint">.xlsx · .xls · .csv</span>
+                      <span className="dm-upload-hint">.xlsx · .xls · .csv → OUTPUT에 자동 채움</span>
                     </div>
                   )}
                 </div>
-
-                {/* Manual items (visible when no Excel) */}
-                {!excelData && (
-                  <div className="dm-field dm-field-grow">
-                    <div className="dm-field-hd">
-                      <label className="dm-field-label">데이터 항목 ({items.length}개)</label>
-                      <button className="btn ghost icon" style={{ width: 20, height: 20 }} onClick={addItem} title="항목 추가">
-                        <IcoPlus size={11} />
-                      </button>
-                    </div>
-                    <div className="dm-items-list">
-                      {items.length === 0 && <div className="dm-empty-hint">+ 버튼으로 항목을 추가하세요</div>}
-                      {items.map((item, idx) => (
-                        <div key={item.id} className="dm-item-row">
-                          <span className="dm-item-idx">{idx + 1}</span>
-                          <input className="dm-input" value={item.value} onChange={e => updateItem(item.id, e.target.value)} placeholder={`항목 ${idx + 1}`} />
-                          <button className="btn ghost icon dm-item-del" style={{ width: 22, height: 22 }} onClick={() => removeItem(item.id)} title="삭제">
-                            <IcoTrash size={11} />
-                          </button>
-                        </div>
-                      ))}
-                    </div>
-                  </div>
-                )}
 
               </div>
             </div>
 
             <div className="dm-splitter" onMouseDown={e => onSplitterDown('right', e)} />
 
-            {/* OUTPUT pane */}
+            {/* OUTPUT pane — editable */}
             <div className="dm-pane" style={{ width: rightW, flexShrink: 0 }}>
               <div className="dm-pane-hd">
-                <span className="dm-pane-label dm-pane-label-output">OUTPUT</span>
+                <span className={`dm-pane-label dm-pane-label-output${outputError ? ' dm-pane-label-error' : ''}`}>OUTPUT</span>
                 <div className="dm-pane-hd-actions">
+                  {outputError && <span className="dm-json-err-badge">Invalid JSON</span>}
                   <span className="dm-pane-type">JSON</span>
                   <button
                     className="btn ghost icon dm-format-btn"
-                    onClick={() => {/* OUTPUT is auto-generated, always formatted */}}
+                    onClick={handleFormatOutput}
                     title="JSON 정렬"
                   >
                     <FormatIcon />
@@ -417,9 +406,10 @@ export default function DataNodeModal({ node, isNew, initialInput, onRun, onSave
               </div>
               <div className="dm-pane-body">
                 <textarea
-                  className="dm-json-area dm-json-area-output"
+                  className={`dm-json-area dm-json-area-output${outputError ? ' dm-json-area-error' : ''}`}
                   value={outputJson}
-                  readOnly
+                  onChange={e => { setOutputJson(e.target.value); setOutputError(false) }}
+                  placeholder="[]"
                   spellCheck={false}
                 />
               </div>

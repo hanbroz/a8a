@@ -26,7 +26,7 @@
   align-items: center;
   gap: 10px;
   padding: 0 14px;
-  cursor: grab;
+  cursor: pointer;
   z-index: 2;
   transition: box-shadow 0.15s, border-color 0.15s, transform 0.06s;
 }
@@ -830,7 +830,7 @@
   background: rgba(31, 111, 235, 0.04);
 }
 
-/* Splitter */
+/* Splitter (vertical — between columns) */
 .dm-splitter {
   width: 1px;
   background: var(--border-1);
@@ -848,6 +848,104 @@
   bottom: 0;
 }
 .dm-splitter:hover { background: var(--accent-data); }
+
+/* Splitter (horizontal — between top/bottom panes inside a column) */
+.dm-splitter-h {
+  height: 1px;
+  background: var(--border-1);
+  flex-shrink: 0;
+  cursor: row-resize;
+  position: relative;
+  transition: background 0.1s;
+}
+.dm-splitter-h::before {
+  content: '';
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: -4px;
+  bottom: -4px;
+}
+.dm-splitter-h:hover { background: var(--accent-data); }
+
+/* Column container (vertical flex of two panes) */
+.dm-pane-col {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  height: 100%;
+}
+
+/* Pre/Post script pane labels (color match: green pre, orange post) */
+.dm-pane-label-pre  { color: #3fb950; }
+.dm-pane-label-post { color: #d29922; }
+
+/* Monaco editor body — no padding, fill pane */
+.dm-pane-body-monaco {
+  padding: 0;
+  background: #1e1e1e;
+  display: flex;
+  min-height: 0;
+}
+.dm-pane-body-monaco > * { flex: 1 1 auto; min-height: 0; }
+
+.dm-monaco-loading {
+  flex: 1 1 auto;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--text-3);
+  font-size: 12px;
+  font-family: monospace;
+  background: #1e1e1e;
+}
+
+/* ── End-node modal styles ───────────────────────── */
+.end-radio-row { display: flex; gap: 8px; flex-wrap: wrap; }
+.end-radio {
+  display: flex; align-items: center; gap: 6px;
+  padding: 6px 14px; border-radius: 7px;
+  border: 1px solid var(--border-2);
+  background: var(--bg-3); cursor: pointer;
+  color: var(--text-2); font-size: 12px; font-weight: 600;
+  transition: border-color 0.12s, background 0.12s;
+}
+.end-radio:hover { border-color: var(--text-3); }
+.end-radio input { margin: 0; }
+.end-radio-on { border-color: #3fb950; background: rgba(63,185,80,0.1); color: var(--text-0); }
+.end-field-hint { color: var(--text-3); font-weight: normal; margin-left: 6px; font-size: 11px; }
+.end-field-hint code { background: var(--bg-3); padding: 1px 5px; border-radius: 3px; color: #3fb950; font-family: var(--font-mono); font-size: 11px; }
+.end-path-row { display: flex; gap: 6px; align-items: center; }
+.end-browse-btn { padding: 0 12px; height: 32px; font-size: 12px; white-space: nowrap; flex-shrink: 0; }
+.end-ext-hint { color: var(--text-3); font-size: 11px; flex-shrink: 0; padding: 0 4px; }
+.end-toggle-all-btn { padding: 0 10px; height: 22px; font-size: 11px; }
+.end-module-list {
+  border: 1px solid var(--border-1);
+  border-radius: 7px;
+  background: var(--bg-2);
+  max-height: 100%;
+  overflow-y: auto;
+  padding: 4px;
+  flex: 1 1 0;
+  min-height: 0;
+}
+.end-module-item {
+  display: flex; align-items: center; gap: 10px;
+  padding: 6px 10px; border-radius: 5px;
+  cursor: pointer; color: var(--text-1);
+  font-size: 13px;
+  transition: background 0.1s;
+}
+.end-module-item:hover { background: var(--bg-3); }
+.end-module-item input { margin: 0; }
+.end-module-item-disabled { opacity: 0.5; cursor: not-allowed; }
+.end-module-badge {
+  font-size: 10px; font-weight: 700;
+  padding: 2px 7px; border-radius: 4px;
+  border: 1px solid; font-family: var(--font-mono);
+  letter-spacing: 0.06em; flex-shrink: 0;
+}
+.end-module-label { color: var(--text-0); font-weight: 500; }
 
 /* Settings pane */
 .dm-settings-body {
@@ -1136,6 +1234,13 @@
 .wf-canvas.wf-canvas-dragover {
   outline: 2px dashed var(--accent);
   outline-offset: -4px;
+}
+
+/* ── Canvas panning (right-mouse drag) ───────────── */
+.wf-canvas.wf-canvas-panning,
+.wf-canvas.wf-canvas-panning * {
+  cursor: grabbing !important;
+  user-select: none;
 }
 
 /* ── SELECT 모달 - 테이블 행 선택 ───────────────── */

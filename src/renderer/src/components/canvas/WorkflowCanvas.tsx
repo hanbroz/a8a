@@ -79,7 +79,25 @@ function bezier(x1: number, y1: number, x2: number, y2: number): string {
 }
 
 function parseDataConfig(config: string): DataConfig {
-  try { return JSON.parse(config) as DataConfig } catch { return { items: [] } }
+  try {
+    const parsed = JSON.parse(config) as DataConfig & LegacyDataConfig
+    if (typeof parsed.output === 'string') return { output: parsed.output }
+    if (parsed.excelData?.rows?.length) return { output: JSON.stringify(parsed.excelData.rows, null, 2) }
+    if (Array.isArray(parsed.items)) {
+      return { output: JSON.stringify(parsed.items.map(i => i.value).filter(Boolean), null, 2) }
+    }
+    return { output: '' }
+  } catch { return { output: '' } }
+}
+
+function describeDataOutput(cfg: DataConfig): string {
+  if (!cfg.output.trim()) return '비어있음'
+  try {
+    const v = JSON.parse(cfg.output)
+    if (Array.isArray(v)) return `${v.length}개`
+    if (v && typeof v === 'object') return `${Object.keys(v).length}필드`
+    return '단일 값'
+  } catch { return 'JSON 오류' }
 }
 
 function parseSelectConfig(config: string): SelectConfig {
@@ -129,6 +147,19 @@ export default function WorkflowCanvas({
   const [reconnecting, setReconnecting] = useState<Reconnecting | null>(null)
   const [hoveredEdgeId, setHoveredEdgeId] = useState<string | null>(null)
   const [canvasDragOver, setCanvasDragOver] = useState(false)
+  const [viewport, setViewport] = useState({ x: 0, y: 0 })
+  const [panning, setPanning] = useState(false)
+  const panRef = useRef<{ startX: number; startY: number; vx0: number; vy0: number } | null>(null)
+
+  const onCanvasMouseDown = useCallback((e: React.MouseEvent) => {
+    if (e.button !== 2) return
+    const t = e.target as HTMLElement
+    if (t.closest('.wf-node, .wf-port, .wf-edge-endpoint, .wf-edge-delete-btn')) return
+    if (t.tagName.toLowerCase() === 'path') return
+    e.preventDefault()
+    panRef.current = { startX: e.clientX, startY: e.clientY, vx0: viewport.x, vy0: viewport.y }
+    setPanning(true)
+  }, [viewport])
 
   useEffect(() => {
     setPositions(prev => {
@@ -141,6 +172,7 @@ export default function WorkflowCanvas({
   const canvasRect = () => canvasRef.current?.getBoundingClientRect()
 
   const onNodeDown = useCallback((e: React.MouseEvent, nodeId: string) => {
+    if (e.button !== 0) return
     if ((e.target as HTMLElement).closest('.wf-port')) return
     e.preventDefault()
     const pos = positions[nodeId]
@@ -150,6 +182,7 @@ export default function WorkflowCanvas({
   }, [positions])
 
   const onOutputPortDown = useCallback((e: React.MouseEvent, nodeId: string, nodeType: string) => {
+    if (e.button !== 0) return
     e.stopPropagation()
     e.preventDefault()
     const rect = canvasRect()
@@ -160,13 +193,13 @@ export default function WorkflowCanvas({
       fromNodeId: nodeId,
       fromX: pos.x + nW(nodeType),
       fromY: pos.y + nH(nodeType) / 2,
-      mouseX: e.clientX - rect.left,
-      mouseY: e.clientY - rect.top,
+      mouseX: e.clientX - rect.left - viewport.x,
+      mouseY: e.clientY - rect.top - viewport.y,
       snapTo: null,
     }
     connectRef.current = state
     setConnecting(state)
-  }, [positions])
+  }, [positions, viewport])
 
   const onEndpointDown = useCallback((
     e: React.MouseEvent,
@@ -176,6 +209,7 @@ export default function WorkflowCanvas({
     fixedX: number,
     fixedY: number,
   ) => {
+    if (e.button !== 0) return
     e.stopPropagation()
     e.preventDefault()
     const rect = canvasRect()
@@ -186,18 +220,24 @@ export default function WorkflowCanvas({
       fixedNodeId,
       fixedX,
       fixedY,
-      mouseX: e.clientX - rect.left,
-      mouseY: e.clientY - rect.top,
+      mouseX: e.clientX - rect.left - viewport.x,
+      mouseY: e.clientY - rect.top - viewport.y,
       snapTo: null,
     }
     reconnectRef.current = state
     setReconnecting(state)
     setHoveredEdgeId(null)
-  }, [])
+  }, [viewport])
 
   const onMouseMove = useCallback((e: React.MouseEvent) => {
     const rect = canvasRect()
     if (!rect) return
+
+    if (panRef.current) {
+      const p = panRef.current
+      setViewport({ x: p.vx0 + (e.clientX - p.startX), y: p.vy0 + (e.clientY - p.startY) })
+      return
+    }
 
     const nd = nodeDragRef.current
     if (nd) {
@@ -210,8 +250,8 @@ export default function WorkflowCanvas({
     }
 
     if (connectRef.current) {
-      const mx = e.clientX - rect.left
-      const my = e.clientY - rect.top
+      const mx = e.clientX - rect.left - viewport.x
+      const my = e.clientY - rect.top - viewport.y
       let snapTo: string | null = null
       for (const n of nodes) {
         if (n.type === 'start' || n.id === connectRef.current.fromNodeId) continue
@@ -225,8 +265,8 @@ export default function WorkflowCanvas({
     }
 
     if (reconnectRef.current) {
-      const mx = e.clientX - rect.left
-      const my = e.clientY - rect.top
+      const mx = e.clientX - rect.left - viewport.x
+      const my = e.clientY - rect.top - viewport.y
       const rc = reconnectRef.current
       let snapTo: string | null = null
       for (const n of nodes) {
@@ -247,9 +287,14 @@ export default function WorkflowCanvas({
       reconnectRef.current = next
       setReconnecting(next)
     }
-  }, [nodes, positions])
+  }, [nodes, positions, viewport])
 
   const onMouseUp = useCallback(() => {
+    if (panRef.current) {
+      panRef.current = null
+      setPanning(false)
+    }
+
     const nd = nodeDragRef.current
     if (nd) {
       const pos = positions[nd.nodeId]
@@ -295,7 +340,9 @@ export default function WorkflowCanvas({
   return (
     <div
       ref={canvasRef}
-      className={`wf-canvas${canvasDragOver ? ' wf-canvas-dragover' : ''}`}
+      className={`wf-canvas${canvasDragOver ? ' wf-canvas-dragover' : ''}${panning ? ' wf-canvas-panning' : ''}`}
+      onMouseDown={onCanvasMouseDown}
+      onContextMenu={e => e.preventDefault()}
       onMouseMove={onMouseMove}
       onMouseUp={onMouseUp}
       onMouseLeave={onMouseUp}
@@ -310,10 +357,19 @@ export default function WorkflowCanvas({
         // 워크스페이스 모듈(공통 아닌)은 현재 프로젝트의 워크스페이스와 일치해야 드롭 허용
         if (moduleWsId && activeProjectWsId && moduleWsId !== activeProjectWsId) return
         const rect = canvasRef.current.getBoundingClientRect()
-        onModuleDrop(moduleId, e.clientX - rect.left - 100, e.clientY - rect.top - 36)
+        onModuleDrop(moduleId, e.clientX - rect.left - viewport.x - 100, e.clientY - rect.top - viewport.y - 36)
       }}
     >
-      <svg className="wf-edge-layer" width="100%" height="100%">
+      <div
+        className="wf-viewport"
+        style={{
+          position: 'absolute',
+          inset: 0,
+          transform: `translate3d(${viewport.x}px, ${viewport.y}px, 0)`,
+          transformOrigin: '0 0',
+        }}
+      >
+      <svg className="wf-edge-layer" width="100%" height="100%" style={{ overflow: 'visible' }}>
         <defs>
           <marker id="wf-arrow" markerWidth="8" markerHeight="8" refX="7" refY="3" orient="auto">
             <path d="M0 0 L0 6 L7 3 z" className="wf-edge-arrow" />
@@ -470,10 +526,7 @@ export default function WorkflowCanvas({
 
         if (node.type === 'data') {
           const cfg = parseDataConfig(node.config)
-          const hasExcel = !!cfg.excelData?.rows?.length
-          const countLabel = hasExcel
-            ? `${cfg.excelData!.columns.length}컬럼 · ${cfg.excelData!.rows.length}행`
-            : `${cfg.items.length}개`
+          const countLabel = describeDataOutput(cfg)
           return (
             <div
               key={node.id}
@@ -586,6 +639,7 @@ export default function WorkflowCanvas({
           </div>
         )
       })}
+      </div>
     </div>
   )
 }

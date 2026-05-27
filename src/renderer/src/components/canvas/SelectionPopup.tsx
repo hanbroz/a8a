@@ -7,14 +7,6 @@ interface Props {
   onCancel: () => void
 }
 
-function CheckIcon(): JSX.Element {
-  return (
-    <svg width="9" height="9" viewBox="0 0 12 12" fill="none" stroke="white" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
-      <polyline points="2 6 5 9 10 3" />
-    </svg>
-  )
-}
-
 export default function SelectionPopup({ data, onConfirm, onCancel }: Props): JSX.Element {
   const [selectedIndex, setSelectedIndex] = useState<number | null>(null)
   const [pos, setPos] = useState<{ x: number; y: number } | null>(null)
@@ -104,9 +96,7 @@ export default function SelectionPopup({ data, onConfirm, onCancel }: Props): JS
                         onClick={() => toggleRow(idx)}
                       >
                         <td>
-                          <div className={`sm-col-check${isChecked ? ' checked' : ''}`}>
-                            {isChecked && <CheckIcon />}
-                          </div>
+                          <div className={`sm-col-check${isChecked ? ' checked' : ''}`} />
                         </td>
                         {columns.map(col => (
                           <td key={col}>{String(row[col] ?? '')}</td>

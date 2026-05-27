@@ -118,17 +118,19 @@ export default function SelectNodeModal({
   const columns = inputRows && inputRows.length > 0 ? Object.keys(inputRows[0]) : []
 
   const [rect, setRect] = useState(() => {
-    const w = Math.min(900, window.innerWidth - 48)
-    const h = Math.min(560, window.innerHeight - 80)
-    return { x: Math.round((window.innerWidth - w) / 2), y: Math.round((window.innerHeight - h) / 2), w, h }
+    const ww = window.innerWidth
+    const wh = window.innerHeight
+    const w = Math.min(ww - 48, Math.max(720, Math.round(ww * 0.8)))
+    const h = Math.min(wh - 80, Math.max(480, Math.round(wh * 0.8)))
+    return { x: Math.round((ww - w) / 2), y: Math.round((wh - h) / 2), w, h }
   })
 
   const dragRef = useRef<{ ox: number; oy: number } | null>(null)
   const resizeRef = useRef<{ dir: ResizeDir; ox: number; oy: number; rx: number; ry: number; rw: number; rh: number } | null>(null)
   const splitterRef = useRef<{ which: 'left' | 'right'; startX: number; startW: number } | null>(null)
   const bodyRef = useRef<HTMLDivElement>(null)
-  const [leftW, setLeftW] = useState(220)
-  const [rightW, setRightW] = useState(240)
+  const [leftW, setLeftW] = useState(() => Math.round(rect.w / 3))
+  const [rightW, setRightW] = useState(() => Math.round(rect.w / 3))
 
   const onHeaderDown = useCallback(
     (e: React.MouseEvent) => {

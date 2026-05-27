@@ -47,7 +47,11 @@ interface ExcelData {
 }
 
 interface DataConfig {
-  items: DataItem[]
+  output: string
+}
+
+interface LegacyDataConfig {
+  items?: DataItem[]
   excelData?: ExcelData | null
 }
 
@@ -84,6 +88,8 @@ interface ApiConfig {
   params: ApiKvItem[]
   body: string
   bodyType: 'none' | 'json' | 'raw'
+  preScript?: string
+  postScript?: string
 }
 
 interface ApiNode {
@@ -97,6 +103,13 @@ interface ApiNode {
   moduleId?: string | null
 }
 
+interface EndNodeConfig {
+  reportFormat: 'none' | 'html' | 'markdown'
+  savePath: string
+  filenameTemplate: string
+  selectedModuleIds: string[]
+}
+
 interface ApiEdge {
   id: string
   projectId: string
@@ -105,6 +118,13 @@ interface ApiEdge {
 }
 
 interface AppApi {
+  dialog: {
+    openDirectory: (defaultPath?: string) => Promise<string | null>
+  }
+  file: {
+    write: (path: string, content: string) => Promise<{ ok: true; path: string } | { ok: false; error: string }>
+    downloadsDir: () => Promise<string>
+  }
   workspace: {
     list: () => Promise<ApiWorkspace[]>
     create: (name: string, description: string) => Promise<ApiWorkspace>

@@ -1,4 +1,5 @@
-import { ipcMain } from 'electron'
+import { ipcMain, app, dialog, BrowserWindow } from 'electron'
+import { writeFile } from 'fs/promises'
 import * as db from './db'
 import type { EnvRow } from './db'
 
@@ -49,4 +50,28 @@ export function registerIpcHandlers(): void {
     const text = await res.text()
     return { status: res.status, statusText: res.statusText, text, ok: res.ok }
   })
+
+  // ── Dialog (folder picker) ──
+  ipcMain.handle('dialog:open-directory', async (e, defaultPath?: string): Promise<string | null> => {
+    const win = BrowserWindow.fromWebContents(e.sender)
+    const opts: Electron.OpenDialogOptions = { properties: ['openDirectory', 'createDirectory'] }
+    if (defaultPath) opts.defaultPath = defaultPath
+    const r = win
+      ? await dialog.showOpenDialog(win, opts)
+      : await dialog.showOpenDialog(opts)
+    if (r.canceled || r.filePaths.length === 0) return null
+    return r.filePaths[0]
+  })
+
+  // ── File write ──
+  ipcMain.handle('file:write', async (_, path: string, content: string) => {
+    try {
+      await writeFile(path, content, 'utf-8')
+      return { ok: true as const, path }
+    } catch (err) {
+      return { ok: false as const, error: String((err as Error)?.message ?? err) }
+    }
+  })
+
+  ipcMain.handle('file:downloads-dir', (): string => app.getPath('downloads'))
 }

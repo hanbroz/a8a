@@ -20,6 +20,20 @@ export default defineConfig({
         '@renderer': resolve('src/renderer/src')
       }
     },
-    plugins: [react()]
+    plugins: [react()],
+    build: {
+      rollupOptions: {
+        output: {
+          manualChunks(id: string): string | undefined {
+            if (id.includes('node_modules/monaco-editor')) return 'monaco'
+            if (id.includes('node_modules/@monaco-editor')) return 'monaco'
+            if (id.includes('node_modules/sql.js')) return 'sqljs'
+            if (id.includes('node_modules/exceljs')) return 'exceljs'
+            if (id.includes('node_modules/react') || id.includes('node_modules/scheduler')) return 'react'
+            return undefined
+          }
+        }
+      }
+    }
   }
 })

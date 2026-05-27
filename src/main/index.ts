@@ -3,11 +3,12 @@ import { join } from 'path'
 import { electronApp, optimizer, is } from '@electron-toolkit/utils'
 import { initDb } from './db'
 import { registerIpcHandlers } from './ipc'
+import { resolveInitialWindowState, saveWindowState } from './windowState'
 
 function createWindow(): void {
+  const init = resolveInitialWindowState()
   const mainWindow = new BrowserWindow({
-    width: 1440,
-    height: 900,
+    ...init.bounds,
     minWidth: 900,
     minHeight: 600,
     show: false,
@@ -19,8 +20,14 @@ function createWindow(): void {
     }
   })
 
+  if (init.isMaximized) mainWindow.maximize()
+
   mainWindow.on('ready-to-show', () => {
     mainWindow.show()
+  })
+
+  mainWindow.on('close', () => {
+    saveWindowState(mainWindow)
   })
 
   mainWindow.webContents.setWindowOpenHandler((details) => {

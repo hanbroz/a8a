@@ -575,7 +575,7 @@
   color: #f85149;
   font-size: 11px;
   padding: 8px 0 4px;
-  font-family: monospace;
+  font-family: var(--font-mono);
   word-break: break-all;
 }
 
@@ -601,7 +601,7 @@
 }
 
 .log-entry-pre {
-  font-family: 'JetBrains Mono', 'Fira Code', monospace;
+  font-family: var(--font-mono);
   font-size: 11px;
   color: var(--text-2);
   background: var(--bg-2);
@@ -620,7 +620,7 @@
   font-weight: 700;
   flex-shrink: 0;
   letter-spacing: 0.04em;
-  font-family: monospace;
+  font-family: var(--font-mono);
 }
 
 .log-entry-status-code {
@@ -658,7 +658,7 @@
   align-items: center;
   gap: 8px;
   font-size: 12px;
-  font-family: monospace;
+  font-family: var(--font-mono);
   background: var(--bg-2);
   border: 1px solid var(--border-1);
   border-radius: 5px;
@@ -697,7 +697,7 @@
   display: flex;
   gap: 8px;
   font-size: 11px;
-  font-family: monospace;
+  font-family: var(--font-mono);
 }
 
 .log-api-kv-key {
@@ -715,7 +715,7 @@
   display: flex;
   align-items: center;
   gap: 8px;
-  font-family: monospace;
+  font-family: var(--font-mono);
   font-size: 13px;
   padding: 2px 0;
 }

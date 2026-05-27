@@ -2,6 +2,14 @@ import { contextBridge, ipcRenderer } from 'electron'
 import { electronAPI } from '@electron-toolkit/preload'
 
 const api = {
+  dialog: {
+    openDirectory: (defaultPath?: string): Promise<string | null> => ipcRenderer.invoke('dialog:open-directory', defaultPath)
+  },
+  file: {
+    write: (path: string, content: string): Promise<{ ok: true; path: string } | { ok: false; error: string }> =>
+      ipcRenderer.invoke('file:write', path, content),
+    downloadsDir: (): Promise<string> => ipcRenderer.invoke('file:downloads-dir')
+  },
   workspace: {
     list: (): Promise<{ id: string; name: string; description: string }[]> => ipcRenderer.invoke('ws:list'),
     create: (name: string, description: string): Promise<{ id: string; name: string; description: string }> => ipcRenderer.invoke('ws:create', name, description),
