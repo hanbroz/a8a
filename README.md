@@ -1,48 +1,50 @@
 # a8a Workflow Editor
 
-An Electron-based visual workflow editor built with React, TypeScript, and sql.js. Design and manage automated workflows with an intuitive canvas-based interface.
+Electron 기반 API 워크플로우 편집기입니다. React, TypeScript, sql.js를 사용하며, API 호출 흐름을 캔버스에서 노드로 연결해 실행하고 결과를 추적합니다.
 
-## Features
+## 주요 기능
 
-### Start/End Nodes
-Every new project automatically creates Start and End nodes on the workflow canvas. These serve as entry and exit points for your workflow and are persisted to the database on project creation.
+- 워크스페이스, 환경, 프로젝트, 모듈 관리
+- 프로젝트 생성 시 Start/End 노드 자동 생성
+- Data, Select, API, End 노드를 캔버스에 배치하고 연결
+- API 노드의 Pre Request, Post Response 스크립트 실행
+- 환경 변수 치환과 실행 중 `setEnv()` 반영
+- 실행 로그와 노드별 입력/출력 확인
+- End 노드에서 HTML 또는 Markdown 리포트 저장
 
-### Workflow Canvas
-Drag and drop nodes to design your workflow visually. Connect nodes by dragging from an output port to create bezier curve edges. The canvas includes intelligent snap detection (20px radius) for precise alignment. Hover over any connection line to reveal a delete button (X) at the midpoint for easy edge removal.
+## 기술 스택
 
-### Node Configuration
-Double-click the Start node to open a settings modal and configure workflow triggers:
-- **Manual Mode** (수동): Trigger workflows on demand
-- **Schedule Mode** (스케줄): Set recurring schedules with Daily, Weekly, Monthly, or custom Cron expressions. Includes time picker, weekday toggles, and live cron preview.
+- Electron
+- electron-vite
+- React
+- TypeScript
+- sql.js
+- Monaco Editor
+- ExcelJS
 
-Configuration is automatically saved to the database as JSON.
-
-### Workflow Connections
-Duplicate edges are silently ignored—the system prevents connecting the same source→target twice. Edge deletion is instant with visual confirmation via a delete button that appears on hover.
-
-### UI Refinements
-All select elements feature a custom dropdown arrow design with proper spacing (padding-right: 32px minimum) to prevent the arrow from overlapping the text.
-
-## Tech Stack
-
-- **Frontend**: React + TypeScript
-- **Desktop**: Electron
-- **Database**: sql.js (in-memory SQLite with persistence)
-- **Styling**: CSS with custom component styling
-
-## Getting Started
+## 실행 방법
 
 ```bash
-# Install dependencies
 npm install
-
-# Start development server
 npm run dev
 ```
 
-## Project Structure
+빌드는 다음 명령으로 확인합니다.
 
-- `src/main/` — Electron main process, IPC handlers, and database logic
-- `src/preload/` — Preload scripts for IPC bridge
-- `src/renderer/src/` — React app components and styles
-- `src/renderer/src/components/canvas/` — WorkflowCanvas component and node definitions
+```bash
+npm run build
+```
+
+Windows에서는 `dev.bat`, `run.bat`을 사용할 수 있고, Unix 계열 셸에서는 `./dev.sh`, `./run.sh`를 사용할 수 있습니다.
+
+## 프로젝트 구조
+
+```text
+src/main/                 Electron 메인 프로세스, DB, IPC
+src/preload/              Renderer에 노출되는 window.api 브리지
+src/renderer/src/App.tsx  앱 루트 상태와 워크플로우 실행 흐름
+src/renderer/src/components/canvas/
+                           캔버스와 노드 설정 모달
+src/renderer/src/utils/   템플릿 치환, 스크립트 런타임, 리포트 생성
+docs/                     아키텍처, 기술부채, 기능 계획 문서
+```

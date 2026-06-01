@@ -1,0 +1,66 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8">
+  <title>API 인증 기능 의사결정 보고</title>
+  <style>
+    body { font-family: "Malgun Gothic", "Apple SD Gothic Neo", sans-serif; line-height: 1.6; margin: 32px; color: #24292f; }
+    h1 { font-size: 24px; margin-bottom: 16px; }
+    h2 { font-size: 18px; margin-top: 28px; }
+    table { border-collapse: collapse; width: 100%; margin-top: 12px; }
+    th, td { border: 1px solid #d0d7de; padding: 8px 10px; text-align: left; vertical-align: top; }
+    th { background: #f6f8fa; }
+    code { background: #f6f8fa; padding: 2px 4px; border-radius: 4px; }
+  </style>
+</head>
+<body>
+  <h1>API 인증 기능 의사결정 보고</h1>
+  <p>API 모듈에 Auth 탭을 추가하고 선택한 인증 값이 테스트 실행, 미리보기 실행, 전체 워크플로 실행에 반영되도록 구현했습니다. 구현 대상은 Bearer, Basic, OAuth 2.0, API Key로 한정했습니다.</p>
+
+  <h2>결정 사항</h2>
+  <table>
+    <thead>
+      <tr>
+        <th>항목</th>
+        <th>결정</th>
+        <th>사유</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td>Bearer</td>
+        <td><code>Authorization: Bearer ...</code> 헤더를 자동 구성합니다.</td>
+        <td>토큰 값만으로 기존 API 호출 직전에 적용할 수 있습니다.</td>
+      </tr>
+      <tr>
+        <td>Basic</td>
+        <td>아이디와 비밀번호를 Base64로 인코딩하여 <code>Authorization: Basic ...</code> 헤더를 구성합니다.</td>
+        <td>추가 통신이나 챌린지 처리가 필요하지 않습니다.</td>
+      </tr>
+      <tr>
+        <td>OAuth 2.0</td>
+        <td>Access Token을 <code>Authorization: Bearer ...</code> 헤더로 적용합니다.</td>
+        <td>토큰 발급 플로우는 포함하지 않고, 사용자가 입력한 토큰을 호출에 반영합니다.</td>
+      </tr>
+      <tr>
+        <td>API Key</td>
+        <td>Header 또는 Query Param 중 선택한 위치에 키와 값을 적용합니다.</td>
+        <td>서비스별 API Key 전달 방식 차이를 수용하기 위해 위치 선택을 제공합니다.</td>
+      </tr>
+      <tr>
+        <td>제외 방식</td>
+        <td>Digest, NTLM, OAuth 1.0, WSSE, AWS Sig v4, Inherit는 드롭다운과 호출 로직에서 제외했습니다.</td>
+        <td>현재 구현 범위를 네 가지 인증 방식으로 제한하기로 했기 때문입니다.</td>
+      </tr>
+      <tr>
+        <td>템플릿 변수</td>
+        <td>Auth 입력 값에서도 <code>{{환경변수}}</code>와 <code>[[INPUT]]</code> 변수를 사용할 수 있도록 했습니다.</td>
+        <td>URL, Header, Param, Body와 동일한 변수 치환 흐름을 유지하기 위해서입니다.</td>
+      </tr>
+    </tbody>
+  </table>
+
+  <h2>검증</h2>
+  <p><code>npx tsc -b --noEmit</code>와 <code>npm run build</code>를 실행하여 타입 검사와 프로덕션 빌드를 통과했습니다.</p>
+</body>
+</html>

@@ -1,9 +1,12 @@
 import { useState, useEffect, useRef, useCallback } from 'react'
-import { mergeEnvVars, resolveTemplate } from './utils/interpolate'
-import { runPreRequest, runPostResponse } from './utils/scriptRuntime'
+import { flushSync } from 'react-dom'
+import { applyInputMappings, mergeEnvVars, parseTemplate, resolveInputExpression, resolveTemplate } from './utils/interpolate'
+import { applyApiAuth, getApiAuthTemplateValues } from './utils/apiAuth'
+import { isScriptRuntimeError, runPreRequest, runPostResponse } from './utils/scriptRuntime'
 import { generateReport, fillFilenameTemplate } from './utils/reportGenerator'
-import type { ReportNode, ReportApiDetail } from './utils/reportGenerator'
-import { IcoPanelL, IcoPlay, IcoReset, IcoSave, IcoSun, IcoMoon, IcoPanelB, IcoChevD } from './components/Icon'
+import type { ReportNode, ReportApiDetail, ReportVariable } from './utils/reportGenerator'
+import type { ScriptConsoleEntry } from './utils/scriptRuntime'
+import { IcoPanelL, IcoPlay, IcoReset, IcoSave, IcoSun, IcoMoon, IcoPanelB, IcoChevD, IcoX } from './components/Icon'
 import WorkspaceHeader from './components/sidebar/WorkspaceHeader'
 import ModuleSection from './components/sidebar/ModuleSection'
 import ProjectSection from './components/sidebar/ProjectSection'
@@ -18,10 +21,16 @@ import EndNodeModal from './components/canvas/EndNodeModal'
 import DataNodeModal from './components/canvas/DataNodeModal'
 import SelectNodeModal from './components/canvas/SelectNodeModal'
 import ApiNodeModal from './components/canvas/ApiNodeModal'
+import BranchNodeModal from './components/canvas/BranchNodeModal'
+import BranchChoicePopup from './components/canvas/BranchChoicePopup'
 import SelectionPopup from './components/canvas/SelectionPopup'
+import JsonMonacoEditor from './components/canvas/JsonMonacoEditor'
+import type { SelectionPopupSelection } from './components/canvas/SelectionPopup'
+import { evaluateBranch, parseBranchConfig } from './utils/branch'
 import type { Environment } from './components/env/EnvSection'
 import type { ProjectItem } from './components/sidebar/ProjectModal'
 import type { WorkspaceModalItem } from './components/sidebar/WorkspaceModal'
+import { randomId } from './utils/id'
 
 // Read a DATA node's output value. Accepts both new shape (`{ output: string }`)
 // and legacy shape (`{ items, excelData }`). On any failure returns an empty array.
@@ -54,11 +63,13 @@ type LogEntry = {
   input: unknown; output?: unknown; error?: string
   startedAt: number; duration?: number
   apiDetail?: ApiLogDetail
+  scriptLogs?: ScriptLogBundle
 }
 
 const NODE_TYPE_COLORS: Record<string, { color: string; bg: string; label: string }> = {
   data:   { color: '#1f6feb', bg: 'rgba(31,111,235,0.15)',  label: 'DATA' },
   select: { color: '#8957e5', bg: 'rgba(137,87,229,0.15)', label: 'SELECT' },
+  branch: { color: '#d29922', bg: 'rgba(210,153,34,0.15)', label: 'BRANCH' },
   api:    { color: '#3fb950', bg: 'rgba(63,185,80,0.15)',   label: 'API' },
 }
 
@@ -72,12 +83,176 @@ function statusCodeColor(code: number): string {
 interface CanvasExecution {
   nodeOutputs: Record<string, unknown>
   moduleVars: Record<string, Record<string, unknown>>
+  branchRoutes?: Record<string, 'true' | 'false'>
+  envVars: Record<string, string>
+  usedVariables: Record<string, ReportVariable>
   execLogs: LogEntry[]
   startedAt: number
   plan: string[]
   step: number
-  pendingSelectInput: unknown[] | null
+  pendingSelectInput: unknown | null
+  pendingBranchChoice?: {
+    input: unknown
+    trueLabel: string
+    falseLabel: string
+    defaultRoute: 'true' | 'false'
+  } | null
   pendingLogEntryId?: string | null
+}
+
+function usedVariableKey(kind: ReportVariable['kind'], name: string): string {
+  return `${kind}:${name}`
+}
+
+function recordUsedTemplateVariables(
+  usedVariables: Record<string, ReportVariable>,
+  templates: string[],
+  envVars: Record<string, string>,
+  inputData: Record<string, unknown>,
+): void {
+  templates
+    .filter(template => template.trim().length > 0)
+    .forEach(template => {
+      parseTemplate(template, envVars, inputData).forEach(token => {
+        if (token.type === 'env') {
+          usedVariables[usedVariableKey('env', token.name)] = {
+            kind: 'env',
+            name: token.name,
+            value: Object.prototype.hasOwnProperty.call(envVars, token.name) ? envVars[token.name] : null,
+          }
+        }
+        if (token.type === 'input') {
+          const value = resolveInputExpression(inputData, token.key)
+          usedVariables[usedVariableKey('input', token.key)] = {
+            kind: 'input',
+            name: token.key,
+            value: value === undefined ? null : value,
+          }
+        }
+      })
+    })
+}
+
+function recordUpdatedEnvVariables(
+  usedVariables: Record<string, ReportVariable>,
+  envVars: Record<string, string>,
+  updates: Record<string, string>,
+): void {
+  for (const name of Object.keys(updates)) {
+    usedVariables[usedVariableKey('env', name)] = {
+      kind: 'env',
+      name,
+      value: Object.prototype.hasOwnProperty.call(envVars, name) ? envVars[name] : updates[name],
+    }
+  }
+}
+
+function recordUsedInputVariable(
+  usedVariables: Record<string, ReportVariable>,
+  name: string,
+  inputData: Record<string, unknown>,
+): void {
+  const trimmed = name.trim()
+  if (!trimmed) return
+  const value = resolveInputExpression(inputData, trimmed)
+  usedVariables[usedVariableKey('input', trimmed)] = {
+    kind: 'input',
+    name: trimmed,
+    value: value === undefined ? null : value,
+  }
+}
+
+function recordUsedBranchVariables(
+  usedVariables: Record<string, ReportVariable>,
+  expression: string,
+  input: unknown,
+): void {
+  const inputData = input && typeof input === 'object' ? input as Record<string, unknown> : { value: input }
+  const comparison = expression.match(/^\s*\[\[([\s\S]*?)\]\]\s*(?:===|!==|==|!=|>=|<=|>|<)\s*([\s\S]+?)\s*$/)
+  if (comparison) {
+    recordUsedInputVariable(usedVariables, comparison[1], inputData)
+    return
+  }
+
+  const singleValue = expression.match(/^\s*\[\[([\s\S]*?)\]\]\s*$/)
+  recordUsedInputVariable(usedVariables, singleValue ? singleValue[1] : expression, inputData)
+}
+
+function finalizeUsedVariables(
+  usedVariables: Record<string, ReportVariable>,
+  envVars: Record<string, string>,
+): ReportVariable[] {
+  return Object.values(usedVariables).map(variable => {
+    if (variable.kind !== 'env') return variable
+    return {
+      ...variable,
+      value: Object.prototype.hasOwnProperty.call(envVars, variable.name) ? envVars[variable.name] : variable.value,
+    }
+  })
+}
+
+function ExecutionScriptConsole({
+  title,
+  logs,
+}: {
+  title: string
+  logs: ScriptConsoleEntry[]
+}): JSX.Element | null {
+  if (logs.length === 0) return null
+
+  return (
+    <div className="log-script-console">
+      <div className="log-script-console-title">{title}</div>
+      <div className="api-script-console-list log-script-console-list">
+        {logs.map((log, index) => (
+          <div key={`${log.timestamp}-${index}`} className={`api-script-console-row api-script-console-${log.level}`}>
+            <span className="api-script-console-time">
+              {new Date(log.timestamp).toLocaleTimeString('ko-KR', { hour12: false })}
+            </span>
+            <span className="api-script-console-level">{log.level}</span>
+            <pre className="api-script-console-message">{log.message}</pre>
+          </div>
+        ))}
+      </div>
+    </div>
+  )
+}
+
+function formatLogJsonValue(value: unknown): string {
+  if (value === undefined) return ''
+  if (typeof value === 'string') {
+    const trimmed = value.trim()
+    if (!trimmed) return ''
+    try { return JSON.stringify(JSON.parse(trimmed), null, 2) } catch { return value }
+  }
+  try { return JSON.stringify(value ?? null, null, 2) } catch { return String(value) }
+}
+
+function getLogJsonViewerHeight(value: string): number {
+  const lineCount = Math.max(1, value.split(/\r\n|\r|\n/).length)
+  return Math.max(120, Math.min(360, lineCount * 18 + 44))
+}
+
+function LogJsonViewer({
+  value,
+  path,
+  placeholder = 'JSON 값이 없습니다.',
+}: {
+  value: unknown
+  path: string
+  placeholder?: string
+}): JSX.Element {
+  const formatted = formatLogJsonValue(value)
+  return (
+    <div className="log-json-viewer" style={{ height: getLogJsonViewerHeight(formatted) }}>
+      <JsonMonacoEditor
+        value={formatted}
+        readOnly
+        path={path}
+        placeholder={placeholder}
+      />
+    </div>
+  )
 }
 
 function LogEntryRow({ entry, isActive }: { entry: LogEntry; isActive?: boolean }): JSX.Element {
@@ -85,6 +260,8 @@ function LogEntryRow({ entry, isActive }: { entry: LogEntry; isActive?: boolean 
   const cfg = NODE_TYPE_COLORS[entry.type] ?? { color: '#8b949e', bg: 'rgba(139,148,158,0.15)', label: entry.type.toUpperCase() }
   const statusColor = entry.status === 'success' ? '#3fb950' : entry.status === 'error' ? '#f85149' : entry.status === 'skip' ? '#8b949e' : '#d29922'
   const api = entry.apiDetail
+  const scriptLogs = entry.scriptLogs
+  const hasScriptLogs = !!scriptLogs && (scriptLogs.pre.length > 0 || scriptLogs.post.length > 0)
 
   useEffect(() => {
     if (isActive) setOpen(true)
@@ -130,6 +307,23 @@ function LogEntryRow({ entry, isActive }: { entry: LogEntry; isActive?: boolean 
 
           {api ? (
             <div className="log-api-detail">
+              {(entry.input !== null && entry.input !== undefined) || (entry.output !== null && entry.output !== undefined) ? (
+                <div className="log-entry-io log-entry-io-api">
+                  {entry.input !== null && entry.input !== undefined && (
+                    <div className="log-entry-io-col">
+                      <div className="log-entry-io-label">INPUT</div>
+                      <LogJsonViewer value={entry.input} path={`execution-log/${entry.id}/api-input.json`} placeholder="INPUT 값이 없습니다." />
+                    </div>
+                  )}
+                  {entry.output !== null && entry.output !== undefined && (
+                    <div className="log-entry-io-col">
+                      <div className="log-entry-io-label">OUTPUT</div>
+                      <LogJsonViewer value={entry.output} path={`execution-log/${entry.id}/api-output.json`} placeholder="OUTPUT 값이 없습니다." />
+                    </div>
+                  )}
+                </div>
+              ) : null}
+
               {/* REQUEST */}
               <div className="log-api-section">
                 <div className="log-api-section-title">REQUEST</div>
@@ -153,7 +347,7 @@ function LogEntryRow({ entry, isActive }: { entry: LogEntry; isActive?: boolean 
                 {api.body && (
                   <div className="log-api-block">
                     <div className="log-entry-io-label">BODY</div>
-                    <pre className="log-entry-pre">{(() => { try { return JSON.stringify(JSON.parse(api.body), null, 2) } catch { return api.body } })()}</pre>
+                    <LogJsonViewer value={api.body} path={`execution-log/${entry.id}/request-body.json`} placeholder="요청 BODY가 없습니다." />
                   </div>
                 )}
               </div>
@@ -169,9 +363,16 @@ function LogEntryRow({ entry, isActive }: { entry: LogEntry; isActive?: boolean 
                   {api.responseText && (
                     <div className="log-api-block">
                       <div className="log-entry-io-label">BODY</div>
-                      <pre className="log-entry-pre">{(() => { try { return JSON.stringify(JSON.parse(api.responseText), null, 2) } catch { return api.responseText } })()}</pre>
+                      <LogJsonViewer value={api.responseText} path={`execution-log/${entry.id}/response-body.json`} placeholder="응답 BODY가 없습니다." />
                     </div>
                   )}
+                </div>
+              )}
+              {hasScriptLogs && (
+                <div className="log-api-section">
+                  <div className="log-api-section-title">SCRIPT CONSOLE</div>
+                  <ExecutionScriptConsole title="PRE REQUEST / INPUT" logs={scriptLogs.pre} />
+                  <ExecutionScriptConsole title="POST RESPONSE" logs={scriptLogs.post} />
                 </div>
               )}
             </div>
@@ -179,12 +380,12 @@ function LogEntryRow({ entry, isActive }: { entry: LogEntry; isActive?: boolean 
             <div className="log-entry-io">
               <div className="log-entry-io-col">
                 <div className="log-entry-io-label">INPUT</div>
-                <pre className="log-entry-pre">{entry.input === null || entry.input === undefined ? 'null' : JSON.stringify(entry.input, null, 2)}</pre>
+                <LogJsonViewer value={entry.input ?? null} path={`execution-log/${entry.id}/input.json`} placeholder="INPUT 값이 없습니다." />
               </div>
               {entry.output !== undefined && (
                 <div className="log-entry-io-col">
                   <div className="log-entry-io-label">OUTPUT</div>
-                  <pre className="log-entry-pre">{JSON.stringify(entry.output, null, 2)}</pre>
+                  <LogJsonViewer value={entry.output} path={`execution-log/${entry.id}/output.json`} placeholder="OUTPUT 값이 없습니다." />
                 </div>
               )}
             </div>
@@ -195,32 +396,327 @@ function LogEntryRow({ entry, isActive }: { entry: LogEntry; isActive?: boolean 
   )
 }
 
-function executeNodeOutput(nodeId: string, nodes: ApiNode[], edges: ApiEdge[]): string {
+type ScriptLogBundle = {
+  pre: ScriptConsoleEntry[]
+  post: ScriptConsoleEntry[]
+}
+
+type SelectPopupResult = {
+  rows: unknown[]
+  selection: SelectionPopupSelection
+}
+
+type JsonPathPart = string | number
+
+function parseSelectConfig(raw: string): SelectConfig {
+  try {
+    const parsed = JSON.parse(raw || '{}') as Partial<SelectConfig>
+    return {
+      ...parsed,
+      selectedRowIndices: Array.isArray(parsed.selectedRowIndices) ? parsed.selectedRowIndices : [],
+      selectedJsonPaths: Array.isArray(parsed.selectedJsonPaths) ? parsed.selectedJsonPaths : [],
+      selectMode: parsed.selectMode === 'json' ? 'json' : parsed.selectMode === 'table' ? 'table' : undefined,
+      selectionType: parsed.selectionType === 'single' ? 'single' : 'multiple',
+      autoSelect: parsed.autoSelect === true,
+    }
+  } catch {
+    return { selectedRowIndices: [], selectedJsonPaths: [], selectionType: 'multiple', autoSelect: false }
+  }
+}
+
+function selectedRowIndicesForConfig(config: SelectConfig): number[] {
+  const indices = config.selectedRowIndices ?? []
+  return config.selectionType === 'single' ? indices.slice(0, 1) : indices
+}
+
+function selectedJsonPathsForConfig(config: SelectConfig): string[] {
+  const paths = config.selectedJsonPaths ?? []
+  return config.selectionType === 'single' ? paths.slice(0, 1) : paths
+}
+
+function isJsonContainer(value: unknown): boolean {
+  return Array.isArray(value) || (typeof value === 'object' && value !== null)
+}
+
+function selectChildPath(parentPath: string, key: JsonPathPart): string {
+  if (typeof key === 'number') return `${parentPath}[${key}]`
+  return /^[A-Za-z_$][\w$]*$/.test(key) ? `${parentPath}.${key}` : `${parentPath}[${JSON.stringify(key)}]`
+}
+
+function flattenJsonPaths(value: unknown, path = '$', parts: JsonPathPart[] = []): Array<{ id: string; parts: JsonPathPart[]; selectable: boolean }> {
+  const current = { id: path, parts, selectable: true }
+  if (Array.isArray(value)) {
+    return [
+      current,
+      ...value.flatMap((item, index) => flattenJsonPaths(item, selectChildPath(path, index), [...parts, index])),
+    ]
+  }
+  if (value && typeof value === 'object') {
+    return [
+      current,
+      ...Object.entries(value as Record<string, unknown>).flatMap(([key, child]) =>
+        flattenJsonPaths(child, selectChildPath(path, key), [...parts, key]),
+      ),
+    ]
+  }
+  return [current]
+}
+
+function selectJsonData(data: unknown): unknown {
+  const rows = Array.isArray(data) && data.length > 0 && typeof data[0] === 'object' && data[0] !== null && !Array.isArray(data[0])
+    ? data as Record<string, unknown>[]
+    : null
+  return rows && rows.length === 1 ? rows[0] : data
+}
+
+function cloneSelectedJsonValue(value: unknown): unknown {
+  if (!isJsonContainer(value)) return value
+  return JSON.parse(JSON.stringify(value)) as unknown
+}
+
+function readJsonPath(source: unknown, parts: JsonPathPart[]): unknown {
+  return parts.reduce<unknown>((current, part) => {
+    if (current === null || current === undefined) return undefined
+    return (current as Record<string, unknown> | unknown[])[part as never]
+  }, source)
+}
+
+function assignJsonProjectionWithMaps(
+  target: unknown,
+  source: unknown,
+  parts: JsonPathPart[],
+  sourceParentParts: JsonPathPart[],
+  arrayIndexMaps: Map<string, Map<number, number>>,
+): void {
+  let targetCursor = target as Record<string, unknown> | unknown[]
+  let sourceCursor = source
+  const sourcePath = [...sourceParentParts]
+  parts.forEach((part, index) => {
+    const nextSource = readJsonPath(sourceCursor, [part])
+    const isLast = index === parts.length - 1
+    let targetPart = part
+    if (Array.isArray(targetCursor) && typeof part === 'number') {
+      const mapKey = JSON.stringify(sourcePath)
+      let indexMap = arrayIndexMaps.get(mapKey)
+      if (!indexMap) {
+        indexMap = new Map<number, number>()
+        arrayIndexMaps.set(mapKey, indexMap)
+      }
+      if (!indexMap.has(part)) indexMap.set(part, indexMap.size)
+      targetPart = indexMap.get(part)!
+    }
+
+    if (isLast) {
+      ;(targetCursor as Record<string, unknown>)[targetPart] = cloneSelectedJsonValue(nextSource)
+      return
+    }
+    const nextPart = parts[index + 1]
+    if ((targetCursor as Record<string, unknown>)[targetPart] === undefined) {
+      ;(targetCursor as Record<string, unknown>)[targetPart] = typeof nextPart === 'number' ? [] : {}
+    }
+    targetCursor = (targetCursor as Record<string, unknown>)[targetPart] as Record<string, unknown> | unknown[]
+    sourceCursor = nextSource
+    sourcePath.push(part)
+  })
+}
+
+function buildSelectedJsonOutput(data: unknown, selectedPaths: string[]): unknown {
+  if (selectedPaths.length === 0) return []
+  const source = selectJsonData(data)
+  const nodes = flattenJsonPaths(source)
+  return selectedPaths
+    .map(path => nodes.find(node => node.selectable && node.id === path))
+    .filter((node): node is { id: string; parts: JsonPathPart[]; selectable: boolean } => !!node)
+    .map(node => readJsonPath(source, node.parts))
+    .filter(value => value !== undefined)
+    .map(cloneSelectedJsonValue)
+}
+
+function reportNodeType(type: string): ReportNode['type'] {
+  if (type === 'start' || type === 'end' || type === 'data' || type === 'select' || type === 'api' || type === 'branch') return type
+  return 'data'
+}
+
+function isValidWorkflowEdge(edge: ApiEdge, nodes: ApiNode[]): boolean {
+  const source = nodes.find(n => n.id === edge.sourceNodeId)
+  const target = nodes.find(n => n.id === edge.targetNodeId)
+  return !!source && !!target && source.id !== target.id && source.type !== 'end' && target.type !== 'start'
+}
+
+function getValidWorkflowEdges(nodes: ApiNode[], edges: ApiEdge[], replacedEdgeIds?: string | string[]): ApiEdge[] {
+  const excluded = new Set(Array.isArray(replacedEdgeIds) ? replacedEdgeIds : replacedEdgeIds ? [replacedEdgeIds] : [])
+  return edges.filter(e => !excluded.has(e.id) && isValidWorkflowEdge(e, nodes))
+}
+
+function executeNodeOutput(nodeId: string, nodes: ApiNode[], edges: ApiEdge[], visiting = new Set<string>()): string {
+  if (visiting.has(nodeId)) return JSON.stringify({ __previewError: '순환 연결이 감지되었습니다.' }, null, 2)
   const node = nodes.find(n => n.id === nodeId)
   if (!node) return '[]'
-  const inEdge = edges.find(e => e.targetNodeId === nodeId)
-  const upstreamJson = inEdge ? executeNodeOutput(inEdge.sourceNodeId, nodes, edges) : '[]'
+  const validEdges = getValidWorkflowEdges(nodes, edges)
+  const inEdge = validEdges.find(e => e.targetNodeId === nodeId)
+  const nextVisiting = new Set(visiting)
+  nextVisiting.add(nodeId)
+  const upstreamJson = inEdge ? executeNodeOutput(inEdge.sourceNodeId, nodes, validEdges, nextVisiting) : '[]'
   if (node.type === 'data') {
     return JSON.stringify(readDataNodeOutput(node.config), null, 2)
   }
   if (node.type === 'select') {
     try {
-      const cfg = JSON.parse(node.config || '{}') as SelectConfig
+      const cfg = parseSelectConfig(node.config)
       const input = JSON.parse(upstreamJson) as unknown[]
-      if (!Array.isArray(input) || input.length === 0 || cfg.selectedRowIndices.length === 0) return upstreamJson
-      const filtered = cfg.selectedRowIndices.map(i => input[i]).filter(Boolean)
-      return JSON.stringify(filtered[0] ?? null, null, 2)
+      const selectedJsonPaths = selectedJsonPathsForConfig(cfg)
+      const selectedRowIndices = selectedRowIndicesForConfig(cfg)
+      if (cfg.selectMode === 'json' && selectedJsonPaths.length > 0) {
+        return JSON.stringify(buildSelectedJsonOutput(input, selectedJsonPaths), null, 2)
+      }
+      if (!Array.isArray(input) || input.length === 0 || selectedRowIndices.length === 0) return upstreamJson
+      const filtered = selectedRowIndices.map(i => input[i]).filter(value => value !== undefined)
+      return JSON.stringify(filtered, null, 2)
     } catch { return upstreamJson }
   }
   if (node.type === 'api') {
     return upstreamJson
   }
+  if (node.type === 'branch') {
+    return upstreamJson
+  }
   return upstreamJson
+}
+
+function wouldCreateCycle(edges: ApiEdge[], sourceId: string, targetId: string): boolean {
+  const stack = [targetId]
+  const visited = new Set<string>()
+  while (stack.length > 0) {
+    const current = stack.pop()!
+    if (current === sourceId) return true
+    if (visited.has(current)) continue
+    visited.add(current)
+    edges.filter(e => e.sourceNodeId === current).forEach(e => stack.push(e.targetNodeId))
+  }
+  return false
+}
+
+function canConnectEdge(
+  nodes: ApiNode[],
+  edges: ApiEdge[],
+  sourceId: string,
+  targetId: string,
+  replacedEdgeIds?: string | string[],
+): boolean {
+  if (sourceId === targetId) return false
+  const source = nodes.find(n => n.id === sourceId)
+  const target = nodes.find(n => n.id === targetId)
+  if (!source || !target) return false
+  if (source.type === 'end' || target.type === 'start') return false
+  const nextEdges = getValidWorkflowEdges(nodes, edges, replacedEdgeIds)
+  if (nextEdges.some(e => e.sourceNodeId === sourceId && e.targetNodeId === targetId)) return false
+  if (source.type === 'start' && nextEdges.some(e => e.sourceNodeId === sourceId)) return false
+  if (!allowsMultipleIncoming(target.type) && nextEdges.some(e => e.targetNodeId === targetId)) return false
+  return !wouldCreateCycle(nextEdges, sourceId, targetId)
+}
+
+function allowsMultipleIncoming(type: string): boolean {
+  return type === 'api' || type === 'branch'
+}
+
+function isRuntimeEdgeActive(edge: ApiEdge, nodes: ApiNode[], branchRoutes: Record<string, 'true' | 'false'>): boolean {
+  const source = nodes.find(n => n.id === edge.sourceNodeId)
+  if (source?.type !== 'branch') return true
+  const selectedRoute = branchRoutes[source.id]
+  if (!selectedRoute) return true
+  return (edge.sourcePort ?? 'true') === selectedRoute
+}
+
+function getRuntimeReachableNodeIds(
+  nodes: ApiNode[],
+  edges: ApiEdge[],
+  branchRoutes: Record<string, 'true' | 'false'>,
+): Set<string> {
+  const start = nodes.find(n => n.type === 'start')
+  const reachable = new Set<string>()
+  if (!start) return reachable
+  const queue = [start.id]
+  while (queue.length > 0) {
+    const id = queue.shift()!
+    if (reachable.has(id)) continue
+    reachable.add(id)
+    edges
+      .filter(edge => edge.sourceNodeId === id && isRuntimeEdgeActive(edge, nodes, branchRoutes))
+      .forEach(edge => queue.push(edge.targetNodeId))
+  }
+  return reachable
+}
+
+function buildApiInputEnvelope(incomingEdges: ApiEdge[], nodeOutputs: Record<string, unknown>): { output: Record<string, unknown> } {
+  const output: Record<string, unknown> = {}
+  incomingEdges.forEach(edge => {
+    output[edge.sourceNodeId] = nodeOutputs[edge.sourceNodeId] ?? null
+  })
+  return { output }
+}
+
+function buildNodeInputValue(
+  node: ApiNode,
+  incomingEdges: ApiEdge[],
+  nodeOutputs: Record<string, unknown>,
+): unknown {
+  if (node.type === 'api' || (node.type === 'branch' && incomingEdges.length > 1)) {
+    return buildApiInputEnvelope(incomingEdges, nodeOutputs)
+  }
+  const inEdge = incomingEdges[0]
+  return inEdge ? (nodeOutputs[inEdge.sourceNodeId] ?? null) : null
+}
+
+function getApiOutputMap(rawInput: unknown): Record<string, unknown> {
+  if (rawInput && typeof rawInput === 'object' && !Array.isArray(rawInput)) {
+    const output = (rawInput as Record<string, unknown>).output
+    if (output && typeof output === 'object' && !Array.isArray(output)) {
+      return output as Record<string, unknown>
+    }
+  }
+  return {}
+}
+
+function mergeIncomingModuleVars(
+  incomingEdges: ApiEdge[],
+  moduleVars: Record<string, Record<string, unknown>>,
+): Record<string, unknown> {
+  return incomingEdges.reduce<Record<string, unknown>>((acc, edge) => ({
+    ...acc,
+    ...(moduleVars[edge.sourceNodeId] ?? {}),
+  }), {})
+}
+
+function buildApiTemplateItems(
+  rawInput: unknown,
+  incomingEdges: ApiEdge[],
+  upstreamModuleVars: Record<string, unknown>,
+  preInputVars: Record<string, unknown>,
+): Array<Record<string, unknown>> {
+  const outputMap = getApiOutputMap(rawInput)
+  const singleSourceOutput = incomingEdges.length === 1 ? outputMap[incomingEdges[0].sourceNodeId] : undefined
+  const sourceRows = incomingEdges.length === 1
+    ? Array.isArray(singleSourceOutput) ? singleSourceOutput : singleSourceOutput === undefined || singleSourceOutput === null ? [] : [singleSourceOutput]
+    : [rawInput]
+  const rows = sourceRows.length > 0 ? sourceRows : [{}]
+
+  return rows.map(row => {
+    const rowVars = row && typeof row === 'object' && !Array.isArray(row)
+      ? row as Record<string, unknown>
+      : {}
+    return {
+      ...rowVars,
+      ...upstreamModuleVars,
+      ...preInputVars,
+      output: outputMap,
+    }
+  })
 }
 
 type Theme = 'dark' | 'light'
 type SidebarLayout = 'full' | 'icons'
 type LogState = 'collapsed' | 'fullscreen'
+type NodeStatus = 'running' | 'success' | 'error' | 'skip'
 
 type Workspace = {
   id: string
@@ -253,12 +749,15 @@ export default function App(): JSX.Element {
 
   const [activeNodes, setActiveNodes] = useState<ApiNode[]>([])
   const [activeEdges, setActiveEdges] = useState<ApiEdge[]>([])
+  const [copiedCanvasNode, setCopiedCanvasNode] = useState<ApiNode | null>(null)
+  const pasteOffsetRef = useRef(0)
   const [confirmDeleteEdge, setConfirmDeleteEdge] = useState<ApiEdge | null>(null)
   const [editingNode, setEditingNode] = useState<ApiNode | null>(null)
   const [newModuleCtx, setNewModuleCtx] = useState<{ wsId: string | null; type: string } | null>(null)
   const [editingModule, setEditingModule] = useState<ApiModule | null>(null)
   const [nodeRunInputs, setNodeRunInputs] = useState<Record<string, string>>({})
   const [nodeRunOutputs, setNodeRunOutputs] = useState<Record<string, string>>({})
+  const [nodeScriptLogs, setNodeScriptLogs] = useState<Record<string, ScriptLogBundle>>({})
   const [allModules, setAllModules] = useState<ApiModule[]>([])
 
   const [envDropdownOpen, setEnvDropdownOpen] = useState(false)
@@ -274,20 +773,37 @@ export default function App(): JSX.Element {
   const [confirmDeleteProject, setConfirmDeleteProject] = useState<{ wsId: string; project: ProjectItem } | null>(null)
   const [confirmDeleteEnv, setConfirmDeleteEnv] = useState<{ wsId: string; env: Environment } | null>(null)
   const [confirmDeleteModule, setConfirmDeleteModule] = useState<ApiModule | null>(null)
+  const [confirmDeleteCanvasNode, setConfirmDeleteCanvasNode] = useState<ApiNode | null>(null)
   const [iconTooltip, setIconTooltip] = useState<{ text: string; x: number; y: number } | null>(null)
 
   // ── Canvas execution ──
   const [canvasExecution, setCanvasExecution] = useState<CanvasExecution | null>(null)
   const [execLogs, setExecLogs] = useState<LogEntry[]>([])
-  const [nodeStatuses, setNodeStatuses] = useState<Record<string, 'running' | 'success' | 'error'>>({})
+  const [nodeStatuses, setNodeStatuses] = useState<Record<string, NodeStatus>>({})
+  const [activeBranchRoutes, setActiveBranchRoutes] = useState<Record<string, 'true' | 'false'>>({})
   const [activeLogNodeId, setActiveLogNodeId] = useState<string | null>(null)
+  const [downloadingReport, setDownloadingReport] = useState(false)
+  const [savedReport, setSavedReport] = useState<{ path: string } | null>(null)
 
   // Preview-mode select wait: when previewUpToNode hits a select without auto,
   // we surface a popup and pause until the user resolves the chosen rows.
   const [pendingPreviewSelect, setPendingPreviewSelect] = useState<{
-    data: Record<string, unknown>[]
-    resolve: (rows: unknown[]) => void
+    nodeId: string
+    data: unknown
+    config: SelectConfig
+    resolve: (result: SelectPopupResult | null) => void
   } | null>(null)
+
+  const setScriptLogsForNode = useCallback((nodeId: string, phase: keyof ScriptLogBundle, logs: ScriptConsoleEntry[]): void => {
+    setNodeScriptLogs(prev => ({
+      ...prev,
+      [nodeId]: {
+        pre: prev[nodeId]?.pre ?? [],
+        post: prev[nodeId]?.post ?? [],
+        [phase]: logs,
+      },
+    }))
+  }, [])
 
   // ── Load from DB on mount ──
   useEffect(() => {
@@ -363,22 +879,44 @@ export default function App(): JSX.Element {
   }, [])
 
   const isFull = sidebarLayout === 'full'
-  const activeWs = workspaces.find(w => w.id === activeWsId)
   const activeProject = workspaces.flatMap(w => w.projects).find(p => p.id === activeProjectId)
   // topbar는 현재 열린 프로젝트의 워크스페이스/환경을 표시 (사이드바 선택과 무관)
   const activeProjectWs = workspaces.find(w => w.projects.some(p => p.id === activeProjectId))
   const activeProjectEnv = activeProjectWs?.environments.find(e => e.id === activeProjectWs.activeEnvId)
-  const activeEnv = activeWs?.environments.find(e => e.id === activeWs.activeEnvId)
+  const activeProjectEnvVars = activeProjectWs
+    ? mergeEnvVars(
+        activeProjectWs.environments as Array<{ id: string; isBase: boolean; vars: Array<{ key: string; value: string; enabled: boolean }> }>,
+        activeProjectWs.activeEnvId,
+      )
+    : {}
 
   useEffect(() => {
+    // 프로젝트가 바뀌면 이전 프로젝트의 실행 상태(진행 중 실행/로그/상태 배지/분기 경로)를
+    // 초기화한다. 노드 id는 프로젝트마다 고유하므로 남겨두면 엉뚱하게 표시된다.
+    setCanvasExecution(null)
+    setExecLogs([])
+    setNodeStatuses({})
+    setActiveBranchRoutes({})
     if (!activeProject) { setActiveNodes([]); setActiveEdges([]); return }
+    // 프로젝트 전환 경쟁 상태 방지: 로드가 끝나기 전에 다른 프로젝트로 바꾸면
+    // 뒤늦게 도착한 응답이 현재 캔버스를 덮어쓰고, 엉뚱한 프로젝트의 엣지를
+    // 삭제하는 것을 막는다.
+    let cancelled = false
+    const pid = activeProject.id
     Promise.all([
-      window.api.node.list(activeProject.id),
-      window.api.edge.list(activeProject.id)
+      window.api.node.list(pid),
+      window.api.edge.list(pid)
     ]).then(([nodes, edges]) => {
+      if (cancelled) return
+      const validEdges = getValidWorkflowEdges(nodes, edges)
+      const validIds = new Set(validEdges.map(e => e.id))
+      edges.filter(e => !validIds.has(e.id)).forEach(e => {
+        window.api.edge.delete(e.id).catch(console.error)
+      })
       setActiveNodes(nodes)
-      setActiveEdges(edges)
+      setActiveEdges(validEdges)
     }).catch(console.error)
+    return () => { cancelled = true }
   }, [activeProject?.id])
 
   useEffect(() => {
@@ -390,12 +928,26 @@ export default function App(): JSX.Element {
     setActiveNodes(prev => prev.map(n => n.id === id ? { ...n, x, y } : n))
   }, [])
 
-  const handleEdgeCreate = useCallback(async (sourceId: string, targetId: string): Promise<void> => {
+  const handleEdgeCreate = useCallback(async (sourceId: string, targetId: string, sourcePort?: string | null): Promise<void> => {
     if (!activeProject) return
-    if (activeEdges.some(e => e.sourceNodeId === sourceId && e.targetNodeId === targetId)) return
-    const edge = await window.api.edge.create(activeProject.id, sourceId, targetId)
-    setActiveEdges(prev => [...prev, edge])
-  }, [activeProject?.id, activeEdges])
+    try {
+      const source = activeNodes.find(n => n.id === sourceId)
+      const target = activeNodes.find(n => n.id === targetId)
+      const existingIncoming = target && allowsMultipleIncoming(target.type) ? undefined : activeEdges.find(e => e.targetNodeId === targetId)
+      const existingStartOutgoing = source?.type === 'start' ? activeEdges.find(e => e.sourceNodeId === sourceId) : undefined
+      if (existingIncoming?.sourceNodeId === sourceId && existingStartOutgoing?.targetNodeId === targetId) return
+      const replaceIds = Array.from(new Set([existingIncoming?.id, existingStartOutgoing?.id].filter((id): id is string => typeof id === 'string')))
+      if (!canConnectEdge(activeNodes, activeEdges, sourceId, targetId, replaceIds)) return
+      await Promise.all(replaceIds.map(id => window.api.edge.delete(id)))
+      const edge = await window.api.edge.create(activeProject.id, sourceId, targetId, sourcePort ?? null)
+      setActiveEdges(prev => [...prev.filter(e => !replaceIds.includes(e.id)), edge])
+      setNodeStatuses({})
+      setActiveBranchRoutes({})
+      setActiveLogNodeId(null)
+    } catch (err) {
+      console.error('연결 생성 실패:', err)
+    }
+  }, [activeProject?.id, activeNodes, activeEdges])
 
   const handleNodeOpen = useCallback((nodeId: string): void => {
     const node = activeNodes.find(n => n.id === nodeId)
@@ -407,18 +959,50 @@ export default function App(): JSX.Element {
     setActiveNodes(prev => prev.map(n => n.id === nodeId ? { ...n, config } : n))
   }
 
-  const handleDataNodeSave = async (nodeId: string, label: string, config: string): Promise<void> => {
+  const handleDataNodeSave = async (nodeId: string, displayLabel: string, moduleLabelOrConfig: string, maybeConfig?: string): Promise<void> => {
+    const config = maybeConfig ?? moduleLabelOrConfig
+    const moduleLabel = maybeConfig ? moduleLabelOrConfig : displayLabel
     const node = activeNodes.find(n => n.id === nodeId)
     if (node?.moduleId) {
-      await handleModuleUpdate(node.moduleId, label, config)
+      const nextDisplayLabel = displayLabel.trim()
+      const nextModuleLabel = moduleLabel.trim() || nextDisplayLabel || node.moduleLabel || node.label
+      await window.api.node.updateLabel(nodeId, nextDisplayLabel)
+      await handleModuleUpdate(node.moduleId, nextModuleLabel, config)
     } else {
+      const nextLabel = displayLabel.trim() || moduleLabel.trim() || node?.label || 'Module'
       await Promise.all([
-        window.api.node.updateLabel(nodeId, label),
+        window.api.node.updateLabel(nodeId, nextLabel),
         window.api.node.updateConfig(nodeId, config)
       ])
-      setActiveNodes(prev => prev.map(n => n.id === nodeId ? { ...n, label, config } : n))
+      setActiveNodes(prev => prev.map(n => n.id === nodeId ? { ...n, label: nextLabel, displayLabel: nextLabel, moduleLabel: null, config } : n))
     }
   }
+
+  const rememberSelectSelection = useCallback(async (
+    nodeId: string,
+    selection: SelectionPopupSelection,
+  ): Promise<void> => {
+    const node = activeNodes.find(n => n.id === nodeId)
+    if (!node || node.type !== 'select') return
+
+    const current = parseSelectConfig(node.config)
+    const next: SelectConfig = selection.mode === 'table'
+      ? {
+          ...current,
+          selectMode: 'table',
+          selectedRowIndices: selection.selectedRowIndices,
+          selectedJsonPaths: current.selectedJsonPaths ?? [],
+        }
+      : {
+          ...current,
+          selectMode: 'json',
+          selectedRowIndices: current.selectedRowIndices,
+          selectedJsonPaths: selection.selectedJsonPaths,
+        }
+    const nextConfig = JSON.stringify(next)
+    await window.api.node.updateConfig(nodeId, nextConfig)
+    setActiveNodes(prev => prev.map(n => n.id === nodeId ? { ...n, config: nextConfig } : n))
+  }, [activeNodes])
 
   const handleCreateDataNode = useCallback((wsId: string, type = 'data'): void => {
     setNewModuleCtx({ wsId, type })
@@ -441,14 +1025,94 @@ export default function App(): JSX.Element {
     setActiveNodes(prev => [...prev, node])
   }, [activeProject?.id, allModules, workspaces])
 
+  const handleCanvasNodeCopy = useCallback((nodeId: string): void => {
+    const node = activeNodes.find(n => n.id === nodeId)
+    if (!node || node.type === 'start' || node.type === 'end') return
+    setCopiedCanvasNode({ ...node })
+    pasteOffsetRef.current = 0
+  }, [activeNodes])
+
+  const handleCanvasNodePaste = useCallback(async (): Promise<void> => {
+    if (!activeProject || !copiedCanvasNode) return
+    if (copiedCanvasNode.projectId !== activeProject.id) return
+    if (copiedCanvasNode.type === 'start' || copiedCanvasNode.type === 'end') return
+
+    const offset = 40 + pasteOffsetRef.current * 20
+    const x = Math.round((copiedCanvasNode.x + offset) / 10) * 10
+    const y = Math.round((copiedCanvasNode.y + offset) / 10) * 10
+    const displayLabel = copiedCanvasNode.moduleId
+      ? copiedCanvasNode.displayLabel ?? ''
+      : copiedCanvasNode.displayLabel ?? copiedCanvasNode.label
+    const config = copiedCanvasNode.config ?? ''
+
+    try {
+      const created = copiedCanvasNode.moduleId
+        ? await window.api.node.createFromModule(activeProject.id, copiedCanvasNode.moduleId, x, y)
+        : await window.api.node.create(activeProject.id, copiedCanvasNode.type, copiedCanvasNode.label, x, y)
+
+      await Promise.all([
+        window.api.node.updateLabel(created.id, displayLabel),
+        window.api.node.updateConfig(created.id, config),
+      ])
+
+      const pasted: ApiNode = {
+        ...created,
+        label: displayLabel.trim() || copiedCanvasNode.moduleLabel || copiedCanvasNode.label,
+        displayLabel,
+        moduleLabel: copiedCanvasNode.moduleLabel ?? created.moduleLabel ?? null,
+        x,
+        y,
+        config,
+        moduleId: copiedCanvasNode.moduleId ?? created.moduleId ?? null,
+      }
+
+      setActiveNodes(prev => [...prev, pasted])
+      setNodeStatuses({})
+      setActiveBranchRoutes({})
+      setActiveLogNodeId(null)
+      pasteOffsetRef.current = (pasteOffsetRef.current + 1) % 12
+    } catch (err) {
+      console.error('노드 붙여넣기 실패:', err)
+    }
+  }, [activeProject?.id, copiedCanvasNode])
+
+  const deleteCanvasNodeInstance = useCallback(async (node: ApiNode): Promise<void> => {
+    if (node.type === 'start' || node.type === 'end') return
+    await window.api.node.delete(node.id)
+    setActiveNodes(prev => prev.filter(n => n.id !== node.id))
+    setActiveEdges(prev => prev.filter(e => e.sourceNodeId !== node.id && e.targetNodeId !== node.id))
+    setNodeRunInputs(prev => {
+      const next = { ...prev }
+      delete next[node.id]
+      return next
+    })
+    setNodeRunOutputs(prev => {
+      const next = { ...prev }
+      delete next[node.id]
+      return next
+    })
+    setNodeScriptLogs(prev => {
+      const next = { ...prev }
+      delete next[node.id]
+      return next
+    })
+    setNodeStatuses({})
+    setActiveBranchRoutes({})
+    setActiveLogNodeId(null)
+    setEditingNode(prev => prev?.id === node.id ? null : prev)
+  }, [])
+
+  const handleCanvasNodeDeleteRequest = useCallback((nodeId: string): void => {
+    const node = activeNodes.find(n => n.id === nodeId)
+    if (!node || node.type === 'start' || node.type === 'end') return
+    setConfirmDeleteCanvasNode(node)
+  }, [activeNodes])
+
   const handleModuleUpdate = useCallback(async (moduleId: string, label: string, config: string): Promise<void> => {
     await window.api.module.update(moduleId, label, config)
     const linkedNodes = activeNodes.filter(n => n.moduleId === moduleId)
     if (linkedNodes.length > 0) {
-      await Promise.all(linkedNodes.flatMap(n => [
-        window.api.node.updateLabel(n.id, label),
-        window.api.node.updateConfig(n.id, config),
-      ]))
+      await Promise.all(linkedNodes.map(n => window.api.node.updateConfig(n.id, config)))
     }
     const [mods, nodes] = await Promise.all([
       window.api.module.listAll(),
@@ -463,6 +1127,30 @@ export default function App(): JSX.Element {
     const mods = await window.api.module.listAll()
     setAllModules(mods)
   }, [])
+
+  const handleReorderCommonModules = useCallback(async (type: string, orderedIds: string[]): Promise<void> => {
+    const previous = allModules
+    setAllModules(prev => {
+      const ordered = orderedIds
+        .map(id => prev.find(mod => mod.id === id))
+        .filter((mod): mod is ApiModule => !!mod)
+      let index = 0
+      return prev.map(mod => {
+        if (mod.workspaceId === null && mod.type === type && orderedIds.includes(mod.id)) {
+          return ordered[index++] ?? mod
+        }
+        return mod
+      })
+    })
+    try {
+      await window.api.module.reorderCommon(type, orderedIds)
+      const mods = await window.api.module.listAll()
+      setAllModules(mods)
+    } catch (err) {
+      setAllModules(previous)
+      console.error('공통 모듈 순서 변경 실패:', err)
+    }
+  }, [allModules])
 
   const handleDeleteModule = useCallback(async (id: string): Promise<void> => {
     await window.api.module.delete(id)
@@ -482,97 +1170,130 @@ export default function App(): JSX.Element {
     if (!confirmDeleteEdge) return
     await window.api.edge.delete(confirmDeleteEdge.id)
     setActiveEdges(prev => prev.filter(e => e.id !== confirmDeleteEdge.id))
+    setNodeStatuses({})
+    setActiveLogNodeId(null)
     setConfirmDeleteEdge(null)
   }
 
-  const handleNodeRun = useCallback((nodeId: string) => {
-    const inEdge = activeEdges.find(e => e.targetNodeId === nodeId)
-    const inputJson = inEdge ? executeNodeOutput(inEdge.sourceNodeId, activeNodes, activeEdges) : ''
-    setNodeRunInputs(prev => ({ ...prev, [nodeId]: inputJson }))
-    const node = activeNodes.find(n => n.id === nodeId)
-    if (node) setEditingNode(node)
-  }, [activeNodes, activeEdges])
-
-  const handleEdgeReconnect = useCallback(async (edgeId: string, newSourceId: string, newTargetId: string): Promise<void> => {
+  const handleEdgeReconnect = useCallback(async (edgeId: string, newSourceId: string, newTargetId: string, sourcePort?: string | null): Promise<void> => {
     if (!activeProject) return
-    const alreadyExists = activeEdges.some(e => e.sourceNodeId === newSourceId && e.targetNodeId === newTargetId && e.id !== edgeId)
-    await window.api.edge.delete(edgeId)
-    if (!alreadyExists) {
-      const newEdge = await window.api.edge.create(activeProject.id, newSourceId, newTargetId)
-      setActiveEdges(prev => [...prev.filter(e => e.id !== edgeId), newEdge])
-    } else {
-      setActiveEdges(prev => prev.filter(e => e.id !== edgeId))
+    try {
+      const source = activeNodes.find(n => n.id === newSourceId)
+      const target = activeNodes.find(n => n.id === newTargetId)
+      const targetIncoming = target && allowsMultipleIncoming(target.type) ? undefined : activeEdges.find(e => e.targetNodeId === newTargetId && e.id !== edgeId)
+      const startOutgoing = source?.type === 'start' ? activeEdges.find(e => e.sourceNodeId === newSourceId && e.id !== edgeId) : undefined
+      const replaceIds = Array.from(new Set([edgeId, targetIncoming?.id, startOutgoing?.id].filter((id): id is string => typeof id === 'string')))
+      if (!canConnectEdge(activeNodes, activeEdges, newSourceId, newTargetId, replaceIds)) return
+      await Promise.all(replaceIds.map(id => window.api.edge.delete(id)))
+      const newEdge = await window.api.edge.create(activeProject.id, newSourceId, newTargetId, sourcePort ?? null)
+      setActiveEdges(prev => [...prev.filter(e => !replaceIds.includes(e.id)), newEdge])
+      setNodeStatuses({})
+      setActiveBranchRoutes({})
+      setActiveLogNodeId(null)
+    } catch (err) {
+      console.error('연결 변경 실패:', err)
     }
-  }, [activeProject?.id, activeEdges])
+  }, [activeProject?.id, activeNodes, activeEdges])
 
   // Run upstream nodes for real and return the immediate parent's output as
   // JSON. Used by the INPUT ▶ button so users can preview live data without
   // running the whole canvas. setEnv during preview mutates a local env copy
   // only — workspace env is NOT persisted.
   const previewUpToNode = useCallback(async (targetNodeId: string): Promise<string> => {
-    const inEdge = activeEdges.find(e => e.targetNodeId === targetNodeId)
+    const reachableNodeIds = new Set(buildExecutionPlan(activeNodes, activeEdges))
+    if (!reachableNodeIds.has(targetNodeId)) return ''
+
+    const validEdges = getValidWorkflowEdges(activeNodes, activeEdges)
+    const inEdge = validEdges.find(e => e.targetNodeId === targetNodeId && reachableNodeIds.has(e.sourceNodeId))
     if (!inEdge) return ''
 
-    const ws = workspaces.find(w => w.id === activeWsId)
-    const envVars: Record<string, string> = ws
-      ? mergeEnvVars(
-          ws.environments as Array<{ id: string; isBase: boolean; vars: Array<{ key: string; value: string; enabled: boolean }> }>,
-          ws.activeEnvId,
-        )
-      : {}
+    const envVars: Record<string, string> = { ...activeProjectEnvVars }
     const moduleVarsMap: Record<string, Record<string, unknown>> = {}
+    const visiting = new Set<string>()
 
     const runNode = async (nodeId: string): Promise<unknown> => {
+      if (visiting.has(nodeId)) throw new Error('순환 연결이 감지되었습니다.')
+      visiting.add(nodeId)
       const node = activeNodes.find(n => n.id === nodeId)
-      if (!node) return null
-      const upstreamEdge = activeEdges.find(e => e.targetNodeId === nodeId)
-      const upstream = upstreamEdge ? await runNode(upstreamEdge.sourceNodeId) : null
-      const upstreamModuleVars = upstreamEdge ? (moduleVarsMap[upstreamEdge.sourceNodeId] ?? {}) : {}
+      if (!node) { visiting.delete(nodeId); return null }
+      const upstreamEdges = validEdges.filter(e => e.targetNodeId === nodeId && reachableNodeIds.has(e.sourceNodeId))
+      const upstreamEdge = upstreamEdges[0]
+      const upstreamOutputs: Record<string, unknown> = {}
+      for (const edge of upstreamEdges) {
+        upstreamOutputs[edge.sourceNodeId] = await runNode(edge.sourceNodeId)
+      }
+      const upstream = buildNodeInputValue(node, upstreamEdges, upstreamOutputs)
+      const upstreamModuleVars = node.type === 'api' || (node.type === 'branch' && upstreamEdges.length > 1)
+        ? mergeIncomingModuleVars(upstreamEdges, moduleVarsMap)
+        : upstreamEdge ? (moduleVarsMap[upstreamEdge.sourceNodeId] ?? {}) : {}
       const inputArray: unknown[] = upstream === null ? [] : Array.isArray(upstream) ? upstream : [upstream]
 
       if (node.type === 'start' || node.type === 'end') {
         moduleVarsMap[nodeId] = { ...upstreamModuleVars }
+        visiting.delete(nodeId)
         return upstream
       }
       if (node.type === 'data') {
         moduleVarsMap[nodeId] = { ...upstreamModuleVars }
-        return readDataNodeOutput(node.config)
+        const output = readDataNodeOutput(node.config)
+        visiting.delete(nodeId)
+        return output
       }
       if (node.type === 'select') {
         moduleVarsMap[nodeId] = { ...upstreamModuleVars }
-        const cfg = JSON.parse(node.config || '{}') as SelectConfig
-        if (cfg.autoSelect && cfg.selectedRowIndices.length > 0 && inputArray.length > 0) {
-          return inputArray[cfg.selectedRowIndices[0]] ?? inputArray[0]
+        const cfg = parseSelectConfig(node.config)
+        const selectedJsonPaths = selectedJsonPathsForConfig(cfg)
+        const selectedRowIndices = selectedRowIndicesForConfig(cfg)
+        if (cfg.autoSelect && cfg.selectMode === 'json' && selectedJsonPaths.length > 0) {
+          const output = buildSelectedJsonOutput(upstream, selectedJsonPaths)
+          visiting.delete(nodeId)
+          return output
         }
-        if (inputArray.length === 0) return inputArray
-        const rows = await new Promise<unknown[]>(resolve => {
-          setPendingPreviewSelect({ data: inputArray as Record<string, unknown>[], resolve })
+        if (Array.isArray(upstream) && cfg.autoSelect && selectedRowIndices.length > 0 && inputArray.length > 0) {
+          const output = selectedRowIndices
+            .map(index => inputArray[index])
+            .filter(value => value !== undefined)
+          visiting.delete(nodeId)
+          return output
+        }
+        if (inputArray.length === 0) { visiting.delete(nodeId); return inputArray }
+        const result = await new Promise<SelectPopupResult | null>(resolve => {
+          setPendingPreviewSelect({ nodeId, data: upstream, config: cfg, resolve })
         })
-        return rows[0] ?? null
+        if (result?.selection) {
+          await rememberSelectSelection(nodeId, result.selection)
+        }
+        const output = result?.rows ?? []
+        visiting.delete(nodeId)
+        return output
+      }
+      if (node.type === 'branch') {
+        moduleVarsMap[nodeId] = { ...upstreamModuleVars }
+        visiting.delete(nodeId)
+        return upstream
       }
       if (node.type === 'api') {
         const cfg = JSON.parse(node.config || '{}') as ApiConfig
-        if (!cfg.url.trim()) { moduleVarsMap[nodeId] = { ...upstreamModuleVars }; return null }
+        if (!cfg.url.trim()) { moduleVarsMap[nodeId] = { ...upstreamModuleVars }; visiting.delete(nodeId); return null }
 
         let preInputVars: Record<string, unknown> = {}
         if (cfg.preScript && cfg.preScript.trim()) {
-          const r = await runPreRequest(cfg.preScript, { input: upstream, envVars })
-          preInputVars = r.inputVars
-          for (const [k, v] of Object.entries(r.envUpdates)) envVars[k] = v
+          try {
+            const r = await runPreRequest(cfg.preScript, { input: upstream, envVars })
+            setScriptLogsForNode(nodeId, 'pre', r.logs)
+            preInputVars = r.inputVars
+            for (const [k, v] of Object.entries(r.envUpdates)) envVars[k] = v
+          } catch (err) {
+            if (isScriptRuntimeError(err)) setScriptLogsForNode(nodeId, 'pre', err.logs)
+            throw err
+          }
         }
 
-        const items: Array<Record<string, unknown>> =
-          inputArray.length > 0
-            ? inputArray.map(d =>
-                typeof d === 'object' && d !== null && !Array.isArray(d)
-                  ? (d as Record<string, unknown>)
-                  : {},
-              )
-            : [{}]
+        const items = buildApiTemplateItems(upstream, upstreamEdges, upstreamModuleVars, preInputVars)
 
         const allResults: unknown[] = []
         for (const row of items) {
-          const item: Record<string, unknown> = { ...row, ...upstreamModuleVars, ...preInputVars }
+          const item: Record<string, unknown> = applyInputMappings(row, cfg.inputMappings ?? {})
           let fullUrl = resolveTemplate(cfg.url.trim(), envVars, item)
           const enabledParams = (cfg.params ?? []).filter(p => p.enabled && p.key)
           if (enabledParams.length > 0) {
@@ -590,7 +1311,10 @@ export default function App(): JSX.Element {
             }
             bodyStr = resolveTemplate(cfg.body, envVars, item)
           }
-          const res = await window.api.http.fetch(fullUrl, { method: cfg.method, headers: hdrs, body: bodyStr })
+          const authedRequest = applyApiAuth({ url: fullUrl, headers: hdrs }, cfg.auth, envVars, item)
+          fullUrl = authedRequest.url
+          const requestHeaders = authedRequest.headers
+          const res = await window.api.http.fetch(fullUrl, { method: cfg.method, headers: requestHeaders, body: bodyStr })
           if (!res.ok) throw new Error(`HTTP ${res.status} ${res.statusText}: ${res.text.slice(0, 200)}`)
           try {
             const data = JSON.parse(res.text) as unknown
@@ -601,48 +1325,107 @@ export default function App(): JSX.Element {
 
         let postOutputVars: Record<string, unknown> = {}
         if (cfg.postScript && cfg.postScript.trim()) {
-          const r = await runPostResponse(cfg.postScript, {
-            input: upstream,
-            output: allResults.length === 1 ? allResults[0] : allResults,
-            envVars,
-          })
-          postOutputVars = r.outputVars
-          for (const [k, v] of Object.entries(r.envUpdates)) envVars[k] = v
+          try {
+            const r = await runPostResponse(cfg.postScript, {
+              input: upstream,
+              output: allResults.length === 1 ? allResults[0] : allResults,
+              envVars,
+            })
+            setScriptLogsForNode(nodeId, 'post', r.logs)
+            postOutputVars = r.outputVars
+            for (const [k, v] of Object.entries(r.envUpdates)) envVars[k] = v
+          } catch (err) {
+            if (isScriptRuntimeError(err)) setScriptLogsForNode(nodeId, 'post', err.logs)
+            throw err
+          }
         }
         moduleVarsMap[nodeId] = { ...upstreamModuleVars, ...postOutputVars }
+        visiting.delete(nodeId)
         return allResults
       }
+      visiting.delete(nodeId)
       return upstream
     }
 
     try {
+      const targetNode = activeNodes.find(n => n.id === targetNodeId)
+      if (targetNode?.type === 'api' || targetNode?.type === 'branch') {
+        const targetIncomingEdges = validEdges.filter(e => e.targetNodeId === targetNodeId && reachableNodeIds.has(e.sourceNodeId))
+        if (targetIncomingEdges.length === 0) return ''
+        const upstreamOutputs: Record<string, unknown> = {}
+        for (const edge of targetIncomingEdges) {
+          upstreamOutputs[edge.sourceNodeId] = await runNode(edge.sourceNodeId)
+        }
+        return JSON.stringify(buildNodeInputValue(targetNode, targetIncomingEdges, upstreamOutputs), null, 2)
+      }
       const result = await runNode(inEdge.sourceNodeId)
       return JSON.stringify(result, null, 2)
     } catch (err) {
       return JSON.stringify({ __previewError: String((err as Error)?.message ?? err) }, null, 2)
     }
-  }, [activeNodes, activeEdges, workspaces, activeWsId])
+  }, [activeNodes, activeEdges, activeProjectWs, activeProjectEnvVars, rememberSelectSelection, setScriptLogsForNode])
+
+  const handleNodeRun = useCallback(async (nodeId: string) => {
+    const inputJson = await previewUpToNode(nodeId)
+    setNodeRunInputs(prev => ({ ...prev, [nodeId]: inputJson }))
+    const node = activeNodes.find(n => n.id === nodeId)
+    if (node) setEditingNode(node)
+  }, [activeNodes, previewUpToNode])
 
   function buildExecutionPlan(nodes: ApiNode[], edges: ApiEdge[]): string[] {
     const start = nodes.find(n => n.type === 'start')
     if (!start) return []
+    const validEdges = getValidWorkflowEdges(nodes, edges)
+    const reachable = new Set<string>()
+    const scanQueue = [start.id]
+    while (scanQueue.length > 0) {
+      const id = scanQueue.shift()!
+      if (reachable.has(id)) continue
+      reachable.add(id)
+      validEdges
+        .filter(e => e.sourceNodeId === id)
+        .forEach(e => scanQueue.push(e.targetNodeId))
+    }
+
+    const reachableEdges = validEdges.filter(e => reachable.has(e.sourceNodeId) && reachable.has(e.targetNodeId))
+    const indegree = new Map<string, number>()
+    reachable.forEach(id => indegree.set(id, 0))
+    reachableEdges.forEach(edge => {
+      indegree.set(edge.targetNodeId, (indegree.get(edge.targetNodeId) ?? 0) + 1)
+    })
+
     const plan: string[] = []
+    const ready = [start.id]
     const visited = new Set<string>()
-    const queue = [start.id]
-    while (queue.length > 0) {
-      const id = queue.shift()!
+    while (ready.length > 0) {
+      const id = ready.shift()!
       if (visited.has(id)) continue
       visited.add(id)
       plan.push(id)
-      const outEdges = edges.filter(e => e.sourceNodeId === id)
-      outEdges.forEach(e => queue.push(e.targetNodeId))
+      reachableEdges
+        .filter(e => e.sourceNodeId === id)
+        .forEach(edge => {
+          const nextCount = (indegree.get(edge.targetNodeId) ?? 0) - 1
+          indegree.set(edge.targetNodeId, nextCount)
+          if (nextCount === 0) ready.push(edge.targetNodeId)
+        })
     }
     return plan
   }
 
-  const advanceExecution = useCallback(async (exec: CanvasExecution, selectedRows?: unknown[]) => {
+  const advanceExecution = useCallback(async (
+    exec: CanvasExecution,
+    selectedRows?: unknown[],
+    selection?: SelectionPopupSelection,
+    selectedBranchRoute?: 'true' | 'false',
+  ) => {
     const nodeOutputs = { ...exec.nodeOutputs }
     const moduleVars: Record<string, Record<string, unknown>> = { ...(exec.moduleVars ?? {}) }
+    const branchRoutes: Record<string, 'true' | 'false'> = { ...(exec.branchRoutes ?? {}) }
+    const envVarsForRun: Record<string, string> = { ...(exec.envVars ?? activeProjectEnvVars) }
+    const usedVariables: Record<string, ReportVariable> = { ...(exec.usedVariables ?? {}) }
+    const executionEdges = getValidWorkflowEdges(activeNodes, activeEdges)
+    const persistedEnvVarsByEnvId: Record<string, Environment['vars']> = {}
     const localLogs: LogEntry[] = [...(exec.execLogs ?? [])]
     const pushLog = (entry: LogEntry): void => {
       localLogs.push(entry)
@@ -657,12 +1440,35 @@ export default function App(): JSX.Element {
 
     if (selectedRows !== undefined && step > 0) {
       const prevNodeId = plan[step - 1]
-      nodeOutputs[prevNodeId] = selectedRows[0] ?? null
-      setNodeRunOutputs(prev => ({ ...prev, [prevNodeId]: JSON.stringify(selectedRows[0] ?? null, null, 2) }))
+      const selectedOutput = selectedRows
+      nodeOutputs[prevNodeId] = selectedOutput
+      if (selection) await rememberSelectSelection(prevNodeId, selection)
+      setNodeRunOutputs(prev => ({ ...prev, [prevNodeId]: JSON.stringify(selectedOutput, null, 2) }))
       if (exec.pendingLogEntryId) {
-        const sel = selectedRows[0] ?? null
         const entry = localLogs.find(e => e.id === exec.pendingLogEntryId)
-        updateLog(exec.pendingLogEntryId, { status: 'success', output: sel, duration: Date.now() - (entry?.startedAt ?? Date.now()) })
+        updateLog(exec.pendingLogEntryId, { status: 'success', output: selectedOutput, duration: Date.now() - (entry?.startedAt ?? Date.now()) })
+        setNodeStatuses(prev => ({ ...prev, [prevNodeId]: 'success' }))
+      }
+    }
+
+    if (selectedBranchRoute !== undefined && step > 0) {
+      const prevNodeId = plan[step - 1]
+      const prevNode = activeNodes.find(n => n.id === prevNodeId)
+      const branchCfg = parseBranchConfig(prevNode?.config ?? '{}')
+      const route = selectedBranchRoute
+      const output = {
+        route,
+        label: route === 'true' ? branchCfg.trueLabel ?? 'TRUE' : branchCfg.falseLabel ?? 'FALSE',
+        value: route === 'true',
+        passThrough: exec.pendingBranchChoice?.input ?? null,
+      }
+      branchRoutes[prevNodeId] = route
+      setActiveBranchRoutes(prev => ({ ...prev, [prevNodeId]: route }))
+      nodeOutputs[prevNodeId] = output
+      setNodeRunOutputs(prev => ({ ...prev, [prevNodeId]: JSON.stringify(output, null, 2) }))
+      if (exec.pendingLogEntryId) {
+        const entry = localLogs.find(e => e.id === exec.pendingLogEntryId)
+        updateLog(exec.pendingLogEntryId, { status: 'success', output, duration: Date.now() - (entry?.startedAt ?? Date.now()) })
         setNodeStatuses(prev => ({ ...prev, [prevNodeId]: 'success' }))
       }
     }
@@ -672,11 +1478,37 @@ export default function App(): JSX.Element {
       const node = activeNodes.find(n => n.id === nodeId)
       if (!node) { step++; continue }
 
-      const inEdge = activeEdges.find(e => e.targetNodeId === nodeId)
-      const rawInput = inEdge ? (nodeOutputs[inEdge.sourceNodeId] ?? null) : null
+      const runtimeReachable = getRuntimeReachableNodeIds(activeNodes, executionEdges, branchRoutes)
+      if (!runtimeReachable.has(nodeId)) {
+        const skippedAt = Date.now()
+        pushLog({
+          id: `${nodeId}-${skippedAt}-skip`,
+          nodeId,
+          label: node.label,
+          type: node.type,
+          status: 'skip',
+          input: null,
+          output: null,
+          startedAt: skippedAt,
+          duration: 0,
+        })
+        setNodeStatuses(prev => ({ ...prev, [nodeId]: 'skip' }))
+        step++; continue
+      }
+
+      const incomingEdges = executionEdges.filter(e =>
+        e.targetNodeId === nodeId
+        && plan.includes(e.sourceNodeId)
+        && runtimeReachable.has(e.sourceNodeId)
+        && isRuntimeEdgeActive(e, activeNodes, branchRoutes),
+      )
+      const inEdge = incomingEdges[0]
+      const rawInput = buildNodeInputValue(node, incomingEdges, nodeOutputs)
       const inputArray: unknown[] = rawInput === null ? [] : Array.isArray(rawInput) ? rawInput : [rawInput]
 
-      const upstreamModuleVars = inEdge ? (moduleVars[inEdge.sourceNodeId] ?? {}) : {}
+      const upstreamModuleVars = node.type === 'api' || (node.type === 'branch' && incomingEdges.length > 1)
+        ? mergeIncomingModuleVars(incomingEdges, moduleVars)
+        : inEdge ? (moduleVars[inEdge.sourceNodeId] ?? {}) : {}
       moduleVars[nodeId] = { ...upstreamModuleVars }
 
       if (node.type === 'start') {
@@ -685,12 +1517,12 @@ export default function App(): JSX.Element {
       }
 
       if (node.type === 'end') {
-        setNodeStatuses(prev => ({ ...prev, [nodeId]: 'success' }))
+        let endStatus: NodeStatus = 'success'
         try {
           const endCfg = JSON.parse(node.config || '{}') as Partial<EndNodeConfig>
           const fmt = endCfg.reportFormat
           if ((fmt === 'html' || fmt === 'markdown') && endCfg.savePath && endCfg.savePath.trim()) {
-            const ws = workspaces.find(w => w.id === activeWsId)
+            const ws = activeProjectWs
             const envName = ws?.environments.find(e => e.id === ws.activeEnvId)?.name ?? 'BASE'
             const wsName = ws?.name ?? ''
             const projectName = activeProject?.name ?? ''
@@ -707,7 +1539,8 @@ export default function App(): JSX.Element {
             const connectedModuleIds = activeNodes
               .filter(n => planSet.has(n.id) && n.type !== 'start' && n.type !== 'end')
               .map(n => n.id)
-            const selectedSet = endCfg.selectedModuleIds && endCfg.selectedModuleIds.length > 0
+            const hasExplicitSelection = Object.prototype.hasOwnProperty.call(endCfg, 'selectedModuleIds')
+            const selectedSet = hasExplicitSelection && Array.isArray(endCfg.selectedModuleIds)
               ? new Set(endCfg.selectedModuleIds.filter(id => planSet.has(id)))
               : new Set(connectedModuleIds)
             const reportNodes: ReportNode[] = plan.map(pid => {
@@ -739,6 +1572,7 @@ export default function App(): JSX.Element {
               },
               nodes: reportNodes,
               selectedModuleIds: selectedSet,
+              variables: finalizeUsedVariables(usedVariables, envVarsForRun),
             })
             const tpl = endCfg.filenameTemplate && endCfg.filenameTemplate.trim() ? endCfg.filenameTemplate : '{env}_{ws}_{project}_{ts}'
             const filename = fillFilenameTemplate(tpl, { env: envName, ws: wsName, project: projectName, ts: executedAt })
@@ -747,13 +1581,21 @@ export default function App(): JSX.Element {
             const fullPath = endCfg.savePath.replace(/[\\/]+$/, '') + sep + filename + ext
             const writeResult = await window.api.file.write(fullPath, content)
             if (writeResult.ok) {
+              setSavedReport({ path: writeResult.path })
               console.log('[리포트 저장 완료]', writeResult.path)
             } else {
+              endStatus = 'error'
               console.error('[리포트 저장 실패]', writeResult.error)
             }
           }
         } catch (err) {
+          endStatus = 'error'
           console.error('[리포트 생성 오류]', err)
+        }
+        setNodeStatuses(prev => ({ ...prev, [nodeId]: endStatus }))
+        if (endStatus === 'error') {
+          setCanvasExecution(null)
+          return
         }
         step++; continue
       }
@@ -777,57 +1619,125 @@ export default function App(): JSX.Element {
           nodeOutputs[nodeId] = []
           updateLog(entryId, { status: 'error', error: String(err), duration: Date.now() - startedAt })
           setNodeStatuses(prev => ({ ...prev, [nodeId]: 'error' }))
+          setCanvasExecution(null)
+          return
         }
         step++; continue
       }
 
       if (node.type === 'select') {
         setNodeRunInputs(prev => ({ ...prev, [nodeId]: JSON.stringify(rawInput, null, 2) }))
-        const selCfg = JSON.parse(node.config || '{}') as SelectConfig
-        if (selCfg.autoSelect && selCfg.selectedRowIndices.length > 0 && inputArray.length > 0) {
-          const idx = selCfg.selectedRowIndices[0]
-          const autoRow = inputArray[idx] ?? inputArray[0]
+        const selCfg = parseSelectConfig(node.config)
+        const selectedJsonPaths = selectedJsonPathsForConfig(selCfg)
+        const selectedRowIndices = selectedRowIndicesForConfig(selCfg)
+        if (selCfg.autoSelect && selCfg.selectMode === 'json' && selectedJsonPaths.length > 0) {
+          const autoJson = buildSelectedJsonOutput(rawInput, selectedJsonPaths)
+          nodeOutputs[nodeId] = autoJson
+          setNodeRunOutputs(prev => ({ ...prev, [nodeId]: JSON.stringify(autoJson, null, 2) }))
+          updateLog(entryId, { status: 'success', output: autoJson, duration: Date.now() - startedAt })
+          setNodeStatuses(prev => ({ ...prev, [nodeId]: 'success' }))
+          step++; continue
+        }
+        if (Array.isArray(rawInput) && selCfg.autoSelect && selectedRowIndices.length > 0 && inputArray.length > 0) {
+          const autoRow = selectedRowIndices
+            .map(index => inputArray[index])
+            .filter(value => value !== undefined)
           nodeOutputs[nodeId] = autoRow
           setNodeRunOutputs(prev => ({ ...prev, [nodeId]: JSON.stringify(autoRow, null, 2) }))
           updateLog(entryId, { status: 'success', output: autoRow, duration: Date.now() - startedAt })
           setNodeStatuses(prev => ({ ...prev, [nodeId]: 'success' }))
           step++; continue
         }
-        setCanvasExecution({ nodeOutputs, moduleVars, execLogs: localLogs, startedAt: exec.startedAt, plan, step: step + 1, pendingSelectInput: inputArray, pendingLogEntryId: entryId })
+        setCanvasExecution({ nodeOutputs, moduleVars, branchRoutes, envVars: envVarsForRun, usedVariables, execLogs: localLogs, startedAt: exec.startedAt, plan, step: step + 1, pendingSelectInput: rawInput ?? [], pendingBranchChoice: null, pendingLogEntryId: entryId })
         return
+      }
+
+      if (node.type === 'branch') {
+        setNodeRunInputs(prev => ({ ...prev, [nodeId]: JSON.stringify(rawInput, null, 2) }))
+        try {
+          const branchCfg = parseBranchConfig(node.config)
+          if (branchCfg.mode === 'manual' && branchCfg.manualSource === 'runtime') {
+            setCanvasExecution({
+              nodeOutputs,
+              moduleVars,
+              branchRoutes,
+              envVars: envVarsForRun,
+              usedVariables,
+              execLogs: localLogs,
+              startedAt: exec.startedAt,
+              plan,
+              step: step + 1,
+              pendingSelectInput: null,
+              pendingBranchChoice: {
+                input: rawInput,
+                trueLabel: branchCfg.trueLabel ?? 'TRUE',
+                falseLabel: branchCfg.falseLabel ?? 'FALSE',
+                defaultRoute: branchCfg.selectedRoute === 'false' ? 'false' : 'true',
+              },
+              pendingLogEntryId: entryId,
+            })
+            return
+          }
+          if (branchCfg.mode !== 'manual') {
+            recordUsedBranchVariables(usedVariables, branchCfg.expression, rawInput)
+          }
+          const result = evaluateBranch(branchCfg, rawInput)
+          branchRoutes[nodeId] = result.route
+          setActiveBranchRoutes(prev => ({ ...prev, [nodeId]: result.route }))
+          const output = {
+            route: result.route,
+            label: result.route === 'true' ? branchCfg.trueLabel ?? 'TRUE' : branchCfg.falseLabel ?? 'FALSE',
+            value: result.value,
+            passThrough: rawInput,
+          }
+          nodeOutputs[nodeId] = branchCfg.mode === 'manual' ? output : rawInput
+          setNodeRunOutputs(prev => ({ ...prev, [nodeId]: JSON.stringify(output, null, 2) }))
+          updateLog(entryId, { status: 'success', output, duration: Date.now() - startedAt })
+          setNodeStatuses(prev => ({ ...prev, [nodeId]: 'success' }))
+        } catch (err) {
+          nodeOutputs[nodeId] = null
+          updateLog(entryId, { status: 'error', error: String(err), duration: Date.now() - startedAt })
+          setNodeStatuses(prev => ({ ...prev, [nodeId]: 'error' }))
+          setCanvasExecution(null)
+          return
+        }
+        step++; continue
       }
 
       if (node.type === 'api') {
         setNodeRunInputs(prev => ({ ...prev, [nodeId]: JSON.stringify(rawInput, null, 2) }))
+        setNodeScriptLogs(prev => ({ ...prev, [nodeId]: { pre: [], post: [] } }))
         let lastApiDetail: ApiLogDetail | undefined
+        let currentScriptLogs: ScriptLogBundle = { pre: [], post: [] }
+        const recordScriptLogs = (phase: keyof ScriptLogBundle, logs: ScriptConsoleEntry[]): void => {
+          currentScriptLogs = { ...currentScriptLogs, [phase]: logs }
+          setScriptLogsForNode(nodeId, phase, logs)
+          updateLog(entryId, { scriptLogs: currentScriptLogs })
+        }
         try {
           const cfg = JSON.parse(node.config || '{}') as ApiConfig
           if (!cfg.url.trim()) {
             nodeOutputs[nodeId] = null
             updateLog(entryId, { status: 'skip', output: null, duration: Date.now() - startedAt })
+            setNodeStatuses(prev => ({ ...prev, [nodeId]: 'skip' }))
             step++; continue
           }
 
-          const ws = workspaces.find(w => w.id === activeWsId)
-          const envVarsForExec: Record<string, string> = ws
-            ? mergeEnvVars(
-                ws.environments as Array<{ id: string; isBase: boolean; vars: Array<{ key: string; value: string; enabled: boolean }> }>,
-                ws.activeEnvId,
-              )
-            : {}
+          const ws = activeProjectWs
+          const envVarsForExec = envVarsForRun
 
           const persistEnvUpdates = async (updates: Record<string, string>): Promise<void> => {
             if (!ws) return
             const baseEnv = ws.environments.find(e => e.isBase)
-            const activeEnv = ws.environments.find(e => e.id === ws.activeEnvId && !e.isBase)
-            const target = activeEnv ?? baseEnv
+            const target = baseEnv
             if (!target) return
-            const updatedVars = [...target.vars]
+            const updatedVars = [...(persistedEnvVarsByEnvId[target.id] ?? target.vars)]
             for (const [k, v] of Object.entries(updates)) {
               const idx = updatedVars.findIndex(x => x.key === k)
               if (idx >= 0) updatedVars[idx] = { ...updatedVars[idx], value: v, enabled: true }
-              else updatedVars.push({ key: k, value: v, enabled: true })
+              else updatedVars.push({ id: randomId(), key: k, value: v, enabled: true })
             }
+            persistedEnvVarsByEnvId[target.id] = updatedVars
             const updated = { ...target, vars: updatedVars }
             await window.api.environment.upsert(ws.id, updated)
             setWorkspaces(prev => prev.map(w => w.id === ws.id
@@ -840,35 +1750,46 @@ export default function App(): JSX.Element {
           if (cfg.preScript && cfg.preScript.trim()) {
             try {
               const r = await runPreRequest(cfg.preScript, { input: rawInput, envVars: envVarsForExec })
+              recordScriptLogs('pre', r.logs)
               preInputVars = r.inputVars
               for (const [k, v] of Object.entries(r.envUpdates)) envVarsForExec[k] = v
+              recordUpdatedEnvVariables(usedVariables, envVarsForExec, r.envUpdates)
               if (Object.keys(r.envUpdates).length > 0) await persistEnvUpdates(r.envUpdates)
             } catch (err) {
+              if (isScriptRuntimeError(err)) recordScriptLogs('pre', err.logs)
               throw new Error(`Pre Request 스크립트 오류: ${String((err as Error)?.message ?? err)}`)
             }
           }
 
-          const items: Array<Record<string, unknown>> =
-            inputArray.length > 0
-              ? inputArray.map(d =>
-                  typeof d === 'object' && d !== null && !Array.isArray(d)
-                    ? (d as Record<string, unknown>)
-                    : {},
-                )
-              : [{}]
+          const items = buildApiTemplateItems(rawInput, incomingEdges, upstreamModuleVars, preInputVars)
 
           const allResults: unknown[] = []
 
           for (const row of items) {
-            const item: Record<string, unknown> = { ...row, ...upstreamModuleVars, ...preInputVars }
-            let fullUrl = resolveTemplate(cfg.url.trim(), envVarsForExec, item)
+            const item: Record<string, unknown> = applyInputMappings(row, cfg.inputMappings ?? {})
             const enabledParams = (cfg.params ?? []).filter(p => p.enabled && p.key)
+            const enabledHeaders = (cfg.headers ?? []).filter(h => h.enabled && h.key)
+            const bodyTemplate = ['POST', 'PUT', 'PATCH'].includes(cfg.method) && cfg.body?.trim() ? cfg.body : ''
+            recordUsedTemplateVariables(
+              usedVariables,
+              [
+                cfg.url.trim(),
+                ...enabledParams.map(p => p.value),
+                ...enabledHeaders.map(h => h.value),
+                bodyTemplate,
+                ...(cfg.auth ? getApiAuthTemplateValues(cfg.auth) : []),
+              ],
+              envVarsForExec,
+              item,
+            )
+
+            let fullUrl = resolveTemplate(cfg.url.trim(), envVarsForExec, item)
             if (enabledParams.length > 0) {
               const qs = new URLSearchParams(enabledParams.map(p => [p.key, resolveTemplate(p.value, envVarsForExec, item)]))
               fullUrl += (fullUrl.includes('?') ? '&' : '?') + qs.toString()
             }
             const hdrs: Record<string, string> = {}
-            ;(cfg.headers ?? []).filter(h => h.enabled && h.key).forEach(h => {
+            ;enabledHeaders.forEach(h => {
               hdrs[h.key] = resolveTemplate(h.value, envVarsForExec, item)
             })
             let bodyStr: string | undefined
@@ -879,9 +1800,13 @@ export default function App(): JSX.Element {
               bodyStr = resolveTemplate(cfg.body, envVarsForExec, item)
             }
 
-            lastApiDetail = { method: cfg.method, url: fullUrl, headers: hdrs, body: bodyStr }
+            const authedRequest = applyApiAuth({ url: fullUrl, headers: hdrs }, cfg.auth, envVarsForExec, item)
+            fullUrl = authedRequest.url
+            const requestHeaders = authedRequest.headers
 
-            const res = await window.api.http.fetch(fullUrl, { method: cfg.method, headers: hdrs, body: bodyStr })
+            lastApiDetail = { method: cfg.method, url: fullUrl, headers: requestHeaders, body: bodyStr }
+
+            const res = await window.api.http.fetch(fullUrl, { method: cfg.method, headers: requestHeaders, body: bodyStr })
             lastApiDetail = { ...lastApiDetail, statusCode: res.status, statusText: res.statusText, responseText: res.text }
 
             if (!res.ok) {
@@ -905,9 +1830,13 @@ export default function App(): JSX.Element {
                 output: allResults.length === 1 ? allResults[0] : allResults,
                 envVars: envVarsForExec,
               })
+              recordScriptLogs('post', r.logs)
               postOutputVars = r.outputVars
+              for (const [k, v] of Object.entries(r.envUpdates)) envVarsForExec[k] = v
+              recordUpdatedEnvVariables(usedVariables, envVarsForExec, r.envUpdates)
               if (Object.keys(r.envUpdates).length > 0) await persistEnvUpdates(r.envUpdates)
             } catch (err) {
+              if (isScriptRuntimeError(err)) recordScriptLogs('post', err.logs)
               throw new Error(`Post Response 스크립트 오류: ${String((err as Error)?.message ?? err)}`)
             }
           }
@@ -915,13 +1844,13 @@ export default function App(): JSX.Element {
           nodeOutputs[nodeId] = allResults
           moduleVars[nodeId] = { ...upstreamModuleVars, ...postOutputVars }
           setNodeRunOutputs(prev => ({ ...prev, [nodeId]: JSON.stringify(allResults, null, 2) }))
-          updateLog(entryId, { status: 'success', output: allResults, duration: Date.now() - startedAt, apiDetail: lastApiDetail })
+          updateLog(entryId, { status: 'success', output: allResults, duration: Date.now() - startedAt, apiDetail: lastApiDetail, scriptLogs: currentScriptLogs })
           setNodeStatuses(prev => ({ ...prev, [nodeId]: 'success' }))
         } catch (err) {
           nodeOutputs[nodeId] = null
           const errStr = String(err)
           setNodeRunOutputs(prev => ({ ...prev, [nodeId]: errStr }))
-          updateLog(entryId, { status: 'error', error: errStr, duration: Date.now() - startedAt, apiDetail: lastApiDetail })
+          updateLog(entryId, { status: 'error', error: errStr, duration: Date.now() - startedAt, apiDetail: lastApiDetail, scriptLogs: currentScriptLogs })
           setNodeStatuses(prev => ({ ...prev, [nodeId]: 'error' }))
           setCanvasExecution(null)
           return
@@ -933,7 +1862,7 @@ export default function App(): JSX.Element {
     }
 
     setCanvasExecution(null)
-  }, [activeNodes, activeEdges, workspaces, activeWsId])
+  }, [activeNodes, activeEdges, activeProjectWs, activeProjectEnvVars, activeProject?.name, rememberSelectSelection, setScriptLogsForNode])
 
   const handleCanvasRun = useCallback(() => {
     if (!activeProject) return
@@ -941,19 +1870,98 @@ export default function App(): JSX.Element {
     if (plan.length === 0) return
     setExecLogs([])
     setNodeStatuses({})
+    setActiveBranchRoutes({})
     setActiveLogNodeId(null)
-    const execution: CanvasExecution = { nodeOutputs: {}, moduleVars: {}, execLogs: [], startedAt: Date.now(), plan, step: 0, pendingSelectInput: null }
+    setNodeScriptLogs({})
+    const execution: CanvasExecution = { nodeOutputs: {}, moduleVars: {}, branchRoutes: {}, envVars: { ...activeProjectEnvVars }, usedVariables: {}, execLogs: [], startedAt: Date.now(), plan, step: 0, pendingSelectInput: null, pendingBranchChoice: null }
     advanceExecution(execution)
-  }, [activeNodes, activeEdges, activeProject, advanceExecution])
+  }, [activeNodes, activeEdges, activeProject, activeProjectEnvVars, advanceExecution])
 
   const handleCanvasReset = useCallback(() => {
     setExecLogs([])
     setNodeStatuses({})
+    setActiveBranchRoutes({})
     setActiveLogNodeId(null)
     setLogState('collapsed')
     setNodeRunInputs({})
     setNodeRunOutputs({})
+    setNodeScriptLogs({})
   }, [])
+
+  const handleDownloadExecutionReport = useCallback(async (): Promise<void> => {
+    if (!activeProject || execLogs.length === 0) return
+
+    setDownloadingReport(true)
+    try {
+      const startedAt = new Date(Math.min(...execLogs.map(log => log.startedAt)))
+      const finishedAt = Math.max(...execLogs.map(log => log.startedAt + (log.duration ?? 0)))
+      const totalDuration = Math.max(0, finishedAt - startedAt.getTime())
+      const hasError = execLogs.some(log => log.status === 'error')
+      const hasSuccess = execLogs.some(log => log.status === 'success')
+      const overallStatus: 'success' | 'error' | 'partial' = hasError ? (hasSuccess ? 'partial' : 'error') : 'success'
+      const envName = activeProjectEnv?.name ?? 'BASE'
+      const wsName = activeProjectWs?.name ?? ''
+      const reportNodes: ReportNode[] = execLogs.map(log => {
+        const node = activeNodes.find(n => n.id === log.nodeId)
+        let cfg: Partial<ApiConfig> | undefined
+        if (node?.type === 'api') {
+          try { cfg = JSON.parse(node.config || '{}') as ApiConfig } catch { cfg = undefined }
+        }
+        return {
+          nodeId: log.nodeId,
+          label: log.label,
+          type: reportNodeType(log.type),
+          status: log.status,
+          input: log.input,
+          output: log.output,
+          error: log.error,
+          duration: log.duration,
+          apiDetail: log.apiDetail as ReportApiDetail | undefined,
+          preScript: cfg?.preScript,
+          postScript: cfg?.postScript,
+          scriptLogs: log.scriptLogs,
+        }
+      })
+      const content = generateReport('html', {
+        meta: {
+          environment: envName,
+          workspace: wsName,
+          project: activeProject.name,
+          executedAt: startedAt,
+          totalDuration,
+          overallStatus,
+        },
+        nodes: reportNodes,
+        selectedModuleIds: new Set(reportNodes.map(node => node.nodeId)),
+      })
+      const dir = await window.api.file.downloadsDir()
+      const filename = fillFilenameTemplate('execution-log_{env}_{ws}_{project}_{ts}', {
+        env: envName,
+        ws: wsName,
+        project: activeProject.name,
+        ts: new Date(),
+      })
+      const sep = dir.includes('/') && !dir.includes('\\') ? '/' : '\\'
+      const result = await window.api.file.write(`${dir.replace(/[\\/]+$/, '')}${sep}${filename}.html`, content)
+      if (!result.ok) {
+        alert(`HTML 리포트 저장 실패: ${result.error}`)
+        return
+      }
+      setSavedReport({ path: result.path })
+    } catch (err) {
+      alert(`HTML 리포트 생성 실패: ${String((err as Error)?.message ?? err)}`)
+    } finally {
+      setDownloadingReport(false)
+    }
+  }, [activeNodes, activeProject, activeProjectEnv?.name, activeProjectWs?.name, execLogs])
+
+  const handleOpenSavedReport = useCallback(async (): Promise<void> => {
+    if (!savedReport) return
+    const reportPath = savedReport.path
+    setSavedReport(null)
+    const result = await window.api.file.open(reportPath)
+    if (!result.ok) alert(`보고서 파일 열기 실패: ${result.error}`)
+  }, [savedReport])
 
   const onNodeStatusClick = useCallback((nodeId: string) => {
     setLogState('fullscreen')
@@ -1013,6 +2021,10 @@ export default function App(): JSX.Element {
     setWorkspaces(prev => {
       const next = prev.filter(w => w.id !== confirmDeleteWsId)
       if (activeWsId === confirmDeleteWsId) setActiveWsId(next[0]?.id ?? '')
+      const deletedWs = prev.find(w => w.id === confirmDeleteWsId)
+      if (deletedWs?.projects.some(p => p.id === activeProjectId)) {
+        setActiveProjectId(next[0]?.projects[0]?.id ?? '')
+      }
       return next
     })
     setConfirmDeleteWsId(null)
@@ -1218,8 +2230,10 @@ export default function App(): JSX.Element {
               stateKey="common-module"
               title="공통 모듈"
               modules={allModules.filter(m => m.workspaceId === null)}
+              groupByType
               onAdd={(type) => handleCreateCommonModule(type)}
               onEdit={setEditingModule}
+              onReorderCommon={handleReorderCommonModules}
               onSetCommon={(id, isCommon) => {
                 if (!isCommon && activeWsId) handleSetModuleCommon(id, false, activeWsId)
               }}
@@ -1309,8 +2323,13 @@ export default function App(): JSX.Element {
                   onEdgeReconnect={handleEdgeReconnect}
                   onNodeRun={handleNodeRun}
                   onNodeOpen={handleNodeOpen}
+                  onNodeCopy={handleCanvasNodeCopy}
+                  onNodePaste={handleCanvasNodePaste}
+                  onNodeDeleteRequest={handleCanvasNodeDeleteRequest}
+                  canPasteNode={!!copiedCanvasNode && copiedCanvasNode.projectId === activeProject.id}
                   onModuleDrop={handleModuleDrop}
                   nodeStatuses={nodeStatuses}
+                  branchRoutes={activeBranchRoutes}
                   onNodeStatusClick={onNodeStatusClick}
                   activeProjectWsId={activeProjectWs?.id}
                 />
@@ -1327,6 +2346,20 @@ export default function App(): JSX.Element {
             <IcoPanelB size={13} style={{ color: 'var(--text-3)' }} />
             <span className="log-title">실행 로그</span>
             <span className="log-spacer" />
+            {execLogs.length > 0 && (
+              <button
+                className="btn ghost log-report-btn"
+                onClick={(e) => {
+                  e.stopPropagation()
+                  void handleDownloadExecutionReport()
+                }}
+                disabled={downloadingReport}
+                title="HTML 상세 리포트 다운로드"
+              >
+                <IcoSave size={12} />
+                HTML
+              </button>
+            )}
             <IcoChevD
               size={14}
               style={{
@@ -1369,6 +2402,33 @@ export default function App(): JSX.Element {
               <span>{env.name}</span>
             </button>
           ))}
+        </div>
+      )}
+
+      {savedReport && (
+        <div className="modal-overlay" onClick={() => setSavedReport(null)}>
+          <div className="report-saved-dialog" onClick={e => e.stopPropagation()}>
+            <div className="confirm-hd">
+              <span className="confirm-title">보고서 생성 완료</span>
+              <button className="btn ghost icon" onClick={() => setSavedReport(null)} title="닫기">
+                <IcoX size={15} />
+              </button>
+            </div>
+            <div className="report-saved-body">
+              <p className="confirm-message">보고서가 생성 되었습니다.</p>
+              <p className="confirm-message">파일을 여시겠습니까?</p>
+              <div className="report-saved-path" title={savedReport.path}>{savedReport.path}</div>
+            </div>
+            <div className="confirm-ft">
+              <button className="btn" onClick={() => setSavedReport(null)}>취소</button>
+              <button
+                className="btn primary"
+                onClick={() => { void handleOpenSavedReport() }}
+              >
+                확인
+              </button>
+            </div>
+          </div>
         </div>
       )}
 
@@ -1438,6 +2498,21 @@ export default function App(): JSX.Element {
       )}
 
       {/* ── Project Delete Confirm ── */}
+      {confirmDeleteCanvasNode && (
+        <ConfirmDialog
+          title="캔버스 모듈 삭제"
+          message={`"${confirmDeleteCanvasNode.label}" 모듈을 캔버스에서 삭제하시겠습니까?`}
+          warning="모듈 원본은 삭제되지 않고, 현재 캔버스에 배치된 노드와 연결선만 삭제됩니다."
+          confirmLabel="삭제"
+          onConfirm={async () => {
+            const node = confirmDeleteCanvasNode
+            setConfirmDeleteCanvasNode(null)
+            await deleteCanvasNodeInstance(node)
+          }}
+          onCancel={() => setConfirmDeleteCanvasNode(null)}
+        />
+      )}
+
       {confirmDeleteProject && (
         <ConfirmDialog
           title="프로젝트 삭제"
@@ -1451,6 +2526,7 @@ export default function App(): JSX.Element {
       {/* ── Node Settings Modal ── */}
       {editingNode?.type === 'start' && (
         <StartNodeModal
+          key={editingNode.id}
           node={editingNode}
           onSave={handleNodeSave}
           onClose={() => setEditingNode(null)}
@@ -1468,6 +2544,7 @@ export default function App(): JSX.Element {
           .map(n => ({ id: n.id, label: n.label, type: n.type }))
         return (
           <EndNodeModal
+            key={editingNode.id}
             node={editingNode}
             moduleNodes={ordered}
             onSave={handleDataNodeSave}
@@ -1478,12 +2555,10 @@ export default function App(): JSX.Element {
 
       {editingNode?.type === 'data' && (
         <DataNodeModal
+          key={editingNode.id}
           node={editingNode}
           initialInput={nodeRunInputs[editingNode.id]}
-          onRun={() => {
-            const inEdge = activeEdges.find(e => e.targetNodeId === editingNode.id)
-            return inEdge ? executeNodeOutput(inEdge.sourceNodeId, activeNodes, activeEdges) : ''
-          }}
+          onRun={() => previewUpToNode(editingNode.id)}
           onSave={handleDataNodeSave}
           onDelete={async () => {
             // 모듈 연결 노드는 캔버스에서 인스턴스만 제거 (모듈 자체는 유지)
@@ -1498,11 +2573,30 @@ export default function App(): JSX.Element {
 
       {editingNode?.type === 'select' && (
         <SelectNodeModal
+          key={editingNode.id}
           node={editingNode}
           initialInput={nodeRunInputs[editingNode.id]}
-          onRun={() => {
-            const inEdge = activeEdges.find(e => e.targetNodeId === editingNode.id)
-            return inEdge ? executeNodeOutput(inEdge.sourceNodeId, activeNodes, activeEdges) : ''
+          onRun={() => previewUpToNode(editingNode.id)}
+          onSave={handleDataNodeSave}
+          onDelete={async () => {
+            await window.api.node.delete(editingNode.id)
+            setActiveNodes(prev => prev.filter(n => n.id !== editingNode.id))
+            setActiveEdges(prev => prev.filter(e => e.sourceNodeId !== editingNode.id && e.targetNodeId !== editingNode.id))
+            setEditingNode(null)
+          }}
+          onClose={() => setEditingNode(null)}
+        />
+      )}
+
+      {editingNode?.type === 'branch' && (
+        <BranchNodeModal
+          key={editingNode.id}
+          node={editingNode}
+          initialInput={nodeRunInputs[editingNode.id]}
+          onRun={async () => {
+            const inputJson = await previewUpToNode(editingNode.id)
+            setNodeRunInputs(prev => ({ ...prev, [editingNode.id]: inputJson }))
+            return inputJson
           }}
           onSave={handleDataNodeSave}
           onDelete={async () => {
@@ -1517,18 +2611,13 @@ export default function App(): JSX.Element {
 
       {editingNode?.type === 'api' && (
         <ApiNodeModal
+          key={editingNode.id}
           node={editingNode}
           initialInput={nodeRunInputs[editingNode.id]}
           initialOutput={nodeRunOutputs[editingNode.id]}
-          envVars={(() => {
-            const ws = workspaces.find(w => w.id === activeWsId)
-            return ws
-              ? mergeEnvVars(
-                  ws.environments as Array<{ id: string; isBase: boolean; vars: Array<{ key: string; value: string; enabled: boolean }> }>,
-                  ws.activeEnvId,
-                )
-              : {}
-          })()}
+          initialPreConsoleLogs={nodeScriptLogs[editingNode.id]?.pre}
+          initialPostConsoleLogs={nodeScriptLogs[editingNode.id]?.post}
+          envVars={activeProjectEnvVars}
           onRun={() => previewUpToNode(editingNode.id)}
           onSave={handleDataNodeSave}
           onDelete={async () => {
@@ -1543,13 +2632,14 @@ export default function App(): JSX.Element {
 
       {newModuleCtx && newModuleCtx.type === 'data' && (
         <DataNodeModal
+          key={`new-${newModuleCtx.type}-${newModuleCtx.wsId ?? 'common'}`}
           node={{ id: '__new__', projectId: '', type: 'data', label: 'Data', x: 0, y: 0, config: '{}' }}
           isNew
-          onSave={async (_, label, config) => {
+          onSave={async (_, _displayLabel, moduleLabel, config) => {
             if (newModuleCtx.wsId) {
-              await window.api.module.create(newModuleCtx.wsId, newModuleCtx.type, label, config)
+              await window.api.module.create(newModuleCtx.wsId, newModuleCtx.type, moduleLabel, config)
             } else {
-              await window.api.module.createCommon(newModuleCtx.type, label, config)
+              await window.api.module.createCommon(newModuleCtx.type, moduleLabel, config)
             }
             const mods = await window.api.module.listAll()
             setAllModules(mods)
@@ -1561,22 +2651,15 @@ export default function App(): JSX.Element {
 
       {newModuleCtx && newModuleCtx.type === 'api' && (
         <ApiNodeModal
+          key={`new-${newModuleCtx.type}-${newModuleCtx.wsId ?? 'common'}`}
           node={{ id: '__new__', projectId: '', type: 'api', label: 'API', x: 0, y: 0, config: '{}' }}
           isNew
-          envVars={(() => {
-            const ws = workspaces.find(w => w.id === activeWsId)
-            return ws
-              ? mergeEnvVars(
-                  ws.environments as Array<{ id: string; isBase: boolean; vars: Array<{ key: string; value: string; enabled: boolean }> }>,
-                  ws.activeEnvId,
-                )
-              : {}
-          })()}
-          onSave={async (_, label, config) => {
+          envVars={activeProjectEnvVars}
+          onSave={async (_, _displayLabel, moduleLabel, config) => {
             if (newModuleCtx.wsId) {
-              await window.api.module.create(newModuleCtx.wsId, newModuleCtx.type, label, config)
+              await window.api.module.create(newModuleCtx.wsId, newModuleCtx.type, moduleLabel, config)
             } else {
-              await window.api.module.createCommon(newModuleCtx.type, label, config)
+              await window.api.module.createCommon(newModuleCtx.type, moduleLabel, config)
             }
             const mods = await window.api.module.listAll()
             setAllModules(mods)
@@ -1588,13 +2671,33 @@ export default function App(): JSX.Element {
 
       {newModuleCtx && newModuleCtx.type === 'select' && (
         <SelectNodeModal
+          key={`new-${newModuleCtx.type}-${newModuleCtx.wsId ?? 'common'}`}
           node={{ id: '__new__', projectId: '', type: 'select', label: 'Select', x: 0, y: 0, config: '{}' }}
           isNew
-          onSave={async (_, label, config) => {
+          onSave={async (_, _displayLabel, moduleLabel, config) => {
             if (newModuleCtx.wsId) {
-              await window.api.module.create(newModuleCtx.wsId, newModuleCtx.type, label, config)
+              await window.api.module.create(newModuleCtx.wsId, newModuleCtx.type, moduleLabel, config)
             } else {
-              await window.api.module.createCommon(newModuleCtx.type, label, config)
+              await window.api.module.createCommon(newModuleCtx.type, moduleLabel, config)
+            }
+            const mods = await window.api.module.listAll()
+            setAllModules(mods)
+            setNewModuleCtx(null)
+          }}
+          onClose={() => setNewModuleCtx(null)}
+        />
+      )}
+
+      {newModuleCtx && newModuleCtx.type === 'branch' && (
+        <BranchNodeModal
+          key={`new-${newModuleCtx.type}-${newModuleCtx.wsId ?? 'common'}`}
+          node={{ id: '__new__', projectId: '', type: 'branch', label: 'Branch', x: 0, y: 0, config: '{}' }}
+          isNew
+          onSave={async (_, _displayLabel, moduleLabel, config) => {
+            if (newModuleCtx.wsId) {
+              await window.api.module.create(newModuleCtx.wsId, newModuleCtx.type, moduleLabel, config)
+            } else {
+              await window.api.module.createCommon(newModuleCtx.type, moduleLabel, config)
             }
             const mods = await window.api.module.listAll()
             setAllModules(mods)
@@ -1605,26 +2708,80 @@ export default function App(): JSX.Element {
       )}
 
       {/* ── Canvas Execution SelectionPopup ── */}
-      {canvasExecution?.pendingSelectInput !== null && canvasExecution !== null && (
-        <SelectionPopup
-          data={canvasExecution.pendingSelectInput as Record<string, unknown>[] ?? []}
-          onConfirm={(selectedRows) => {
-            advanceExecution(canvasExecution, selectedRows)
-          }}
-          onCancel={() => setCanvasExecution(null)}
-        />
-      )}
+      {canvasExecution?.pendingSelectInput !== null && canvasExecution !== null && (() => {
+        const pendingNodeId = canvasExecution.plan[canvasExecution.step - 1]
+        const pendingNode = activeNodes.find(n => n.id === pendingNodeId)
+        const pendingConfig = parseSelectConfig(pendingNode?.config ?? '{}')
+        return (
+          <SelectionPopup
+            data={canvasExecution.pendingSelectInput}
+            initialSelectedRowIndices={pendingConfig.selectedRowIndices}
+            initialSelectedJsonPaths={pendingConfig.selectedJsonPaths}
+            initialMode={pendingConfig.selectMode}
+            selectionType={pendingConfig.selectionType ?? 'multiple'}
+            onConfirm={(selectedRows, selection) => {
+              const executionToResume = canvasExecution
+              flushSync(() => {
+                setCanvasExecution({
+                  ...canvasExecution,
+                  pendingSelectInput: null,
+                  pendingBranchChoice: null,
+                })
+              })
+              window.requestAnimationFrame(() => {
+                window.requestAnimationFrame(() => {
+                  void advanceExecution(executionToResume, selectedRows, selection)
+                })
+              })
+            }}
+            onCancel={() => setCanvasExecution(null)}
+          />
+        )
+      })()}
+
+      {canvasExecution?.pendingBranchChoice && canvasExecution !== null && (() => {
+        const pendingNodeId = canvasExecution.plan[canvasExecution.step - 1]
+        const pendingNode = activeNodes.find(n => n.id === pendingNodeId)
+        return (
+          <BranchChoicePopup
+            title={pendingNode?.label ?? 'Branch'}
+            trueLabel={canvasExecution.pendingBranchChoice.trueLabel}
+            falseLabel={canvasExecution.pendingBranchChoice.falseLabel}
+            defaultRoute={canvasExecution.pendingBranchChoice.defaultRoute}
+            onConfirm={route => {
+              const executionToResume = canvasExecution
+              flushSync(() => {
+                setCanvasExecution({
+                  ...canvasExecution,
+                  pendingSelectInput: null,
+                  pendingBranchChoice: null,
+                })
+              })
+              window.requestAnimationFrame(() => {
+                window.requestAnimationFrame(() => {
+                  void advanceExecution(executionToResume, undefined, undefined, route)
+                })
+              })
+            }}
+            onCancel={() => setCanvasExecution(null)}
+          />
+        )
+      })()}
 
       {/* ── Preview Mode SelectionPopup ── */}
       {pendingPreviewSelect && (
         <SelectionPopup
           data={pendingPreviewSelect.data}
-          onConfirm={rows => {
-            pendingPreviewSelect.resolve(rows)
+          initialSelectedRowIndices={pendingPreviewSelect.config.selectedRowIndices}
+          initialSelectedJsonPaths={pendingPreviewSelect.config.selectedJsonPaths}
+          initialMode={pendingPreviewSelect.config.selectMode}
+          selectionType={pendingPreviewSelect.config.selectionType ?? 'multiple'}
+          onConfirm={(rows, selection) => {
+            pendingPreviewSelect.resolve({ rows, selection })
             setPendingPreviewSelect(null)
           }}
           onCancel={() => {
-            pendingPreviewSelect.resolve([])
+            pendingPreviewSelect.resolve(null)
             setPendingPreviewSelect(null)
           }}
         />
@@ -1633,9 +2790,10 @@ export default function App(): JSX.Element {
       {/* ── Module Edit Modals (from sidebar double-click) ── */}
       {editingModule && editingModule.type === 'data' && (
         <DataNodeModal
-          node={{ id: editingModule.id, projectId: '', type: 'data', label: editingModule.label, x: 0, y: 0, config: editingModule.config, moduleId: editingModule.id }}
-          onSave={async (_, label, config) => {
-            await handleModuleUpdate(editingModule.id, label, config)
+          key={`module-${editingModule.id}`}
+          node={{ id: editingModule.id, projectId: '', type: 'data', label: editingModule.label, displayLabel: '', moduleLabel: editingModule.label, x: 0, y: 0, config: editingModule.config, moduleId: editingModule.id }}
+          onSave={async (_, _displayLabel, moduleLabel, config) => {
+            await handleModuleUpdate(editingModule.id, moduleLabel, config)
             setEditingModule(null)
           }}
           onDelete={async () => {
@@ -1647,9 +2805,10 @@ export default function App(): JSX.Element {
       )}
       {editingModule && editingModule.type === 'select' && (
         <SelectNodeModal
-          node={{ id: editingModule.id, projectId: '', type: 'select', label: editingModule.label, x: 0, y: 0, config: editingModule.config, moduleId: editingModule.id }}
-          onSave={async (_, label, config) => {
-            await handleModuleUpdate(editingModule.id, label, config)
+          key={`module-${editingModule.id}`}
+          node={{ id: editingModule.id, projectId: '', type: 'select', label: editingModule.label, displayLabel: '', moduleLabel: editingModule.label, x: 0, y: 0, config: editingModule.config, moduleId: editingModule.id }}
+          onSave={async (_, _displayLabel, moduleLabel, config) => {
+            await handleModuleUpdate(editingModule.id, moduleLabel, config)
             setEditingModule(null)
           }}
           onDelete={async () => {
@@ -1659,31 +2818,37 @@ export default function App(): JSX.Element {
           onClose={() => setEditingModule(null)}
         />
       )}
-      {editingModule && editingModule.type === 'api' && (() => {
-        const instance = activeNodes.find(n => n.moduleId === editingModule.id)
-        const instanceInEdge = instance ? activeEdges.find(e => e.targetNodeId === instance.id) : undefined
-        return (
-          <ApiNodeModal
-            node={{ id: editingModule.id, projectId: '', type: 'api', label: editingModule.label, x: 0, y: 0, config: editingModule.config, moduleId: editingModule.id }}
-            initialInput={instance ? nodeRunInputs[instance.id] : undefined}
-            initialOutput={instance ? nodeRunOutputs[instance.id] : undefined}
-            envVars={(() => {
-              const ws = workspaces.find(w => w.id === activeWsId)
-              return ws ? mergeEnvVars(ws.environments, ws.activeEnvId) : {}
-            })()}
-            onRun={instance ? () => previewUpToNode(instance.id) : undefined}
-            onSave={async (_, label, config) => {
-              await handleModuleUpdate(editingModule.id, label, config)
-              setEditingModule(null)
-            }}
-            onDelete={async () => {
-              await handleDeleteModule(editingModule.id)
-              setEditingModule(null)
-            }}
-            onClose={() => setEditingModule(null)}
-          />
-        )
-      })()}
+      {editingModule && editingModule.type === 'branch' && (
+        <BranchNodeModal
+          key={`module-${editingModule.id}`}
+          node={{ id: editingModule.id, projectId: '', type: 'branch', label: editingModule.label, displayLabel: '', moduleLabel: editingModule.label, x: 0, y: 0, config: editingModule.config, moduleId: editingModule.id }}
+          onSave={async (_, _displayLabel, moduleLabel, config) => {
+            await handleModuleUpdate(editingModule.id, moduleLabel, config)
+            setEditingModule(null)
+          }}
+          onDelete={async () => {
+            await handleDeleteModule(editingModule.id)
+            setEditingModule(null)
+          }}
+          onClose={() => setEditingModule(null)}
+        />
+      )}
+      {editingModule && editingModule.type === 'api' && (
+        <ApiNodeModal
+          key={`module-${editingModule.id}`}
+          node={{ id: editingModule.id, projectId: '', type: 'api', label: editingModule.label, displayLabel: '', moduleLabel: editingModule.label, x: 0, y: 0, config: editingModule.config, moduleId: editingModule.id }}
+          envVars={activeProjectEnvVars}
+          onSave={async (_, _displayLabel, moduleLabel, config) => {
+            await handleModuleUpdate(editingModule.id, moduleLabel, config)
+            setEditingModule(null)
+          }}
+          onDelete={async () => {
+            await handleDeleteModule(editingModule.id)
+            setEditingModule(null)
+          }}
+          onClose={() => setEditingModule(null)}
+        />
+      )}
 
       {/* ── Edge Delete Confirm ── */}
       {confirmDeleteEdge && (

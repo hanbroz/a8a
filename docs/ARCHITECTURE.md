@@ -1,507 +1,118 @@
-# Architecture Overview
+# 아키텍처 개요
 
-## Stack
+## 스택
 
-- **Electron** 42.2.0 — Desktop application framework
-- **electron-vite** 5 — Build tooling for Electron + Vite
-- **React** 19.2.6 — UI framework
-- **TypeScript** 6.0.3 — Type safety
-- **sql.js** 1.14.1 — WebAssembly SQLite, in-memory DB with file persistence
-- **No state library** — All state lives in App.tsx
-- **No React Router** — Single-page application with local state management
+- Electron 42.2.0
+- electron-vite 5
+- React 19.2.6
+- TypeScript 6.0.3
+- sql.js 1.14.1
+- Monaco Editor
+- ExcelJS
 
----
+## 프로세스 구조
 
-## Process Model
+```text
+Main Process
+  - sql.js 데이터베이스 초기화와 저장
+  - IPC 핸들러 등록
+  - HTTP fetch, 파일 저장, 폴더 선택
+  - BrowserWindow 생성과 창 상태 저장
 
-Electron uses a multi-process architecture:
+Preload
+  - contextBridge로 window.api만 노출
+  - Renderer가 직접 Node.js API에 접근하지 않도록 분리
 
-```
-┌─────────────────────────────────────────┐
-│           Main Process (Node.js)        │
-│ • Database (sql.js)                     │
-│ • IPC handler registration              │
-│ • File I/O                              │
-│ • Window management                     │
-└──────────────────┬──────────────────────┘
-                   │
-            IPC Bridge (contextBridge)
-                   │
-     ┌─────────────┴─────────────┐
-     │                           │
-     ↓                           ↓
-┌──────────────┐      ┌──────────────────┐
-│ Preload      │      │ Renderer Process │
-│ (Node.js +   │      │ (Browser Context)│
-│ contextAPI)  │      │                  │
-│              │      │ • React UI       │
-│ Exposes:     │      │ • User events    │
-│ window.api   │      │ • DOM rendering  │
-│ window.      │      │                  │
-│   electron   │      │ Calls IPC via:   │
-└──────────────┘      │ window.api.*     │
-                      └──────────────────┘
+Renderer
+  - React UI
+  - 캔버스 노드/엣지 상태
+  - 워크플로우 실행과 로그 표시
 ```
 
-**Data Flow**:
-1. **Renderer** (React) → calls `window.api.workspace.list()`
-2. **IPC** sends message to main process
-3. **Main Process** handles in `src/main/ipc.ts`, calls `src/main/db.ts`
-4. **Database** queries sql.js in-memory store
-5. **Response** sent back to renderer
-6. **Renderer** updates state and re-renders
+`BrowserWindow`는 `contextIsolation: true`, `nodeIntegration: false`를 명시합니다. 현재 `sandbox: false`는 sql.js WASM과 기존 preload 구조를 고려한 상태이며, 장기적으로는 샌드박스 전환을 검토해야 합니다.
 
-**Security Note**: `contextIsolation: true` prevents untrusted scripts in the renderer from accessing `window.api`. The preload script (running in both contexts) bridges the gap securely.
+## 데이터 저장
 
----
+DB 파일은 `{userData}/a8a.db`에 저장됩니다. 앱 실행 시 sql.js가 메모리 DB를 열고, 변경 후 SQLite 바이너리를 파일로 저장합니다. 저장은 임시 파일을 쓴 뒤 rename하는 방식으로 처리합니다.
 
-## Data Layer
+## 주요 테이블
 
-**File**: `src/main/db.ts`
-
-### Database Storage
-
-- **In-Memory**: sql.js WebAssembly SQLite database loaded on startup
-- **Persistence**: File at `{userData}/a8a.db` (auto-created on first save)
-- **Format**: Binary SQLite 3
-- **Foreign Keys**: `PRAGMA foreign_keys = ON` enabled on init
-
-### Schema
-
-All IDs are **UUID v4** (text columns).
-
-```sql
+```text
 workspaces
-├─ id (TEXT PRIMARY KEY)
-├─ name (TEXT NOT NULL)
-├─ description (TEXT DEFAULT '')
-└─ sort (INTEGER DEFAULT 0)
+  id, name, description, sort
 
 environments
-├─ id (TEXT PRIMARY KEY)
-├─ workspace_id (TEXT NOT NULL) — FK to workspaces
-├─ name (TEXT NOT NULL)
-├─ is_base (INTEGER DEFAULT 0) — 1 for BASE env, 0 otherwise
-├─ color (TEXT DEFAULT '#4493f8') — Hex color for env badge
-├─ initial (TEXT DEFAULT '') — First character of name for display
-└─ sort (INTEGER DEFAULT 0)
+  id, workspace_id, name, is_base, color, initial, sort
 
 env_vars
-├─ id (TEXT PRIMARY KEY)
-├─ environment_id (TEXT NOT NULL) — FK to environments
-├─ key (TEXT NOT NULL)
-├─ value (TEXT DEFAULT '')
-├─ enabled (INTEGER DEFAULT 1) — 1 = enabled, 0 = disabled
-└─ sort (INTEGER DEFAULT 0)
+  id, environment_id, key, value, enabled, sort
 
 projects
-├─ id (TEXT PRIMARY KEY)
-├─ workspace_id (TEXT NOT NULL) — FK to workspaces
-├─ name (TEXT NOT NULL)
-├─ description (TEXT DEFAULT '')
-└─ sort (INTEGER DEFAULT 0)
+  id, workspace_id, name, description, sort
 
 modules
-├─ id (TEXT PRIMARY KEY)
-├─ name (TEXT NOT NULL)
-└─ sort (INTEGER DEFAULT 0)
+  id, workspace_id, type, label, config, is_common, sort
+
+nodes
+  id, project_id, type, label, x, y, config, module_id
+
+edges
+  id, project_id, source_node_id, target_node_id
 ```
 
-### Key Functions
+현재 스키마는 기존 DB 호환성을 위해 명시적 외래 키 마이그레이션을 적용하지 않습니다. 대신 삭제 함수와 생성 함수에서 소유권, 연결 가능성, 고아 데이터 정리를 코드 레벨에서 보강합니다.
 
-| Function | Purpose |
-|----------|---------|
-| `initDb()` | Load/create DB, run migrations, seed if empty |
-| `listWorkspaces()` | Get all workspaces (sorted by sort, then rowid) |
-| `createWorkspace(name, desc)` | Create workspace + auto-create BASE env |
-| `deleteWorkspace(id)` | Cascade-delete workspace, envs, projects, vars |
-| `listEnvironments(wsId)` | Get all envs + their vars for workspace |
-| `upsertEnvironment(wsId, env)` | Insert or update env and all its vars |
-| `deleteEnvironment(id)` | Delete non-BASE env and its vars |
-| `listProjects(wsId)` | Get all projects for workspace |
-| `createProject(wsId, name, desc)` | Create project |
-| `deleteProject(id)` | Delete project |
-| `listModules()` | Get all modules (global, not workspace-scoped) |
-| `createModule(name)` | Create module |
-| `deleteModule(id)` | Delete module |
+## 데이터 계층 규칙
 
-### Initialization
-
-`initDb()` runs on app startup:
-1. Initialize sql.js WASM module (finds wasm file in node_modules)
-2. Load existing `a8a.db` if it exists, otherwise create empty DB
-3. Create schema (idempotent, uses `IF NOT EXISTS`)
-4. Call `seedIfEmpty()` to create default workspace + BASE env if DB is empty
-5. Save to disk
-
----
+- 워크스페이스 삭제 시 환경 변수, 환경, 프로젝트, 노드, 엣지, 워크스페이스 전용 모듈을 함께 정리합니다.
+- 모듈 삭제 시 해당 모듈을 참조하는 노드와 연결 엣지를 함께 정리합니다.
+- 모듈을 프로젝트에 배치할 때 공통 모듈이거나 같은 워크스페이스 소속 모듈이어야 합니다.
+- 엣지는 같은 프로젝트의 노드끼리만 생성할 수 있습니다.
+- 한 노드는 하나의 입력 연결만 받을 수 있습니다.
+- 순환 연결, 자기 자신 연결, End에서 시작하는 연결, Start로 들어가는 연결은 허용하지 않습니다.
 
 ## IPC API
 
-**Main File**: `src/main/ipc.ts`  
-**Preload Bridge**: `src/preload/index.ts`
-
-All IPC calls are **asynchronous** and return Promises. The renderer calls them via `window.api.*`.
-
-### Workspace API
-
-```typescript
-window.api.workspace.list()
-  → Promise<{id, name, description}[]>
-
-window.api.workspace.create(name: string, description: string)
-  → Promise<{id, name, description}>
-
-window.api.workspace.update(id: string, name: string, description: string)
-  → Promise<void>
-
-window.api.workspace.delete(id: string)
-  → Promise<void>
+```ts
+window.api.workspace.{ list, create, update, delete }
+window.api.environment.{ list, upsert, delete }
+window.api.project.{ list, create, update, delete }
+window.api.module.{ list, listAll, create, createCommon, update, setCommon, delete }
+window.api.node.{ list, create, createFromModule, updatePosition, updateLabel, updateConfig, delete }
+window.api.edge.{ list, create, delete }
+window.api.http.fetch(url, { method, headers, body? })
+window.api.dialog.openDirectory(defaultPath?)
+window.api.file.{ write, downloadsDir }
 ```
 
-### Environment API
+`file.write`는 리포트 저장 용도로 제한합니다. `.html`, `.md` 확장자만 허용하고, 사용자가 선택한 디렉터리 또는 다운로드 폴더 하위에만 저장합니다.
 
-```typescript
-window.api.environment.list(workspaceId: string)
-  → Promise<{id, name, isBase, color, initial, vars: {id, key, value, enabled}[]}[]>
+## 렌더러 상태 구조
 
-window.api.environment.upsert(workspaceId: string, env: Environment)
-  → Promise<void>
+루트 상태는 `src/renderer/src/App.tsx`가 관리합니다. 별도 상태 관리 라이브러리는 사용하지 않습니다.
 
-window.api.environment.delete(id: string)
-  → Promise<void>
-```
+주요 상태:
 
-### Project API
+- `workspaces`: 워크스페이스, 환경, 프로젝트 목록
+- `activeWsId`: 사이드바에서 선택한 워크스페이스
+- `activeProjectId`: 현재 열린 프로젝트
+- `activeNodes`, `activeEdges`: 현재 프로젝트 캔버스 상태
+- `allModules`: 공통/워크스페이스 모듈 목록
+- `nodeStatuses`: 실행 중 노드 상태
+- `execLogs`: 실행 로그
+- 모달 상태: 환경, 프로젝트, 워크스페이스, 노드, 모듈, 삭제 확인
 
-```typescript
-window.api.project.list(workspaceId: string)
-  → Promise<{id, name, description}[]>
+## 실행 흐름
 
-window.api.project.create(workspaceId: string, name: string, description: string)
-  → Promise<{id, name, description}>
+1. Start 노드부터 연결된 노드 목록을 계산합니다.
+2. Data 노드는 JSON 출력을 반환합니다.
+3. Select 노드는 입력 배열에서 선택한 행을 반환합니다.
+4. API 노드는 템플릿 치환 후 main process를 통해 HTTP 요청을 실행합니다.
+5. Pre/Post 스크립트는 입력/출력 변수와 환경 변수 업데이트를 반환할 수 있습니다.
+6. End 노드는 선택한 모듈의 실행 결과를 HTML 또는 Markdown 리포트로 저장합니다.
 
-window.api.project.update(id: string, name: string, description: string)
-  → Promise<void>
+실행 환경은 사이드바 선택 상태가 아니라 현재 열린 프로젝트가 속한 워크스페이스의 활성 환경을 기준으로 합니다.
 
-window.api.project.delete(id: string)
-  → Promise<void>
-```
+## 문서 정책
 
-### Module API
-
-```typescript
-window.api.module.list()
-  → Promise<{id, name}[]>
-
-window.api.module.create(name: string)
-  → Promise<{id, name}>
-
-window.api.module.rename(id: string, name: string)
-  → Promise<void>
-
-window.api.module.delete(id: string)
-  → Promise<void>
-```
-
----
-
-## State Management
-
-**File**: `src/renderer/src/App.tsx`
-
-All application state lives in the root `<App>` component. No external state library (Redux, Zustand, etc.).
-
-### State Shape
-
-```typescript
-type Workspace = {
-  id: string
-  name: string
-  description: string
-  environments: Environment[]      // Loaded from DB on workspace select
-  activeEnvId: string              // Currently selected env in this workspace
-  projects: ProjectItem[]          // Loaded from DB on workspace select
-  activeProjectId: string          // Currently selected project in this workspace
-}
-
-type Environment = {
-  id: string
-  name: string
-  isBase: boolean                  // true for the auto-created BASE env
-  color: string                    // Hex color, e.g. '#4493f8'
-  initial: string                  // First char of name for badge display
-  vars: EnvVarRow[]                // Environment variables
-}
-
-type EnvVarRow = {
-  id: string
-  key: string
-  value: string
-  enabled: boolean
-}
-
-type ProjectItem = {
-  id: string
-  name: string
-  description: string
-}
-```
-
-### Root State Variables
-
-| State | Type | Purpose |
-|-------|------|---------|
-| `workspaces` | `Workspace[]` | All workspaces with their envs and projects |
-| `activeWsId` | `string` | Currently selected workspace ID |
-| `theme` | `'dark' \| 'light'` | UI theme (persisted in state, not localStorage yet) |
-| `sidebarLayout` | `'full' \| 'icons'` | Sidebar expanded or icon-only mode |
-| `sidebarWidth` | `number` | Sidebar width in pixels (180–480, persisted in localStorage) |
-| `logState` | `'collapsed' \| 'fullscreen'` | Log panel state |
-| `loading` | `boolean` | Initial DB load in progress |
-| `modalEnv` | `Environment \| null \| undefined` | Env add/edit modal state (see TECH_DEBT #8) |
-| `modalWsId` | `string` | Workspace ID for env modal (closure issue in TECH_DEBT #7) |
-| `modalProject` | `{wsId, project} \| null` | Project add/edit modal state |
-| `modalWorkspace` | `{workspace} \| null` | Workspace add/edit modal state |
-| `confirmDeleteWsId` | `string \| null` | Workspace delete confirmation |
-| `confirmDeleteProject` | `{wsId, project} \| null` | Project delete confirmation |
-| `confirmDeleteEnv` | `{wsId, env} \| null` | Environment delete confirmation |
-
-### Load on Mount
-
-When the app loads (`useEffect` with empty deps):
-1. Call `window.api.workspace.list()`
-2. For each workspace, call `window.api.environment.list(wsId)` and `window.api.project.list(wsId)` in parallel
-3. Find the BASE env in each workspace (or use first env as fallback)
-4. Set `workspaces` state and `activeWsId` to first workspace
-
-### Save Patterns
-
-All saves follow this pattern:
-```typescript
-const handleSave = async (data) => {
-  await window.api.method(data)           // Write to DB
-  setWorkspaces(prev => ...)              // Update local state
-  closeModal()                            // Close modal
-}
-```
-
-No explicit refetch from DB — state is updated optimistically. **Risk**: If IPC call fails, state diverges from DB (TECH_DEBT #7).
-
----
-
-## UI Structure
-
-### Layout
-
-```
-┌─────────────────────────────────────────────┐
-│ Sidebar (244px default, 180–480px range)    │ Workspace Area
-├─────────────────────────────────────────────┤
-│ Header (brand + collapse btn)                │ ┌─────────────────────┐
-│ ─────────────────────────────────────────── │ │ Topbar              │
-│ EnvSection                                  │ │ ┌────────────────────┤
-│ • Active env dropdown                       │ │ │ Env Selector │ ... │
-│ • Add env button                            │ │ └────────────────────┘
-│ • List of envs (sortable)                   │ │                     │
-│                                             │ │ Canvas Area         │
-│ ProjectSection                              │ │ (placeholder)       │
-│ • Active project list                       │ │                     │
-│ • Add project button                        │ │                     │
-│ • List of projects (sortable)               │ │                     │
-│                                             │ │                     │
-│ ModuleSection                               │ ├─────────────────────┤
-│ • List of modules (global)                  │ │ Log Panel           │
-│ • Add module button                         │ │ (collapsed/expand)  │
-│                                             │ └─────────────────────┘
-└─────────────────────────────────────────────┘
-  │ Resize handle (180–480px)
-```
-
-### Sidebar Modes
-
-**Full Mode** (`sidebarLayout === 'full'`):
-- Width: 180–480px (user-resizable, persisted in localStorage)
-- Shows full workspace/env/project names
-- Expandable sections
-
-**Icon Mode** (`sidebarLayout === 'icons'`):
-- Width: 52px (fixed)
-- Shows only project first letter in colored badge
-- Hover tooltip with full path: `WorkspaceName › ProjectName`
-
-### Key Components
-
-| Component | File | Purpose |
-|-----------|------|---------|
-| `App` | `src/renderer/src/App.tsx` | Root component, state container, layout |
-| `WorkspaceHeader` | `src/renderer/src/components/sidebar/WorkspaceHeader.tsx` | Workspace selector + CRUD |
-| `EnvSection` | `src/renderer/src/components/env/EnvSection.tsx` | Environment list + selector |
-| `EnvModal` | `src/renderer/src/components/env/EnvModal.tsx` | Add/edit environment modal |
-| `ProjectSection` | `src/renderer/src/components/sidebar/ProjectSection.tsx` | Project list + selector |
-| `ProjectModal` | `src/renderer/src/components/sidebar/ProjectModal.tsx` | Add/edit project modal |
-| `WorkspaceModal` | `src/renderer/src/components/sidebar/WorkspaceModal.tsx` | Add/edit workspace modal |
-| `ModuleSection` | `src/renderer/src/components/sidebar/ModuleSection.tsx` | Module list + CRUD |
-| `ConfirmDialog` | `src/renderer/src/components/ConfirmDialog.tsx` | Generic delete confirmation modal |
-
----
-
-## Key Design Decisions
-
-### 1. BASE Environment Per Workspace
-
-Every workspace has an auto-created, non-deletable `BASE` environment. This serves as a default environment for new projects and API calls. Users cannot delete it or change its name.
-
-**Why**: Simplifies the data model — every workspace always has at least one environment. No null-check needed for "active environment."
-
-### 2. Environment Color + Initial Badge
-
-Each environment has a `color` (hex) and `initial` (first character of name for compact display in icon mode). The initial is displayed in a colored circle badge in the sidebar.
-
-**Why**: Visual distinction of environments in the icon-only sidebar mode.
-
-### 3. No React Router
-
-The app is a single-page app with no route navigation. Modal state and sidebar selection drive the UI. A future canvas/workflow editor will be added, but it will be a single large component in the workspace area.
-
-**Why**: Simpler state management. The entire app state is in App.tsx and passed down to components.
-
-### 4. Sidebar Resizable but Not Dockable
-
-The sidebar is resizable horizontally (180–480px range) and can collapse to icon-only mode, but it's always on the left and cannot be moved or undocked.
-
-**Why**: Predictable layout, simpler implementation.
-
-### 5. All State in App.tsx, Not Redux/Zustand
-
-No external state management library. All state lives in the root component and is passed via props. This simplifies the codebase for a small team.
-
-**Risk**: Component tree is deep if new features are added without refactoring. At that point, consider migrating to Zustand or Jotai for fine-grained updates.
-
-### 6. Optimistic Updates
-
-When the user saves a workspace/env/project, the local state is updated immediately and the modal closes. If the IPC call fails, the UI and DB diverge silently (TECH_DEBT #7).
-
-**Why**: Better perceived performance and simpler code. The trade-off is acceptable for now; a future enhancement would add error handling and rollback.
-
----
-
-## File Structure
-
-### Main Process
-
-```
-src/main/
-├─ index.ts           (Electron app initialization, window creation)
-├─ ipc.ts             (IPC handler registration for all APIs)
-└─ db.ts              (Database schema, queries, persistence)
-```
-
-### Preload
-
-```
-src/preload/
-└─ index.ts           (contextBridge, exposes window.api and window.electron)
-```
-
-### Renderer (React)
-
-```
-src/renderer/src/
-├─ main.tsx           (Entry point, React.render)
-├─ App.tsx            (Root component, layout, state)
-├─ globals.d.ts       (TypeScript declarations for window.api)
-│
-├─ components/
-│  ├─ Icon.tsx        (Icon components)
-│  ├─ ConfirmDialog.tsx
-│  ├─ sidebar/
-│  │  ├─ WorkspaceHeader.tsx
-│  │  ├─ WorkspaceModal.tsx
-│  │  ├─ EnvSection.tsx
-│  │  ├─ ProjectSection.tsx
-│  │  ├─ ProjectModal.tsx
-│  │  └─ ModuleSection.tsx
-│  └─ env/
-│     ├─ EnvSection.tsx
-│     └─ EnvModal.tsx
-│
-├─ hooks/
-│  └─ useSidebarOpen.ts
-│
-├─ styles/
-│  └─ (CSS files)
-│
-└─ assets/
-   └─ (Images, icons, etc.)
-```
-
-### Build Artifacts
-
-```
-out/
-├─ main/              (Compiled main process)
-├─ preload/           (Compiled preload script)
-└─ renderer/          (Compiled React bundle)
-```
-
----
-
-## Startup Sequence
-
-1. **Electron Main Process** (`src/main/index.ts`)
-   - `app.whenReady()` listener fires
-   - `initDb()` called (load/create DB)
-   - `registerIpcHandlers()` called (register all IPC routes)
-   - `createWindow()` called (create BrowserWindow with preload)
-
-2. **Preload Script** (`src/preload/index.ts`)
-   - Runs before renderer loads
-   - Exposes `window.api` and `window.electron` via contextBridge
-
-3. **React Renderer** (`src/renderer/src/App.tsx`)
-   - React mounts App component
-   - `useEffect` on mount calls `window.api.workspace.list()`
-   - Loads all workspaces, envs, projects into state
-   - Renders UI
-
----
-
-## Build & Development
-
-### Development
-
-```bash
-npm run dev
-```
-
-Runs electron-vite in dev mode. Hot reload for both main and renderer processes.
-
-### Production Build
-
-```bash
-npm run build
-```
-
-Builds and bundles the app.
-
-### Package for Distribution
-
-```bash
-npm run build:mac   # macOS .dmg
-npm run build:win   # Windows .exe
-npm run build:linux # Linux AppImage
-```
-
-Uses electron-builder with native code signing support (if configured).
-
----
-
-## Security Considerations
-
-1. **contextIsolation: true** — Preload script runs in a separate context, preventing renderer XSS from accessing Node.js APIs
-2. **sandbox: false** — Currently disabled to allow sql.js WASM to work (known limitation)
-3. **No eval()** — Code is bundled, no dynamic evaluation
-4. **IPC handlers are untrusted** — Renderer input should be validated (TECH_DEBT #1)
-
-**Next Steps**: Enable sandbox when sql.js supports it, add input validation to IPC handlers.
+모든 문서는 한국어와 UTF-8 인코딩을 기본으로 합니다. 기술 식별자, API 이름, 코드 경로는 원문 그대로 유지할 수 있습니다.

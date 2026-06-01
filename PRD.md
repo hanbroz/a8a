@@ -33,8 +33,10 @@
 
 ### 필수 선행 조건 (절대 규칙)
 
-- **디자인 우선 원칙**: 개발 착수 전 반드시 Claude Design 도구를 통해 전체 UI/UX 화면을 설계하고 승인받아야 합니다. 
-Fetch this design file, read its readme, and implement the relevant aspects of the design. https://api.anthropic.com/v1/design/h/y7IUCOVsDpMecTnAoFDVeg?open_file=A8A+Workflow.html, Implement: A8A Workflow.html, (IMPORTANT: 디자인을 한꺼번에 반영하지 마십시오. 레이아웃을 우선 구성하고 요소는 지시사항에 따라 하나 하나 씩 구성합니다.)
+- **디자인 우선 원칙**: 개발 착수 전 반드시 Claude Design 도구를 통해 전체 UI/UX 화면을 설계하고 승인받아야 합니다.
+  - 디자인 파일: `https://api.anthropic.com/v1/design/h/y7IUCOVsDpMecTnAoFDVeg?open_file=A8A+Workflow.html`
+  - 구현 대상: `A8A Workflow.html`
+  - 주의: 디자인을 한꺼번에 반영하지 말고, 레이아웃을 먼저 구성한 뒤 요소는 지시사항에 따라 하나씩 구성합니다.
 - **최신 LTS 버전 확인 의무**: 개발 전 반드시 Context7 MCP를 사용하여 Electron, Node.js, React, TypeScript 등 사용할 모든 라이브러리와 런타임의 최신 LTS 버전을 실시간으로 확인합니다. 학습 데이터나 기억에 의존한 버전을 사용하지 않으며, 반드시 Context7 MCP 조회 결과를 근거로 버전을 결정합니다.
 
 ### 개발 환경

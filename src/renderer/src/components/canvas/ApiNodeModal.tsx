@@ -1,19 +1,148 @@
 import { useState, useRef, useCallback, useEffect, useMemo, lazy, Suspense } from 'react'
-import { IcoPlus, IcoTrash, IcoX } from '../Icon'
+import { IcoMaximize, IcoPlus, IcoRestore, IcoTrash, IcoX } from '../Icon'
+import JsonMonacoEditor from './JsonMonacoEditor'
+import { useModalMaximize } from './useModalMaximize'
 import { randomId } from '../../utils/id'
-import { parseTemplate, resolveTemplate } from '../../utils/interpolate'
+import { applyInputMappings, getInputPathSuggestions, parseTemplate, resolveInputExpression, resolveTemplate } from '../../utils/interpolate'
+import { API_AUTH_TYPES, DEFAULT_API_AUTH, applyApiAuth, getApiAuthTemplateValues, normalizeApiAuth } from '../../utils/apiAuth'
+import { isScriptRuntimeError, runPostResponse, runPreRequest } from '../../utils/scriptRuntime'
 import type { Token } from '../../utils/interpolate'
+import type { ScriptConsoleEntry } from '../../utils/scriptRuntime'
+import type { BeforeMount, Monaco } from '@monaco-editor/react'
 
 // Monaco is loaded only when this modal is rendered. The side-effect import
 // (`monacoSetup`) wires up bundled workers and must complete before Editor
-// mounts — chaining via `await` inside lazy() guarantees the order.
+// mounts. `await` inside lazy() keeps the loading order stable.
 const MonacoEditor = lazy(async () => {
   await import('../../utils/monacoSetup')
   return import('@monaco-editor/react')
 })
 
 function MonacoFallback(): JSX.Element {
-  return <div className="dm-monaco-loading">에디터 로드 중…</div>
+  return <div className="dm-monaco-loading">에디터 로드 중...</div>
+}
+
+let apiScriptAssistantRegistered = false
+
+function getScriptPhaseFromUri(uri: string): 'pre' | 'post' | null {
+  if (uri.includes('/pre-request.')) return 'pre'
+  if (uri.includes('/post-response.')) return 'post'
+  return null
+}
+
+function registerApiScriptAssistant(monaco: Monaco): void {
+  if (apiScriptAssistantRegistered) return
+  apiScriptAssistantRegistered = true
+
+  monaco.languages.registerCompletionItemProvider('javascript', {
+    provideCompletionItems(model, position) {
+      const phase = getScriptPhaseFromUri(model.uri.toString())
+      if (!phase) return { suggestions: [] }
+
+      const word = model.getWordUntilPosition(position)
+      const range = {
+        startLineNumber: position.lineNumber,
+        endLineNumber: position.lineNumber,
+        startColumn: word.startColumn,
+        endColumn: word.endColumn,
+      }
+      const fn = monaco.languages.CompletionItemKind.Function
+      const variable = monaco.languages.CompletionItemKind.Variable
+      const snippet = monaco.languages.CompletionItemInsertTextRule.InsertAsSnippet
+      const suggestions = [
+        {
+          label: 'getInput',
+          kind: fn,
+          detail: 'A8A Runtime API',
+          documentation: '현재 모듈로 전달된 입력 값을 반환합니다.',
+          insertText: 'getInput()',
+          range,
+        },
+        {
+          label: 'setEnv',
+          kind: fn,
+          detail: 'A8A Runtime API',
+          documentation: '환경변수를 현재 실행 컨텍스트에 설정합니다. 캔버스 실행에서는 워크스페이스 BASE 환경에도 저장됩니다.',
+          insertText: "setEnv('${1:name}', ${2:value})",
+          insertTextRules: snippet,
+          range,
+        },
+        {
+          label: 'env',
+          kind: variable,
+          detail: 'A8A Runtime API',
+          documentation: '현재 적용된 환경변수 객체입니다.',
+          insertText: 'env',
+          range,
+        },
+        {
+          label: 'console.log',
+          kind: fn,
+          detail: 'A8A Console',
+          documentation: '콘솔 탭에 로그를 출력합니다.',
+          insertText: 'console.log(${1:value})',
+          insertTextRules: snippet,
+          range,
+        },
+        {
+          label: 'console.warn',
+          kind: fn,
+          detail: 'A8A Console',
+          documentation: '콘솔 탭에 경고 로그를 출력합니다.',
+          insertText: 'console.warn(${1:value})',
+          insertTextRules: snippet,
+          range,
+        },
+        {
+          label: 'console.error',
+          kind: fn,
+          detail: 'A8A Console',
+          documentation: '콘솔 탭에 오류 로그를 출력합니다.',
+          insertText: 'console.error(${1:value})',
+          insertTextRules: snippet,
+          range,
+        },
+      ]
+
+      if (phase === 'pre') {
+        suggestions.push({
+          label: 'setInput',
+          kind: fn,
+          detail: 'A8A Pre Request API',
+          documentation: 'API 호출 템플릿에서 사용할 INPUT 변수를 설정합니다.',
+          insertText: "setInput('${1:name}', ${2:value})",
+          insertTextRules: snippet,
+          range,
+        })
+      } else {
+        suggestions.push(
+          {
+            label: 'getOutput',
+            kind: fn,
+            detail: 'A8A Post Response API',
+            documentation: 'API 응답 값을 반환합니다.',
+            insertText: 'getOutput()',
+            range,
+          },
+          {
+            label: 'setOutput',
+            kind: fn,
+            detail: 'A8A Post Response API',
+            documentation: '하위 모듈에서 사용할 OUTPUT 변수를 설정합니다.',
+            insertText: "setOutput('${1:name}', ${2:value})",
+            insertTextRules: snippet,
+            range,
+          },
+        )
+      }
+
+      return { suggestions }
+    },
+  })
+}
+
+const beforeApiScriptEditorMount: BeforeMount = (monaco) => {
+  registerApiScriptAssistant(monaco)
 }
 
 interface Props {
@@ -21,15 +150,30 @@ interface Props {
   isNew?: boolean
   initialInput?: string
   initialOutput?: string
+  initialPreConsoleLogs?: ScriptConsoleEntry[]
+  initialPostConsoleLogs?: ScriptConsoleEntry[]
   envVars?: Record<string, string>
   onRun?: () => string | Promise<string>
-  onSave: (nodeId: string, label: string, config: string) => Promise<void>
+  moduleLabel?: string
+  onSave: (nodeId: string, displayLabel: string, moduleLabel: string, config: string) => Promise<void>
   onDelete?: () => Promise<void>
   onClose: () => void
 }
 
 type ResizeDir = 'n' | 'ne' | 'e' | 'se' | 's' | 'sw' | 'w' | 'nw'
-type SettingsTab = 'headers' | 'params' | 'body'
+type SettingsTab = 'auth' | 'headers' | 'params' | 'body'
+type ScriptPaneTab = 'script' | 'console'
+type UsedVariable = { kind: 'env' | 'input'; name: string; resolved: string | null; mappedPath?: string }
+type ResolvedApiRequest = {
+  method: ApiConfig['method']
+  url: string
+  headers: Record<string, string>
+  body?: string
+}
+type TestErrorDetail = {
+  error: string
+  request: ResolvedApiRequest
+}
 
 const MIN_W = 720
 const MIN_H = 420
@@ -50,6 +194,8 @@ const MONACO_OPTIONS = {
   renderLineHighlight: 'line' as const,
   smoothScrolling: true,
   cursorBlinking: 'smooth' as const,
+  quickSuggestions: { other: true, comments: false, strings: false },
+  suggest: { showSnippets: true },
   padding: { top: 8, bottom: 8 },
   scrollbar: { verticalScrollbarSize: 8, horizontalScrollbarSize: 8 },
 }
@@ -57,6 +203,12 @@ const MONACO_OPTIONS = {
 function parseConfig(raw: string): ApiConfig {
   try {
     const parsed = JSON.parse(raw)
+    const inputMappings = parsed.inputMappings && typeof parsed.inputMappings === 'object' && !Array.isArray(parsed.inputMappings)
+      ? Object.fromEntries(
+          Object.entries(parsed.inputMappings as Record<string, unknown>)
+            .filter((entry): entry is [string, string] => typeof entry[1] === 'string'),
+        )
+      : {}
     return {
       method: (['GET', 'POST', 'PUT', 'PATCH', 'DELETE'].includes(parsed.method)
         ? parsed.method
@@ -68,11 +220,13 @@ function parseConfig(raw: string): ApiConfig {
       bodyType: (['none', 'json', 'raw'].includes(parsed.bodyType)
         ? parsed.bodyType
         : 'json') as ApiConfig['bodyType'],
+      auth: normalizeApiAuth(parsed.auth),
       preScript: typeof parsed.preScript === 'string' ? parsed.preScript : '',
       postScript: typeof parsed.postScript === 'string' ? parsed.postScript : '',
+      inputMappings,
     }
   } catch {
-    return { method: 'GET', url: '', headers: [], params: [], body: '', bodyType: 'json', preScript: '', postScript: '' }
+    return { method: 'GET', url: '', headers: [], params: [], body: '', bodyType: 'json', auth: DEFAULT_API_AUTH, preScript: '', postScript: '', inputMappings: {} }
   }
 }
 
@@ -86,6 +240,33 @@ function formatJson(raw: string): { value: string; error: boolean } {
   }
 }
 
+function formatTooltipValue(value: string): string {
+  const trimmed = value.trim()
+  if (!trimmed) return value
+  if (!trimmed.startsWith('{') && !trimmed.startsWith('[')) return value
+  try {
+    return JSON.stringify(JSON.parse(trimmed), null, 2)
+  } catch {
+    return value
+  }
+}
+
+function getUsedVariableTooltipText(value: string, mappedPath?: string): string {
+  const formattedValue = formatTooltipValue(value)
+  if (!mappedPath) return formattedValue
+  return `매핑 경로: ${mappedPath}\n\n적용 값:\n${formattedValue}`
+}
+
+function loadExpandedIds(storageKey: string): Set<string> {
+  try {
+    const parsed = JSON.parse(localStorage.getItem(storageKey) ?? '[]') as unknown
+    if (!Array.isArray(parsed)) return new Set(['$'])
+    return new Set(['$', ...parsed.filter((item): item is string => typeof item === 'string')])
+  } catch {
+    return new Set(['$'])
+  }
+}
+
 function hasBody(method: string): boolean {
   return ['POST', 'PUT', 'PATCH'].includes(method)
 }
@@ -94,17 +275,301 @@ function hasVars(text: string): boolean {
   return text.includes('{{') || text.includes('[[')
 }
 
-// ── Autocomplete helpers ───────────────────────────
+function parseInputValue(raw: string): unknown {
+  try {
+    return raw.trim() ? JSON.parse(raw) : null
+  } catch {
+    return null
+  }
+}
+
+function parseResponseValue(raw: string): unknown {
+  try {
+    return JSON.parse(raw)
+  } catch {
+    return raw
+  }
+}
+
+// ?? Autocomplete helpers ???????????????????????????
+
+type JsonViewMode = 'tree' | 'raw'
+type JsonParseState =
+  | { status: 'empty'; value: null }
+  | { status: 'valid'; value: unknown }
+  | { status: 'invalid'; value: null }
+
+type JsonTreeNode = {
+  id: string
+  key: string
+  value: unknown
+  depth: number
+  type: string
+  parts: Array<string | number>
+  hasChildren: boolean
+}
+
+function parseJsonForViewer(raw: string): JsonParseState {
+  const trimmed = raw.trim()
+  if (!trimmed) return { status: 'empty', value: null }
+  try {
+    return { status: 'valid', value: JSON.parse(trimmed) as unknown }
+  } catch {
+    return { status: 'invalid', value: null }
+  }
+}
+
+function canShowJsonTree(raw?: string | null): boolean {
+  return typeof raw === 'string' && parseJsonForViewer(raw).status === 'valid'
+}
+
+function jsonViewerType(value: unknown): string {
+  if (Array.isArray(value)) return 'array'
+  if (value === null) return 'null'
+  return typeof value
+}
+
+function jsonViewerHasChildren(value: unknown): boolean {
+  if (Array.isArray(value)) return value.length > 0
+  return typeof value === 'object' && value !== null && Object.keys(value as Record<string, unknown>).length > 0
+}
+
+function jsonViewerPreview(value: unknown): string {
+  if (Array.isArray(value)) return `[${value.length}]`
+  if (value && typeof value === 'object') return `{${Object.keys(value as Record<string, unknown>).length}}`
+  if (typeof value === 'string') return JSON.stringify(value)
+  if (value === null) return 'null'
+  return String(value)
+}
+
+function jsonViewerChildPath(parentPath: string, key: string | number): string {
+  if (typeof key === 'number') return `${parentPath}[${key}]`
+  return /^[A-Za-z_$][\w$]*$/.test(key) ? `${parentPath}.${key}` : `${parentPath}[${JSON.stringify(key)}]`
+}
+
+function flattenJsonViewer(value: unknown, id = '$', key = '$', depth = 0, parts: Array<string | number> = []): JsonTreeNode[] {
+  const current: JsonTreeNode = {
+    id,
+    key,
+    value,
+    depth,
+    type: jsonViewerType(value),
+    parts,
+    hasChildren: jsonViewerHasChildren(value),
+  }
+
+  if (Array.isArray(value)) {
+    return [
+      current,
+      ...value.flatMap((item, index) =>
+        flattenJsonViewer(item, jsonViewerChildPath(id, index), `[${index}]`, depth + 1, [...parts, index]),
+      ),
+    ]
+  }
+
+  if (value && typeof value === 'object') {
+    return [
+      current,
+      ...Object.entries(value as Record<string, unknown>).flatMap(([childKey, childValue]) =>
+        flattenJsonViewer(childValue, jsonViewerChildPath(id, childKey), childKey, depth + 1, [...parts, childKey]),
+      ),
+    ]
+  }
+
+  return [current]
+}
+
+function getVisibleJsonViewerNodes(nodes: JsonTreeNode[], expandedIds: Set<string>): JsonTreeNode[] {
+  return nodes.filter(node => {
+    if (node.depth === 0) return true
+    let path = '$'
+    if (!expandedIds.has(path)) return false
+    for (const part of node.parts.slice(0, -1)) {
+      path = jsonViewerChildPath(path, part)
+      if (!expandedIds.has(path)) return false
+    }
+    return true
+  })
+}
+
+function JsonTreeViewer({ data, emptyText }: { data: unknown; emptyText: string }): JSX.Element {
+  const nodes = useMemo(() => flattenJsonViewer(data), [data])
+  const [expandedIds, setExpandedIds] = useState<Set<string>>(() => new Set(['$']))
+  const visibleNodes = useMemo(() => getVisibleJsonViewerNodes(nodes, expandedIds), [nodes, expandedIds])
+
+  useEffect(() => {
+    setExpandedIds(new Set(['$']))
+  }, [data])
+
+  const toggleExpanded = (nodeId: string) => {
+    setExpandedIds(prev => {
+      const next = new Set(prev)
+      if (next.has(nodeId)) next.delete(nodeId)
+      else next.add(nodeId)
+      return next
+    })
+  }
+
+  if (nodes.length === 0) return <div className="api-json-view-empty">{emptyText}</div>
+
+  return (
+    <div className="api-json-tree-viewer">
+      {visibleNodes.map(node => {
+        const expanded = expandedIds.has(node.id)
+        return (
+          <button
+            key={node.id}
+            type="button"
+            className={`api-json-view-node${node.hasChildren ? ' api-json-view-node-parent' : ''}`}
+            style={{ paddingLeft: 10 + node.depth * 14 }}
+            onClick={() => { if (node.hasChildren) toggleExpanded(node.id) }}
+          >
+            <span className={`api-json-view-expander${node.hasChildren ? ' api-json-view-expander-visible' : ''}`}>
+              {node.hasChildren ? (expanded ? '-' : '+') : ''}
+            </span>
+            <span className="api-json-view-key">{node.key}</span>
+            <span className="api-json-view-type">{node.type}</span>
+            <span className="api-json-view-preview">{jsonViewerPreview(node.value)}</span>
+          </button>
+        )
+      })}
+    </div>
+  )
+}
+
+function expandedIdsForJsonPath(
+  nodes: JsonTreeNode[],
+  selectedPath?: string,
+  baseExpandedIds: Set<string> = new Set(['$']),
+): Set<string> {
+  const expanded = new Set(baseExpandedIds)
+  expanded.add('$')
+  const selected = selectedPath ? nodes.find(node => node.id === selectedPath) : null
+  if (!selected) return expanded
+  let path = '$'
+  selected.parts.slice(0, -1).forEach(part => {
+    path = jsonViewerChildPath(path, part)
+    expanded.add(path)
+  })
+  return expanded
+}
+
+function JsonPathPicker({
+  data,
+  variableName,
+  initialPath,
+  expandedIds,
+  onExpandedIdsChange,
+  onConfirm,
+  onClose,
+}: {
+  data: Record<string, unknown>
+  variableName: string
+  initialPath?: string
+  expandedIds: Set<string>
+  onExpandedIdsChange: (ids: Set<string>) => void
+  onConfirm: (path: string) => void
+  onClose: () => void
+}): JSX.Element {
+  const nodes = useMemo(() => flattenJsonViewer(data), [data])
+  const [selectedPath, setSelectedPath] = useState<string>(initialPath ?? '')
+  const visibleNodes = useMemo(() => getVisibleJsonViewerNodes(nodes, expandedIds), [nodes, expandedIds])
+  const selectedValue = selectedPath ? resolveInputExpression(data, selectedPath) : undefined
+
+  useEffect(() => {
+    setSelectedPath(initialPath ?? '')
+  }, [initialPath])
+
+  const toggleExpanded = (nodeId: string) => {
+    const next = new Set(expandedIds)
+    if (next.has(nodeId)) next.delete(nodeId)
+    else next.add(nodeId)
+    next.add('$')
+    onExpandedIdsChange(next)
+  }
+
+  const selectedPreview = selectedPath
+    ? (() => {
+        try { return JSON.stringify(selectedValue, null, 2) } catch { return String(selectedValue) }
+      })()
+    : ''
+
+  return (
+    <div className="api-input-picker-overlay" onClick={onClose}>
+      <div className="api-input-picker-dialog" onClick={e => e.stopPropagation()}>
+        <div className="api-input-picker-hd">
+          <div>
+            <div className="api-input-picker-title">INPUT 변수 값 선택</div>
+            <div className="api-input-picker-subtitle">
+              <code>[[{variableName}]]</code> 변수에 매핑할 JSON 노드를 선택하세요.
+            </div>
+          </div>
+          <button className="btn ghost icon" onClick={onClose} title="닫기">
+            <IcoX size={13} />
+          </button>
+        </div>
+        <div className="api-input-picker-body">
+          <div className="api-input-picker-tree">
+            {visibleNodes.map(node => {
+              const selected = selectedPath === node.id
+              const expanded = expandedIds.has(node.id)
+              return (
+                <button
+                  key={node.id}
+                  type="button"
+                  className={`api-json-view-node api-input-picker-node${node.hasChildren ? ' api-json-view-node-parent' : ''}${selected ? ' api-input-picker-node-selected' : ''}`}
+                  style={{ paddingLeft: 10 + node.depth * 14 }}
+                  onClick={() => setSelectedPath(node.id)}
+                >
+                  <span
+                    className={`api-json-view-expander${node.hasChildren ? ' api-json-view-expander-visible' : ''}`}
+                    onClick={(e) => {
+                      e.stopPropagation()
+                      if (node.hasChildren) toggleExpanded(node.id)
+                    }}
+                  >
+                    {node.hasChildren ? (expanded ? '-' : '+') : ''}
+                  </span>
+                  <span className="api-json-view-key">{node.key}</span>
+                  <span className="api-json-view-type">{node.type}</span>
+                  <span className="api-json-view-preview">{jsonViewerPreview(node.value)}</span>
+                </button>
+              )
+            })}
+          </div>
+          <div className="api-input-picker-preview">
+            <div className="api-input-picker-preview-label">선택 경로</div>
+            <code>{selectedPath || '미선택'}</code>
+            <div className="api-input-picker-preview-label">적용 값</div>
+            <pre>{selectedPreview || '선택한 값이 없습니다.'}</pre>
+          </div>
+        </div>
+        <div className="api-input-picker-ft">
+          <button className="btn ghost" onClick={onClose}>취소</button>
+          <button
+            className="btn primary"
+            onClick={() => selectedPath && onConfirm(selectedPath)}
+            disabled={!selectedPath}
+          >
+            선택 적용
+          </button>
+        </div>
+      </div>
+    </div>
+  )
+}
 
 function detectTrigger(
   value: string,
   caretPos: number,
 ): { type: 'env' | 'input'; query: string; start: number } | null {
   const before = value.slice(0, caretPos)
-  const envMatch = before.match(/\{\{([^{}]*)$/)
-  if (envMatch) return { type: 'env', query: envMatch[1], start: caretPos - envMatch[0].length }
-  const inputMatch = before.match(/\[\[([^\[\]]*)$/)
-  if (inputMatch) return { type: 'input', query: inputMatch[1], start: caretPos - inputMatch[0].length }
+  const envOpen = before.lastIndexOf('{{')
+  const envClose = before.lastIndexOf('}}')
+  if (envOpen > envClose) return { type: 'env', query: before.slice(envOpen + 2), start: envOpen }
+  const inputOpen = before.lastIndexOf('[[')
+  const inputClose = before.lastIndexOf(']]')
+  if (inputOpen > inputClose) return { type: 'input', query: before.slice(inputOpen + 2), start: inputOpen }
   return null
 }
 
@@ -196,6 +661,7 @@ function AutocompleteField({
             <button
               key={s}
               className={`ac-option${i === activeIdx ? ' ac-option-active' : ''}`}
+              title={s}
               onMouseDown={e => { e.preventDefault(); select(s) }}
               onMouseEnter={() => setActiveIdx(i)}
             >
@@ -211,7 +677,7 @@ function AutocompleteField({
   )
 }
 
-// ── Icons ─────────────────────────────────────────
+// ?? Icons ?????????????????????????????????????????
 
 function ApiIcon({ size = 14 }: { size?: number }): JSX.Element {
   return (
@@ -248,7 +714,33 @@ function SendIcon(): JSX.Element {
   )
 }
 
-// ── Token display component ────────────────────────
+function ScriptConsoleView({
+  logs,
+  emptyText,
+}: {
+  logs: ScriptConsoleEntry[]
+  emptyText: string
+}): JSX.Element {
+  if (logs.length === 0) {
+    return <div className="api-script-console-empty">{emptyText}</div>
+  }
+
+  return (
+    <div className="api-script-console-list">
+      {logs.map((log, index) => (
+        <div key={`${log.timestamp}-${index}`} className={`api-script-console-row api-script-console-${log.level}`}>
+          <span className="api-script-console-time">
+            {new Date(log.timestamp).toLocaleTimeString('ko-KR', { hour12: false })}
+          </span>
+          <span className="api-script-console-level">{log.level}</span>
+          <pre className="api-script-console-message">{log.message}</pre>
+        </div>
+      ))}
+    </div>
+  )
+}
+
+// 템플릿 변수 표시
 
 function TokenDisplay({
   tokens,
@@ -282,7 +774,7 @@ function TokenDisplay({
   )
 }
 
-// ── KV editor row ──────────────────────────────────
+// ?? KV editor row ??????????????????????????????????
 
 function KvRow({
   item, onChange, onRemove, envVars, inputData, onHover,
@@ -295,7 +787,7 @@ function KvRow({
   onHover: (text: string | null, rect?: DOMRect) => void
 }): JSX.Element {
   const envVarNames = useMemo(() => Object.keys(envVars), [envVars])
-  const inputKeys = useMemo(() => Object.keys(inputData), [inputData])
+  const inputKeys = useMemo(() => getInputPathSuggestions(inputData), [inputData])
   const showPreview = hasVars(item.value)
   const previewTokens = useMemo(
     () => showPreview ? parseTemplate(item.value, envVars, inputData) : [],
@@ -338,13 +830,16 @@ function KvRow({
   )
 }
 
-// ── Main component ────────────────────────────────
+// ?? Main component ????????????????????????????????
 
 export default function ApiNodeModal({
-  node, isNew, initialInput, initialOutput, envVars = {}, onRun, onSave, onDelete, onClose,
+  node, isNew, initialInput, initialOutput, initialPreConsoleLogs, initialPostConsoleLogs,
+  envVars = {}, onRun, onSave, onDelete, onClose,
 }: Props): JSX.Element {
   const initial = parseConfig(node.config)
-  const [label, setLabel] = useState(node.label)
+  const inputPickerExpandedStorageKey = `api-input-picker-expanded-${node.id}`
+  const [displayLabel, setDisplayLabel] = useState(node.displayLabel ?? (node.projectId ? node.label : ''))
+  const [moduleName, setModuleName] = useState(node.moduleLabel ?? node.label)
   const [method, setMethod] = useState<ApiConfig['method']>(initial.method)
   const [url, setUrl] = useState(initial.url)
   const [headers, setHeaders] = useState<ApiKvItem[]>(
@@ -355,22 +850,36 @@ export default function ApiNodeModal({
   const [params, setParams] = useState<ApiKvItem[]>(initial.params)
   const [body, setBody] = useState(initial.body)
   const [bodyType] = useState<ApiConfig['bodyType']>(initial.bodyType)
+  const [auth, setAuth] = useState<ApiAuthConfig>(() => normalizeApiAuth(initial.auth))
   const [preScript, setPreScript] = useState<string>(initial.preScript ?? '')
   const [postScript, setPostScript] = useState<string>(initial.postScript ?? '')
-  const [activeTab, setActiveTab] = useState<SettingsTab>('headers')
+  const [inputMappings, setInputMappings] = useState<Record<string, string>>(initial.inputMappings ?? {})
+  const [activeTab, setActiveTab] = useState<SettingsTab>(() => hasBody(initial.method) ? 'body' : 'auth')
+  const [prePaneTab, setPrePaneTab] = useState<ScriptPaneTab>('script')
+  const [postPaneTab, setPostPaneTab] = useState<ScriptPaneTab>('script')
   const [saving, setSaving] = useState(false)
   const [confirmDelete, setConfirmDelete] = useState(false)
 
   const [inputJson, setInputJson] = useState(initialInput ?? '')
   const [inputError, setInputError] = useState(false)
+  const [inputViewMode, setInputViewMode] = useState<JsonViewMode>(() => canShowJsonTree(initialInput) ? 'tree' : 'raw')
 
   const [testing, setTesting] = useState(false)
   const [testResponse, setTestResponse] = useState<string | null>(initialOutput ?? null)
+  const [outputViewMode, setOutputViewMode] = useState<JsonViewMode>(() => canShowJsonTree(initialOutput) ? 'tree' : 'raw')
   const [testStatus, setTestStatus] = useState<{ code: number; text: string; ms: number } | null>(null)
   const [testError, setTestError] = useState<string | null>(null)
+  const [outputError, setOutputError] = useState(false)
+  const [testErrorDetail, setTestErrorDetail] = useState<TestErrorDetail | null>(null)
+  const [preConsoleLogs, setPreConsoleLogs] = useState<ScriptConsoleEntry[]>(initialPreConsoleLogs ?? [])
+  const [postConsoleLogs, setPostConsoleLogs] = useState<ScriptConsoleEntry[]>(initialPostConsoleLogs ?? [])
+  const [mappingPickerName, setMappingPickerName] = useState<string | null>(null)
+  const [inputPickerExpandedIds, setInputPickerExpandedIds] = useState<Set<string>>(() =>
+    loadExpandedIds(inputPickerExpandedStorageKey),
+  )
 
   // Tooltip state
-  const [tooltip, setTooltip] = useState<{ text: string; x: number; y: number } | null>(null)
+  const [tooltip, setTooltip] = useState<{ text: string; x: number; y: number; placement: 'above' | 'below' } | null>(null)
 
   // Window position & size
   const [rect, setRect] = useState(() => {
@@ -380,9 +889,11 @@ export default function ApiNodeModal({
     const h = Math.min(wh - 80, Math.max(500, Math.round(wh * 0.85)))
     return { x: Math.round((ww - w) / 2), y: Math.round((wh - h) / 2), w, h }
   })
+  const { isMaximized, toggleMaximized } = useModalMaximize(rect, setRect)
 
   const dragRef = useRef<{ ox: number; oy: number } | null>(null)
   const resizeRef = useRef<{ dir: ResizeDir; ox: number; oy: number; rx: number; ry: number; rw: number; rh: number } | null>(null)
+  const tooltipTimerRef = useRef<number | null>(null)
   const splitterRef = useRef<
     | { kind: 'v'; which: 'left' | 'right'; startX: number; startW: number }
     | { kind: 'h'; which: 'inputPre' | 'outputPost'; startY: number; startH: number }
@@ -396,8 +907,33 @@ export default function ApiNodeModal({
   const [inputH, setInputH] = useState<number>(() => Math.round((rect.h - 100) * 0.45))
   const [outputH, setOutputH] = useState<number>(() => Math.round((rect.h - 100) * 0.45))
 
+  useEffect(() => {
+    setPreConsoleLogs(initialPreConsoleLogs ?? [])
+    setPostConsoleLogs(initialPostConsoleLogs ?? [])
+  }, [initialPreConsoleLogs, initialPostConsoleLogs, node.id])
+
+  useEffect(() => {
+    if (!hasBody(method) && activeTab === 'body') setActiveTab('auth')
+  }, [activeTab, method])
+
+  useEffect(() => {
+    localStorage.setItem(inputPickerExpandedStorageKey, JSON.stringify(Array.from(inputPickerExpandedIds)))
+  }, [inputPickerExpandedIds, inputPickerExpandedStorageKey])
+
+  const inputParseState = useMemo(() => parseJsonForViewer(inputJson), [inputJson])
+  const outputRaw = testError ?? testResponse ?? ''
+  const outputParseState = useMemo(() => parseJsonForViewer(outputRaw), [outputRaw])
+
+  useEffect(() => {
+    if (inputParseState.status !== 'valid' && inputViewMode === 'tree') setInputViewMode('raw')
+  }, [inputParseState.status, inputViewMode])
+
+  useEffect(() => {
+    if (outputParseState.status !== 'valid' && outputViewMode === 'tree') setOutputViewMode('raw')
+  }, [outputParseState.status, outputViewMode])
+
   // Parse inputJson into a flat object for interpolation
-  const inputData = useMemo<Record<string, unknown>>(() => {
+  const baseInputData = useMemo<Record<string, unknown>>(() => {
     try {
       const p = JSON.parse(inputJson) as unknown
       if (Array.isArray(p)) return (p[0] ?? {}) as Record<string, unknown>
@@ -407,20 +943,35 @@ export default function ApiNodeModal({
       return {}
     }
   }, [inputJson])
+  const inputData = useMemo(
+    () => applyInputMappings(baseInputData, inputMappings),
+    [baseInputData, inputMappings],
+  )
 
   const envVarNames = useMemo(() => Object.keys(envVars), [envVars])
-  const inputKeys = useMemo(() => Object.keys(inputData), [inputData])
+  const inputKeys = useMemo(() => getInputPathSuggestions(inputData), [inputData])
+  const authLabel = useMemo(
+    () => API_AUTH_TYPES.find(item => item.type === auth.type)?.label ?? 'No Auth',
+    [auth.type],
+  )
 
-  const usedEnvVars = useMemo(() => {
-    const allTemplates = [url, ...headers.map(h => h.value), ...params.map(p => p.value), body]
-    const seen = new Map<string, string | null>()
+  const usedVariables = useMemo<UsedVariable[]>(() => {
+    const allTemplates = [url, ...headers.map(h => h.value), ...params.map(p => p.value), body, ...getApiAuthTemplateValues(auth)]
+    const seen = new Map<string, UsedVariable>()
     allTemplates.forEach(template => {
       parseTemplate(template, envVars, inputData).forEach(tok => {
-        if (tok.type === 'env' && !seen.has(tok.name)) seen.set(tok.name, tok.resolved)
+        if (tok.type === 'env') {
+          const key = `env:${tok.name}`
+          if (!seen.has(key)) seen.set(key, { kind: 'env', name: tok.name, resolved: tok.resolved })
+        }
+        if (tok.type === 'input') {
+          const key = `input:${tok.key}`
+          if (!seen.has(key)) seen.set(key, { kind: 'input', name: tok.key, resolved: tok.resolved, mappedPath: inputMappings[tok.key] })
+        }
       })
     })
-    return Array.from(seen.entries()).map(([name, resolved]) => ({ name, resolved }))
-  }, [url, headers, params, body, envVars, inputData])
+    return Array.from(seen.values())
+  }, [url, headers, params, body, auth, envVars, inputData, inputMappings])
 
   // URL preview tokens
   const urlTokens = useMemo(
@@ -439,15 +990,51 @@ export default function ApiNodeModal({
   )
 
   const handleHover = useCallback((text: string | null, domRect?: DOMRect) => {
-    if (!text || !domRect) { setTooltip(null); return }
-    setTooltip({ text, x: domRect.left + domRect.width / 2, y: domRect.top - 6 })
+    if (tooltipTimerRef.current !== null) {
+      window.clearTimeout(tooltipTimerRef.current)
+      tooltipTimerRef.current = null
+    }
+    if (!text || !domRect) {
+      setTooltip(null)
+      return
+    }
+
+    const targetRect = {
+      left: domRect.left,
+      right: domRect.right,
+      top: domRect.top,
+      bottom: domRect.bottom,
+      width: domRect.width,
+    }
+    tooltipTimerRef.current = window.setTimeout(() => {
+      const margin = 16
+      const maxTooltipWidth = Math.min(720, window.innerWidth - margin * 2)
+      const halfWidth = maxTooltipWidth / 2
+      const centerX = targetRect.left + targetRect.width / 2
+      const x = Math.min(Math.max(centerX, margin + halfWidth), window.innerWidth - margin - halfWidth)
+      const canShowBelow = targetRect.bottom + 260 < window.innerHeight || targetRect.top < 260
+      setTooltip({
+        text,
+        x,
+        y: canShowBelow ? targetRect.bottom + 12 : targetRect.top - 12,
+        placement: canShowBelow ? 'below' : 'above',
+      })
+      tooltipTimerRef.current = null
+    }, 1000)
+  }, [])
+
+  useEffect(() => () => {
+    if (tooltipTimerRef.current !== null) {
+      window.clearTimeout(tooltipTimerRef.current)
+    }
   }, [])
 
   const onHeaderDown = useCallback((e: React.MouseEvent) => {
+    if (isMaximized) return
     if ((e.target as HTMLElement).closest('button')) return
     e.preventDefault()
     dragRef.current = { ox: e.clientX - rect.x, oy: e.clientY - rect.y }
-  }, [rect])
+  }, [isMaximized, rect])
 
   const onResizeDown = useCallback((e: React.MouseEvent, dir: ResizeDir) => {
     e.preventDefault(); e.stopPropagation()
@@ -523,44 +1110,136 @@ export default function ApiNodeModal({
   const removeKv = (setter: React.Dispatch<React.SetStateAction<ApiKvItem[]>>, id: string) => {
     setter(prev => prev.filter(it => it.id !== id))
   }
+  const updateAuthField = (field: keyof ApiAuthConfig, value: string) => {
+    setAuth(prev => ({ ...normalizeApiAuth(prev), [field]: value }))
+  }
+  const updateAuthType = (type: ApiAuthType) => {
+    setAuth(prev => ({ ...normalizeApiAuth(prev), type }))
+  }
+  const authInput = (
+    field: keyof Pick<ApiAuthConfig, 'token' | 'username' | 'password' | 'key' | 'value' | 'accessToken'>,
+    label: string,
+    placeholder: string,
+  ): JSX.Element => (
+    <div className="dm-field">
+      <label className="dm-field-label">{label}</label>
+      <AutocompleteField
+        value={typeof auth[field] === 'string' ? auth[field] : ''}
+        onChange={v => updateAuthField(field, v)}
+        envVarNames={envVarNames}
+        inputKeys={inputKeys}
+        className="dm-input api-auth-input"
+        placeholder={placeholder}
+        spellCheck={false}
+      />
+    </div>
+  )
+
+  const buildResolvedRequest = useCallback((
+    requestEnvVars: Record<string, string> = envVars,
+    requestInputData: Record<string, unknown> = baseInputData,
+  ): ResolvedApiRequest => {
+    const mappedRequestInputData = applyInputMappings(requestInputData, inputMappings)
+    let fullUrl = resolveTemplate(url.trim(), requestEnvVars, mappedRequestInputData)
+    const enabledParams = params.filter(p => p.enabled && p.key)
+    if (enabledParams.length > 0) {
+      const qs = new URLSearchParams(enabledParams.map(p => [p.key, resolveTemplate(p.value, requestEnvVars, mappedRequestInputData)]))
+      fullUrl += (fullUrl.includes('?') ? '&' : '?') + qs.toString()
+    }
+    const hdrs: Record<string, string> = {}
+    headers.filter(h => h.enabled && h.key).forEach(h => {
+      hdrs[h.key] = resolveTemplate(h.value, requestEnvVars, mappedRequestInputData)
+    })
+    let bodyStr: string | undefined
+    if (hasBody(method) && body.trim()) {
+      if (bodyType === 'json' && !hdrs['Content-Type'] && !hdrs['content-type']) {
+        hdrs['Content-Type'] = 'application/json'
+      }
+      bodyStr = resolveTemplate(body, requestEnvVars, mappedRequestInputData)
+    }
+    const authedRequest = applyApiAuth({ url: fullUrl, headers: hdrs }, auth, requestEnvVars, mappedRequestInputData)
+    return { method, url: authedRequest.url, headers: authedRequest.headers, body: bodyStr }
+  }, [auth, baseInputData, body, bodyType, envVars, headers, inputMappings, method, params, url])
 
   // Test API call (resolves vars before sending)
   const handleTest = async () => {
     if (!url.trim()) return
     setTesting(true)
     setTestResponse(null)
+    setOutputViewMode('raw')
     setTestStatus(null)
     setTestError(null)
+    setOutputError(false)
+    setTestErrorDetail(null)
+    setPreConsoleLogs([])
+    setPostConsoleLogs([])
     const t0 = Date.now()
+    let request: ResolvedApiRequest | null = null
+    let scriptPhase: 'pre' | 'post' | null = null
     try {
-      let fullUrl = resolveTemplate(url.trim(), envVars, inputData)
-      const enabledParams = params.filter(p => p.enabled && p.key)
-      if (enabledParams.length > 0) {
-        const qs = new URLSearchParams(enabledParams.map(p => [p.key, resolveTemplate(p.value, envVars, inputData)]))
-        fullUrl += (fullUrl.includes('?') ? '&' : '?') + qs.toString()
+      const requestEnvVars = { ...envVars }
+      let requestInputData = { ...baseInputData }
+      const scriptInput = parseInputValue(inputJson)
+
+      if (preScript.trim()) {
+        scriptPhase = 'pre'
+        const preResult = await runPreRequest(preScript, { input: scriptInput, envVars: requestEnvVars })
+        setPreConsoleLogs(preResult.logs)
+        Object.assign(requestEnvVars, preResult.envUpdates)
+        requestInputData = { ...requestInputData, ...preResult.inputVars }
+        scriptPhase = null
       }
-      const hdrs: Record<string, string> = {}
-      headers.filter(h => h.enabled && h.key).forEach(h => {
-        hdrs[h.key] = resolveTemplate(h.value, envVars, inputData)
+
+      request = buildResolvedRequest(requestEnvVars, requestInputData)
+      const res = await window.api.http.fetch(request.url, {
+        method: request.method,
+        headers: request.headers,
+        body: request.body,
       })
-      const opts: RequestInit = { method, headers: hdrs }
-      if (hasBody(method) && body.trim()) {
-        if (bodyType === 'json' && !hdrs['Content-Type'] && !hdrs['content-type']) {
-          hdrs['Content-Type'] = 'application/json'
-        }
-        opts.body = resolveTemplate(body, envVars, inputData)
-      }
-      const res = await fetch(fullUrl, opts)
       const ms = Date.now() - t0
-      const text = await res.text()
       setTestStatus({ code: res.status, text: res.statusText, ms })
-      try {
-        setTestResponse(JSON.stringify(JSON.parse(text), null, 2))
-      } catch {
-        setTestResponse(text)
+      const responseValue = parseResponseValue(res.text)
+      if (typeof responseValue === 'string') {
+        setTestResponse(res.text)
+        setOutputViewMode(canShowJsonTree(res.text) ? 'tree' : 'raw')
+      } else {
+        setTestResponse(JSON.stringify(responseValue, null, 2))
+        setOutputViewMode('tree')
+      }
+      setOutputError(false)
+
+      if (!res.ok) {
+        setTestErrorDetail({
+          error: `HTTP ${res.status}${res.statusText ? ` ${res.statusText}` : ''}`,
+          request,
+        })
+        return
+      }
+
+      if (postScript.trim()) {
+        scriptPhase = 'post'
+        const postResult = await runPostResponse(postScript, {
+          input: scriptInput,
+          output: responseValue,
+          envVars: requestEnvVars,
+        })
+        setPostConsoleLogs(postResult.logs)
+        Object.assign(requestEnvVars, postResult.envUpdates)
+        scriptPhase = null
       }
     } catch (err) {
-      setTestError(String(err))
+      const message = err instanceof Error ? err.message : String(err)
+      if (isScriptRuntimeError(err)) {
+        if (scriptPhase === 'pre') setPreConsoleLogs(err.logs)
+        if (scriptPhase === 'post') setPostConsoleLogs(err.logs)
+      }
+      setTestError(message)
+      setOutputViewMode('raw')
+      setOutputError(false)
+      setTestErrorDetail({
+        error: message,
+        request: request ?? { method, url: url.trim(), headers: {} },
+      })
     } finally {
       setTesting(false)
     }
@@ -569,6 +1248,7 @@ export default function ApiNodeModal({
   const handleFormatInput = () => {
     const result = formatJson(inputJson)
     setInputJson(result.value); setInputError(result.error)
+    if (!result.error && result.value.trim()) setInputViewMode('tree')
   }
 
   const handleFormatBody = () => {
@@ -576,14 +1256,38 @@ export default function ApiNodeModal({
     setBody(result.value)
   }
 
+  const handleFormatOutput = () => {
+    const raw = testError ?? testResponse ?? ''
+    const result = formatJson(raw)
+    if (testError !== null) setTestError(result.value)
+    else setTestResponse(result.value)
+    setOutputError(result.error)
+    if (!result.error && result.value.trim()) setOutputViewMode('tree')
+  }
+
+  const handleApplyInputMapping = (name: string, path: string) => {
+    setInputMappings(prev => ({ ...prev, [name]: path }))
+    setMappingPickerName(null)
+  }
+
+  const handleOpenInputMappingPicker = (name: string) => {
+    const nodes = flattenJsonViewer(baseInputData)
+    setInputPickerExpandedIds(prev => expandedIdsForJsonPath(nodes, inputMappings[name], prev))
+    setMappingPickerName(name)
+  }
+
   const handleSave = async () => {
     setSaving(true)
     const config: ApiConfig = {
       method, url: url.trim(), headers, params, body, bodyType,
+      auth: normalizeApiAuth(auth),
       preScript: preScript ?? '',
       postScript: postScript ?? '',
+      inputMappings,
     }
-    await onSave(node.id, label.trim() || 'API', JSON.stringify(config))
+    const nextDisplayLabel = displayLabel.trim()
+    const nextModuleName = moduleName.trim() || nextDisplayLabel || 'API'
+    await onSave(node.id, nextDisplayLabel, nextModuleName, JSON.stringify(config))
     setSaving(false)
     onClose()
   }
@@ -598,7 +1302,7 @@ export default function ApiNodeModal({
 
   return (
     <div className="dm-overlay">
-      <div className="dm-modal" style={{ left: rect.x, top: rect.y, width: rect.w, height: rect.h }}>
+      <div className={`dm-modal${isMaximized ? ' is-maximized' : ''}`} style={{ left: rect.x, top: rect.y, width: rect.w, height: rect.h }}>
         {RESIZE_DIRS.map(dir => (
           <div key={dir} className={`dm-resize-handle dm-resize-${dir}`} onMouseDown={e => onResizeDown(e, dir)} />
         ))}
@@ -611,7 +1315,17 @@ export default function ApiNodeModal({
               <div className="dm-hd-icon api-hd-icon"><ApiIcon size={13} /></div>
               <span className="dm-hd-title">{isNew ? 'API 모듈 추가' : 'API 모듈 설정'}</span>
             </div>
-            <button className="btn ghost icon dm-close-btn" onClick={onClose}><IcoX size={13} /></button>
+            <div className="dm-hd-window-actions">
+              <button
+                className="btn ghost icon dm-window-btn"
+                onClick={toggleMaximized}
+                title={isMaximized ? '이전 크기로 복원' : '창 최대화'}
+                aria-label={isMaximized ? '이전 크기로 복원' : '창 최대화'}
+              >
+                {isMaximized ? <IcoRestore size={13} /> : <IcoMaximize size={13} />}
+              </button>
+              <button className="btn ghost icon dm-close-btn" onClick={onClose} title="닫기" aria-label="닫기"><IcoX size={13} /></button>
+            </div>
           </div>
 
           {/* 3-pane body */}
@@ -632,8 +1346,9 @@ export default function ApiNodeModal({
                           const out = await onRun()
                           setInputJson(out)
                           setInputError(false)
+                          setInputViewMode(canShowJsonTree(out) ? 'tree' : 'raw')
                         }}
-                        title="상류 노드를 실행해 데이터 미리보기"
+                        title="상위 노드를 실행해 데이터를 미리보기"
                       >
                         <RunIcon />
                       </button>
@@ -652,12 +1367,12 @@ export default function ApiNodeModal({
                   </div>
                 </div>
                 <div className="dm-pane-body">
-                  <textarea
-                    className={`dm-json-area${inputError ? ' dm-json-area-error' : ''}`}
+                  <JsonMonacoEditor
+                    path={`${node.id}/input.json`}
                     value={inputJson}
-                    onChange={e => { setInputJson(e.target.value); setInputError(false) }}
+                    onChange={next => { setInputJson(next); setInputError(false) }}
+                    error={inputError}
                     placeholder="{}"
-                    spellCheck={false}
                   />
                 </div>
               </div>
@@ -667,20 +1382,44 @@ export default function ApiNodeModal({
               <div className="dm-pane" style={{ flex: '1 1 0', minHeight: 0 }}>
                 <div className="dm-pane-hd">
                   <span className="dm-pane-label dm-pane-label-pre">PRE REQUEST</span>
-                  <span className="dm-pane-type">JavaScript</span>
+                  <div className="dm-pane-hd-actions">
+                    <div className="api-script-pane-tabs">
+                      <button
+                        className={`api-script-pane-tab${prePaneTab === 'script' ? ' api-script-pane-tab-active' : ''}`}
+                        onClick={() => setPrePaneTab('script')}
+                      >
+                        JS
+                      </button>
+                      <button
+                        className={`api-script-pane-tab${prePaneTab === 'console' ? ' api-script-pane-tab-active' : ''}`}
+                        onClick={() => setPrePaneTab('console')}
+                      >
+                        콘솔
+                        {preConsoleLogs.length > 0 && <span className="api-script-log-count">{preConsoleLogs.length}</span>}
+                      </button>
+                    </div>
+                  </div>
                 </div>
-                <div className="dm-pane-body dm-pane-body-monaco">
-                  <Suspense fallback={<MonacoFallback />}>
-                    <MonacoEditor
-                      height="100%"
-                      language="javascript"
-                      theme="vs-dark"
-                      value={preScript}
-                      onChange={(v: string | undefined) => setPreScript(v ?? '')}
-                      options={MONACO_OPTIONS}
-                    />
-                  </Suspense>
-                </div>
+                {prePaneTab === 'script' ? (
+                  <div className="dm-pane-body dm-pane-body-monaco">
+                    <Suspense fallback={<MonacoFallback />}>
+                      <MonacoEditor
+                        height="100%"
+                        language="javascript"
+                        path={`a8a://api-script/${node.id}/pre-request.js`}
+                        theme="vs-dark"
+                        value={preScript}
+                        beforeMount={beforeApiScriptEditorMount}
+                        onChange={(v: string | undefined) => setPreScript(v ?? '')}
+                        options={MONACO_OPTIONS}
+                      />
+                    </Suspense>
+                  </div>
+                ) : (
+                  <div className="dm-pane-body api-script-console-body">
+                    <ScriptConsoleView logs={preConsoleLogs} emptyText="PRE REQUEST 콘솔 로그가 없습니다." />
+                  </div>
+                )}
               </div>
             </div>
 
@@ -696,13 +1435,29 @@ export default function ApiNodeModal({
                 {/* Module name */}
                 <div className="dm-field">
                   <label className="dm-field-label">모듈 이름</label>
-                  <input
-                    className="dm-input"
-                    value={label}
-                    onChange={e => setLabel(e.target.value)}
-                    placeholder="API"
-                    autoFocus
-                  />
+                  <div className="module-name-row">
+                    <label className="module-name-cell">
+                      <span>표시이름</span>
+                      <input
+                        className="dm-input"
+                        value={displayLabel}
+                        onChange={e => setDisplayLabel(e.target.value)}
+                        placeholder={node.projectId ? (moduleName || 'API') : '캔버스에서 설정'}
+                        disabled={!node.projectId}
+                        autoFocus={!!node.projectId}
+                      />
+                    </label>
+                    <label className="module-name-cell">
+                      <span>모듈 이름</span>
+                      <input
+                        className="dm-input"
+                        value={moduleName}
+                        onChange={e => setModuleName(e.target.value)}
+                        placeholder="API"
+                        autoFocus={!node.projectId}
+                      />
+                    </label>
+                  </div>
                 </div>
 
                 {/* Method + URL */}
@@ -739,13 +1494,16 @@ export default function ApiNodeModal({
 
                 {/* Tab bar */}
                 <div className="api-tabs">
-                  {(['headers', 'params', 'body'] as SettingsTab[]).map(tab => (
+                  {(['auth', 'headers', 'params', 'body'] as SettingsTab[]).map(tab => (
                     <button
                       key={tab}
                       className={`api-tab${activeTab === tab ? ' api-tab-active' : ''}${tab === 'body' && !hasBody(method) ? ' api-tab-disabled' : ''}`}
                       onClick={() => { if (tab !== 'body' || hasBody(method)) setActiveTab(tab) }}
                     >
-                      {tab === 'headers' ? 'HEADERS' : tab === 'params' ? 'PARAMS' : 'BODY'}
+                      {tab === 'auth' ? 'AUTH' : tab === 'headers' ? 'HEADERS' : tab === 'params' ? 'PARAMS' : 'BODY'}
+                      {tab === 'auth' && auth.type !== 'noAuth' && (
+                        <span className="api-tab-count" title={authLabel}>ON</span>
+                      )}
                       {tab === 'headers' && headers.filter(h => h.enabled && h.key).length > 0 && (
                         <span className="api-tab-count">{headers.filter(h => h.enabled && h.key).length}</span>
                       )}
@@ -757,6 +1515,64 @@ export default function ApiNodeModal({
                 </div>
 
                 {/* Tab content */}
+                {activeTab === 'auth' && (
+                  <div className="dm-field dm-field-grow">
+                    <div className="dm-field-hd">
+                      <label className="dm-field-label">Authentication</label>
+                      <span className="api-auth-current">{authLabel}</span>
+                    </div>
+                    <div className="api-auth-fields">
+                      <div className="dm-field">
+                        <label className="dm-field-label">Type</label>
+                        <select
+                          className="dm-input api-auth-select"
+                          value={auth.type}
+                          onChange={e => updateAuthType(e.target.value as ApiAuthType)}
+                        >
+                          {API_AUTH_TYPES.map(item => (
+                            <option key={item.type} value={item.type}>{item.label}</option>
+                          ))}
+                        </select>
+                      </div>
+
+                      {auth.type === 'noAuth' && (
+                        <div className="api-auth-empty">API request auth headers will not be added.</div>
+                      )}
+
+                      {auth.type === 'bearer' && authInput('token', 'Token', '{{token}} or raw token')}
+
+                      {auth.type === 'basic' && (
+                        <div className="api-auth-row">
+                          {authInput('username', 'Username', 'username')}
+                          {authInput('password', 'Password', 'password')}
+                        </div>
+                      )}
+
+                      {auth.type === 'apiKey' && (
+                        <>
+                          <div className="api-auth-row">
+                            <div className="dm-field api-auth-addto">
+                              <label className="dm-field-label">Add To</label>
+                              <select
+                                className="dm-input api-auth-select"
+                                value={auth.addTo ?? 'header'}
+                                onChange={e => updateAuthField('addTo', e.target.value)}
+                              >
+                                <option value="header">Header</option>
+                                <option value="query">Query Param</option>
+                              </select>
+                            </div>
+                            {authInput('key', 'Key', auth.addTo === 'query' ? 'api_key' : 'X-API-Key')}
+                          </div>
+                          {authInput('value', 'Value', '{{apiKey}} or raw value')}
+                        </>
+                      )}
+
+                      {auth.type === 'oauth2' && authInput('accessToken', 'Access Token', '{{accessToken}} or raw token')}
+                    </div>
+                  </div>
+                )}
+
                 {(activeTab === 'headers' || activeTab === 'params') && (
                   <div className="dm-field dm-field-grow">
                     <div className="dm-field-hd">
@@ -820,40 +1636,70 @@ export default function ApiNodeModal({
                         <FormatIcon />
                       </button>
                     </div>
-                    <AutocompleteField
-                      multiline
+                    <JsonMonacoEditor
+                      path={`${node.id}/body.json`}
                       value={body}
                       onChange={setBody}
-                      envVarNames={envVarNames}
-                      inputKeys={inputKeys}
-                      className="dm-json-area api-body-area"
                       placeholder='{"key": "value"}'
-                      spellCheck={false}
+                      templateSuggestions={{ envVarNames, inputKeys }}
                     />
                   </div>
                 )}
 
-                {usedEnvVars.length > 0 && (
+                {usedVariables.length > 0 && (
                   <div className="dm-field">
-                    <label className="dm-field-label">사용된 환경변수</label>
+                    <label className="dm-field-label">사용된 환경변수 / INPUT 변수</label>
                     <table className="api-env-vars-table">
                       <thead>
                         <tr>
+                          <th>구분</th>
                           <th>변수</th>
                           <th>적용 값</th>
                         </tr>
                       </thead>
                       <tbody>
-                        {usedEnvVars.map(({ name, resolved }) => (
-                          <tr key={name}>
-                            <td>
-                              <span className={`api-var-token${resolved !== null ? ' api-var-ok' : ' api-var-err'}`}>{`{{${name}}}`}</span>
-                            </td>
-                            <td className={resolved !== null ? 'api-env-val-ok' : 'api-env-val-err'}>
-                              {resolved !== null ? resolved : '미설정'}
-                            </td>
-                          </tr>
-                        ))}
+                        {usedVariables.map(({ kind, name, resolved, mappedPath }) => {
+                          const isInput = kind === 'input'
+                          const valueText = resolved !== null
+                            ? resolved
+                            : isInput
+                              ? '클릭하여 INPUT JSON에서 선택'
+                              : '환경변수 없음'
+                          const valueTooltipText = getUsedVariableTooltipText(valueText, mappedPath)
+                          return (
+                            <tr
+                              key={`${kind}:${name}`}
+                              className={isInput ? 'api-var-row-clickable' : undefined}
+                              onClick={() => {
+                                if (isInput) {
+                                  handleHover(null)
+                                  handleOpenInputMappingPicker(name)
+                                }
+                              }}
+                            >
+                              <td>
+                                <span className={`api-var-kind api-var-kind-${kind}`}>
+                                  {isInput ? 'INPUT' : '환경'}
+                                </span>
+                              </td>
+                              <td>
+                                <span className={`api-var-token${isInput ? ' api-input-token' : ''}${resolved !== null ? ' api-var-ok' : ' api-var-err'}`}>
+                                  {isInput ? `[[${name}]]` : `{{${name}}}`}
+                                </span>
+                              </td>
+                              <td
+                                className={resolved !== null ? 'api-env-val-ok' : 'api-env-val-err'}
+                                onMouseEnter={e => handleHover(valueTooltipText, e.currentTarget.getBoundingClientRect())}
+                                onMouseLeave={() => handleHover(null)}
+                              >
+                                {isInput && mappedPath && (
+                                  <div className="api-input-mapping-path">{mappedPath}</div>
+                                )}
+                                <div className="api-env-val-content">{valueText}</div>
+                              </td>
+                            </tr>
+                          )
+                        })}
                       </tbody>
                     </table>
                   </div>
@@ -868,8 +1714,9 @@ export default function ApiNodeModal({
             <div className="dm-pane-col" ref={rightColRef} style={{ width: rightW, flexShrink: 0 }}>
               <div className="dm-pane" style={{ height: outputH, flexShrink: 0 }}>
                 <div className="dm-pane-hd">
-                  <span className="dm-pane-label api-pane-label-output">OUTPUT</span>
+                  <span className={`dm-pane-label api-pane-label-output${outputError ? ' dm-pane-label-error' : ''}`}>OUTPUT</span>
                   <div className="dm-pane-hd-actions">
+                    {outputError && <span className="dm-json-err-badge">Invalid JSON</span>}
                     {testStatus && (
                       <span
                         className="api-status-badge"
@@ -879,15 +1726,18 @@ export default function ApiNodeModal({
                       </span>
                     )}
                     <span className="dm-pane-type">JSON</span>
+                    <button className="btn ghost icon dm-format-btn" onClick={handleFormatOutput} title="JSON 정렬">
+                      <FormatIcon />
+                    </button>
                   </div>
                 </div>
                 <div className="dm-pane-body">
-                  <textarea
-                    className="dm-json-area api-json-area-output"
-                    value={testError ?? testResponse ?? ''}
+                  <JsonMonacoEditor
+                    path={`${node.id}/output.json`}
+                    value={outputRaw}
                     readOnly
-                    placeholder={url.trim() ? 'INPUT 패널의 → 버튼으로 API를 실행하세요' : 'URL을 입력하세요'}
-                    spellCheck={false}
+                    error={outputError}
+                    placeholder={url.trim() ? 'INPUT 패널의 실행 버튼으로 API를 실행하세요' : 'URL을 입력하세요'}
                   />
                 </div>
               </div>
@@ -897,20 +1747,44 @@ export default function ApiNodeModal({
               <div className="dm-pane" style={{ flex: '1 1 0', minHeight: 0 }}>
                 <div className="dm-pane-hd">
                   <span className="dm-pane-label dm-pane-label-post">POST RESPONSE</span>
-                  <span className="dm-pane-type">JavaScript</span>
+                  <div className="dm-pane-hd-actions">
+                    <div className="api-script-pane-tabs">
+                      <button
+                        className={`api-script-pane-tab${postPaneTab === 'script' ? ' api-script-pane-tab-active' : ''}`}
+                        onClick={() => setPostPaneTab('script')}
+                      >
+                        JS
+                      </button>
+                      <button
+                        className={`api-script-pane-tab${postPaneTab === 'console' ? ' api-script-pane-tab-active' : ''}`}
+                        onClick={() => setPostPaneTab('console')}
+                      >
+                        콘솔
+                        {postConsoleLogs.length > 0 && <span className="api-script-log-count">{postConsoleLogs.length}</span>}
+                      </button>
+                    </div>
+                  </div>
                 </div>
-                <div className="dm-pane-body dm-pane-body-monaco">
-                  <Suspense fallback={<MonacoFallback />}>
-                    <MonacoEditor
-                      height="100%"
-                      language="javascript"
-                      theme="vs-dark"
-                      value={postScript}
-                      onChange={(v: string | undefined) => setPostScript(v ?? '')}
-                      options={MONACO_OPTIONS}
-                    />
-                  </Suspense>
-                </div>
+                {postPaneTab === 'script' ? (
+                  <div className="dm-pane-body dm-pane-body-monaco">
+                    <Suspense fallback={<MonacoFallback />}>
+                      <MonacoEditor
+                        height="100%"
+                        language="javascript"
+                        path={`a8a://api-script/${node.id}/post-response.js`}
+                        theme="vs-dark"
+                        value={postScript}
+                        beforeMount={beforeApiScriptEditorMount}
+                        onChange={(v: string | undefined) => setPostScript(v ?? '')}
+                        options={MONACO_OPTIONS}
+                      />
+                    </Suspense>
+                  </div>
+                ) : (
+                  <div className="dm-pane-body api-script-console-body">
+                    <ScriptConsoleView logs={postConsoleLogs} emptyText="POST RESPONSE 콘솔 로그가 없습니다." />
+                  </div>
+                )}
               </div>
             </div>
 
@@ -926,7 +1800,7 @@ export default function ApiNodeModal({
             )}
             {confirmDelete && (
               <>
-                <span className="dm-delete-warn">⚠ {node.moduleId ? '캔버스에서 노드만 제거됩니다. 모듈은 유지됩니다.' : '이 노드가 삭제됩니다.'}</span>
+                <span className="dm-delete-warn">주의: {node.moduleId ? '캔버스에서 노드만 제거됩니다. 모듈은 유지됩니다.' : '이 노드가 삭제됩니다.'}</span>
                 <button className="btn ghost" onClick={() => setConfirmDelete(false)}>취소</button>
                 <button
                   className="btn dm-delete-confirm-btn"
@@ -945,7 +1819,7 @@ export default function ApiNodeModal({
                   취소
                 </button>
                 <button className="btn primary api-save-btn" onClick={handleSave} disabled={saving}>
-                  {saving ? '저장 중…' : '저장'}
+                  {saving ? '저장 중...' : '저장'}
                 </button>
               </>
             )}
@@ -958,9 +1832,70 @@ export default function ApiNodeModal({
       {tooltip && (
         <div
           className="api-var-tooltip"
-          style={{ left: tooltip.x, top: tooltip.y, transform: 'translate(-50%, -100%)' }}
+          style={{
+            left: tooltip.x,
+            top: tooltip.y,
+            transform: tooltip.placement === 'above' ? 'translate(-50%, -100%)' : 'translate(-50%, 0)',
+          }}
         >
           {tooltip.text}
+        </div>
+      )}
+
+      {mappingPickerName && (
+        <JsonPathPicker
+          key={mappingPickerName}
+          data={baseInputData}
+          variableName={mappingPickerName}
+          initialPath={inputMappings[mappingPickerName]}
+          expandedIds={inputPickerExpandedIds}
+          onExpandedIdsChange={setInputPickerExpandedIds}
+          onConfirm={path => handleApplyInputMapping(mappingPickerName, path)}
+          onClose={() => setMappingPickerName(null)}
+        />
+      )}
+
+      {testErrorDetail && (
+        <div className="api-test-error-overlay" role="dialog" aria-modal="true" aria-labelledby="api-test-error-title">
+          <div className="api-test-error-dialog">
+            <div className="api-test-error-hd">
+              <div>
+                <div id="api-test-error-title" className="api-test-error-title">API 테스트 실패</div>
+                <div className="api-test-error-subtitle">아래 값으로 호출을 시도했습니다.</div>
+              </div>
+              <button
+                className="btn ghost icon api-test-error-close"
+                onClick={() => setTestErrorDetail(null)}
+                title="닫기"
+              >
+                <IcoX size={13} />
+              </button>
+            </div>
+            <div className="api-test-error-body">
+              <div className="api-test-error-section">
+                <div className="api-test-error-label">오류</div>
+                <pre>{testErrorDetail.error}</pre>
+              </div>
+              <div className="api-test-error-grid">
+                <div>
+                  <div className="api-test-error-label">Method</div>
+                  <code>{testErrorDetail.request.method}</code>
+                </div>
+                <div>
+                  <div className="api-test-error-label">URL</div>
+                  <pre>{testErrorDetail.request.url}</pre>
+                </div>
+              </div>
+              <div className="api-test-error-section">
+                <div className="api-test-error-label">Headers</div>
+                <pre>{JSON.stringify(testErrorDetail.request.headers, null, 2)}</pre>
+              </div>
+              <div className="api-test-error-section">
+                <div className="api-test-error-label">Body</div>
+                <pre>{testErrorDetail.request.body ?? '없음'}</pre>
+              </div>
+            </div>
+          </div>
         </div>
       )}
     </div>

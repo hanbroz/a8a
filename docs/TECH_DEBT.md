@@ -1,450 +1,100 @@
-# Technical Debt
+# 기술부채
 
-Known issues and deferred improvements. All items documented here have been triaged and do not require immediate action, but should be addressed before production release.
+이 문서는 현재 구현에서 남아 있는 위험과 후속 개선 항목을 정리합니다. 코드 검토에서 즉시 수정한 항목은 별도로 표시했습니다.
 
----
+## 즉시 수정 완료
 
-## CRITICAL
+### DB 파일 저장 원자성
 
-These require architectural changes and pose security/data integrity risks.
+- 대상: `src/main/db.ts`
+- 조치: DB 파일을 직접 덮어쓰지 않고 `a8a.db.tmp`에 쓴 뒤 rename합니다.
 
-### 1. IPC Handler Input Validation
+### 워크스페이스 삭제 시 고아 데이터 정리
 
-**File**: `src/main/ipc.ts`  
-**Issue**: All IPC handlers accept untrusted renderer payloads without validation. A renderer bug or XSS attack could corrupt the database.
+- 대상: `src/main/db.ts`
+- 조치: 워크스페이스 삭제 시 환경 변수, 환경, 프로젝트, 노드, 엣지, 워크스페이스 전용 모듈을 트랜잭션 안에서 정리합니다.
 
-**Risk**: 
-- `env:upsert` accepts arbitrary `EnvRow` with no shape validation
-- `proj:create`, `proj:update` accept strings without length/content checks
-- No type validation at the IPC boundary
+### 모듈 삭제 시 연결선 정리
 
-**Fix**:
-Add [zod](https://zod.dev) or similar schema validation at each IPC handler entry point before passing to `db.ts`:
-
-```typescript
-import { z } from 'zod'
+- 대상: `src/main/db.ts`
+- 조치: 모듈을 참조하는 노드 삭제 전에 해당 노드와 연결된 엣지를 먼저 삭제합니다.
 
-const EnvRowSchema = z.object({
-  id: z.string().uuid(),
-  name: z.string().min(1).max(255),
-  isBase: z.boolean(),
-  color: z.string().regex(/^#[0-9a-fA-F]{6}$/),
-  initial: z.string().max(1),
-  vars: z.array(z.object({
-    id: z.string().uuid(),
-    key: z.string().min(1).max(255),
-    value: z.string(),
-    enabled: z.boolean()
-  }))
-})
-
-ipcMain.handle('env:upsert', (_, workspaceId: string, env: unknown) => {
-  const validated = EnvRowSchema.parse(env)
-  return db.upsertEnvironment(workspaceId, validated)
-})
-```
-
-**Priority**: Address before any multi-workspace data sharing features.
-
----
-
-### 2. contextIsolation Fallback Exposes API
-
-**File**: `src/preload/index.ts:37-42`  
-**Issue**: If `contextIsolation: false` is set in BrowserWindow, the `else` branch exposes `window.api` and `window.electron` to untrusted renderer scripts.
-
-**Current Code**:
-```typescript
-if (process.contextIsolation) {
-  contextBridge.exposeInMainWorld('api', api)
-} else {
-  window.api = api  // Exposes to XSS
-}
-```
-
-**Fix**:
-1. Verify `contextIsolation: true` is set in `src/main/index.ts:16-19`
-2. Remove the `else` branch entirely
-3. Add a runtime assertion:
-
-```typescript
-if (!process.contextIsolation) {
-  throw new Error('contextIsolation must be enabled in BrowserWindow config')
-}
-contextBridge.exposeInMainWorld('api', api)
-```
-
----
-
-## HIGH
-
-These pose data loss or consistency risks and should be addressed soon.
-
-### 3. In-Place File Writes Risk Corruption
-
-**File**: `src/main/db.ts:38-40`  
-**Issue**: `save()` overwrites the database file in-place. If the process crashes or power fails mid-write, the file will be corrupted and unrecoverable.
-
-**Current Code**:
-```typescript
-function save(): void {
-  writeFileSync(dbPath(), Buffer.from(db.export()))
-}
-```
-
-**Fix**: Use atomic write pattern (write to temp file, then rename):
-
-```typescript
-function save(): void {
-  const path = dbPath()
-  const tmpPath = path + '.tmp'
-  writeFileSync(tmpPath, Buffer.from(db.export()))
-  renameSync(tmpPath, path)  // Atomic on most filesystems
-}
-```
-
----
-
-### 4. Missing Foreign Key Constraints
-
-**File**: `src/main/db.ts:53-88` (schema creation)  
-**Issue**: No database-level foreign keys or cascade delete rules. Manual cascade in `deleteWorkspace` is fragile and can leak data if logic changes.
-
-**Current Code** (manual cascade):
-```typescript
-export function deleteWorkspace(id: string): void {
-  const envIds = queryAll<{ id: string }>('SELECT id FROM environments WHERE workspace_id = ?', [id])
-  envIds.forEach(e => db.run('DELETE FROM env_vars WHERE environment_id = ?', [e.id]))
-  db.run('DELETE FROM environments WHERE workspace_id = ?', [id])
-  db.run('DELETE FROM projects WHERE workspace_id = ?', [id])
-  db.run('DELETE FROM workspaces WHERE id = ?', [id])
-}
-```
-
-**Fix**: Add FOREIGN KEY constraints to schema with ON DELETE CASCADE:
-
-```sql
-CREATE TABLE IF NOT EXISTS environments (
-  id           TEXT PRIMARY KEY,
-  workspace_id TEXT NOT NULL,
-  name         TEXT NOT NULL,
-  is_base      INTEGER DEFAULT 0,
-  color        TEXT DEFAULT '#4493f8',
-  sort         INTEGER DEFAULT 0,
-  FOREIGN KEY (workspace_id) REFERENCES workspaces(id) ON DELETE CASCADE
-);
-
-CREATE TABLE IF NOT EXISTS env_vars (
-  id             TEXT PRIMARY KEY,
-  environment_id TEXT NOT NULL,
-  key            TEXT NOT NULL,
-  value          TEXT DEFAULT '',
-  enabled        INTEGER DEFAULT 1,
-  sort           INTEGER DEFAULT 0,
-  FOREIGN KEY (environment_id) REFERENCES environments(id) ON DELETE CASCADE
-);
-
-CREATE TABLE IF NOT EXISTS projects (
-  id           TEXT PRIMARY KEY,
-  workspace_id TEXT NOT NULL,
-  name         TEXT NOT NULL,
-  description  TEXT DEFAULT '',
-  sort         INTEGER DEFAULT 0,
-  FOREIGN KEY (workspace_id) REFERENCES workspaces(id) ON DELETE CASCADE
-);
-```
-
-Then simplify `deleteWorkspace`:
-```typescript
-export function deleteWorkspace(id: string): void {
-  db.run('DELETE FROM workspaces WHERE id = ?', [id])
-  save()
-}
-```
-
----
-
-### 5. Missing UNIQUE Constraints
-
-**File**: `src/main/db.ts:53-88` (schema creation)  
-**Issue**: No uniqueness constraints. Can create duplicate environments or projects with the same name in a workspace, or multiple BASE environments per workspace.
-
-**Fix**: Add constraints to schema:
-
-```sql
-CREATE TABLE IF NOT EXISTS environments (
-  ...
-  UNIQUE(workspace_id, name)
-);
-
--- Partial unique index for BASE env (one per workspace)
-CREATE UNIQUE INDEX IF NOT EXISTS idx_workspace_base 
-  ON environments(workspace_id) WHERE is_base = 1;
-
-CREATE TABLE IF NOT EXISTS projects (
-  ...
-  UNIQUE(workspace_id, name)
-);
-
-CREATE TABLE IF NOT EXISTS env_vars (
-  ...
-  UNIQUE(environment_id, key)
-);
-```
-
----
-
-### 6. Missing workspace_id Ownership Validation in upsertEnvironment
-
-**File**: `src/main/db.ts:164-182`  
-**Function**: `upsertEnvironment()`  
-**Issue**: UPDATE path does not validate that the environment belongs to the specified workspace. A compromised IPC call could mutate data across workspaces.
-
-**Current Code**:
-```typescript
-export function upsertEnvironment(workspaceId: string, env: EnvRow): void {
-  const exists = queryOne('SELECT id FROM environments WHERE id = ?', [env.id])
-  if (exists) {
-    // No check that env.id belongs to workspaceId
-    db.run('UPDATE environments SET name = ?, color = ?, initial = ? WHERE id = ?', ...)
-  }
-  // ...
-}
-```
-
-**Fix**: Add ownership check:
-
-```typescript
-export function upsertEnvironment(workspaceId: string, env: EnvRow): void {
-  const exists = queryOne<{ workspace_id: string }>(
-    'SELECT workspace_id FROM environments WHERE id = ?',
-    [env.id]
-  )
-  if (exists && exists.workspace_id !== workspaceId) {
-    throw new Error('Cross-workspace data mutation attempted')
-  }
-  // ... rest of logic
-}
-```
-
----
-
-### 7. Stale Closure in saveEnv/saveProject
-
-**File**: `src/renderer/src/App.tsx:190-207`, `229-247`  
-**Functions**: `saveEnv()`, `saveProject()`  
-**Issue**: Both functions use `modalWsId` and `modalProject.wsId`, which are captured by closure at the time the modal opens. If the user opens a different workspace modal before the async save completes, the save will write to the wrong workspace. Additionally, no try/catch around the await means UI state diverges from DB on error.
-
-**Current Code**:
-```typescript
-const saveEnv = async (env: Environment): Promise<void> => {
-  await window.api.environment.upsert(modalWsId, { ... })  // Stale closure
-  setWorkspaces(prev => prev.map(w => {
-    if (w.id !== modalWsId) return w  // May not match actual state
-    // ...
-  }))
-  // No error handling
-  closeEnvModal()
-}
-```
-
-**Fix**: Pass workspace ID explicitly from modal state, add error handling:
-
-```typescript
-const saveEnv = async (env: Environment): Promise<void> => {
-  if (!modalWsId) return
-  try {
-    await window.api.environment.upsert(modalWsId, { ... })
-    setWorkspaces(prev => prev.map(w => {
-      if (w.id !== modalWsId) return w
-      // ...
-    }))
-  } catch (err) {
-    console.error('Failed to save environment:', err)
-    // Show error toast/dialog to user
-    return
-  }
-  closeEnvModal()
-}
-```
-
-**Related**: Consider refactoring modal state to explicit `{ mode: 'add'|'edit'; env; wsId } | null` instead of `{ env, wsId, ...}` tri-state.
-
----
-
-## MEDIUM
-
-These affect code maintainability and correctness but do not cause data loss.
-
-### 8. Fragile modalEnv Tri-State
-
-**File**: `src/renderer/src/App.tsx:53`  
-**Issue**: `modalEnv` uses `null | undefined | Environment` to distinguish "closed" (undefined) vs "add mode" (null) vs "edit mode" (Environment). This is error-prone and unclear.
-
-**Current Code**:
-```typescript
-const [modalEnv, setModalEnv] = useState<Environment | null | undefined>(undefined)
-const openAddEnvModal = (wsId: string): void => { setModalWsId(wsId); setModalEnv(null) }
-const closeEnvModal = (): void => setModalEnv(undefined)
-```
-
-**Fix**: Use explicit discriminated union:
-
-```typescript
-type EnvModalState = { mode: 'add' | 'edit'; env: Environment | null; wsId: string } | null
-
-const [envModal, setEnvModal] = useState<EnvModalState>(null)
-const openAddEnvModal = (wsId: string): void => setEnvModal({ mode: 'add', env: null, wsId })
-const openEditEnvModal = (wsId: string, env: Environment): void => setEnvModal({ mode: 'edit', env, wsId })
-const closeEnvModal = (): void => setEnvModal(null)
-```
-
----
-
-### 9. EnvModal Does Not Deduplicate Variable Keys on Save
-
-**File**: `src/renderer/src/components/env/EnvModal.tsx` (review required)  
-**Issue**: If a user manually adds two env vars with the same key name, both are saved. Database `UNIQUE(environment_id, key)` constraint (item #5) will eventually reject this, but the UI should prevent it.
-
-**Fix**: Before saving, deduplicate vars by key (last one wins or show validation error).
-
----
-
-### 10. initial Field Uses charAt(0) — Breaks on Multi-Codepoint Characters
-
-**File**: `src/renderer/src/App.tsx:318` and component files  
-**Issue**: `proj.name.charAt(0)` breaks on emoji, Korean characters, and other multi-codepoint Unicode. Should use `Array.from()` or `[...string]`.
-
-**Current Code**:
-```typescript
-{proj.name.charAt(0).toUpperCase()}  // Fails on Korean: "한".charAt(0) → undefined behavior
-```
-
-**Fix**:
-```typescript
-{[...proj.name][0]?.toUpperCase()}  // Works: [...'한국'][0] → '한'
-```
-
----
-
-### 11. init() Uses Untyped Cast for listEnvironments
-
-**File**: `src/renderer/src/App.tsx:73`, `159`  
-**Issue**: `envs.find(e => e.isBase)` and subsequent `as Environment[]` cast silence TypeScript. Works only because the API returns the correct shape.
-
-**Current Code**:
-```typescript
-const baseEnv = envs.find(e => e.isBase)
-return {
-  // ...
-  environments: envs as Environment[],  // Unsafe cast
-  activeEnvId: baseEnv?.id ?? envs[0]?.id ?? '',
-}
-```
-
-**Fix**: Type guard or explicit return from API:
-
-```typescript
-// Option 1: Type guard in component
-const typedEnvs = envs as Environment[]
-const baseEnv = typedEnvs.find(e => e.isBase)
-
-// Option 2: Type the IPC return in preload/index.ts
-environment: {
-  list: (workspaceId: string): Promise<Environment[]> => ipcRenderer.invoke('env:list', workspaceId),
-}
-```
-
----
-
-## LOW
-
-Minor code quality and deprecation issues.
-
-### 12. @ts-ignore Should Be @ts-expect-error
-
-**File**: `src/preload/index.ts:38-41`  
-**Issue**: `@ts-ignore` ignores all TypeScript errors silently. Use `@ts-expect-error` instead to fail if the error is fixed.
-
-**Current Code**:
-```typescript
-} else {
-  // @ts-ignore
-  window.electron = electronAPI
-}
-```
-
-**Fix**:
-```typescript
-} else {
-  // @ts-expect-error — contextIsolation should always be true; this else is a fallback
-  window.electron = electronAPI
-}
-```
-
----
-
-### 13. JSX.Element Return Types Deprecation (React 19)
-
-**File**: `src/renderer/src/App.tsx:29` and other components  
-**Issue**: React 19 deprecates `JSX.Element`. Use `React.ReactNode` or no return type annotation.
-
-**Current Code**:
-```typescript
-export default function App(): JSX.Element {
-```
-
-**Fix**:
-```typescript
-export default function App(): React.ReactNode {
-  // or omit return type entirely; inference is sufficient
-}
-```
-
----
-
-### 14. console.error in Preload Swallows Errors Silently
-
-**File**: `src/preload/index.ts:35`  
-**Issue**: `console.error` in preload context does not surface errors in production. Errors during contextBridge.exposeInMainWorld are silently logged.
-
-**Current Code**:
-```typescript
-} catch (error) {
-  console.error(error)  // Silent in production
-}
-```
-
-**Fix**: Log to main process or throw in development:
-
-```typescript
-} catch (error) {
-  const msg = error instanceof Error ? error.message : String(error)
-  if (process.env.NODE_ENV === 'development') {
-    throw error
-  }
-  // In production, log to main process for debugging
-  ipcRenderer.send('preload:error', msg)
-}
-```
-
----
-
-## Summary Table
-
-| Item | Severity | Category | File |
-|------|----------|----------|------|
-| 1 | CRITICAL | Security | `src/main/ipc.ts` |
-| 2 | CRITICAL | Security | `src/preload/index.ts` |
-| 3 | HIGH | Data Integrity | `src/main/db.ts` |
-| 4 | HIGH | Data Integrity | `src/main/db.ts` |
-| 5 | HIGH | Data Integrity | `src/main/db.ts` |
-| 6 | HIGH | Data Integrity | `src/main/db.ts` |
-| 7 | HIGH | Logic Error | `src/renderer/src/App.tsx` |
-| 8 | MEDIUM | Maintainability | `src/renderer/src/App.tsx` |
-| 9 | MEDIUM | UX | `src/renderer/src/components/env/EnvModal.tsx` |
-| 10 | MEDIUM | Correctness | `src/renderer/src/App.tsx` |
-| 11 | MEDIUM | Type Safety | `src/renderer/src/App.tsx` |
-| 12 | LOW | Code Quality | `src/preload/index.ts` |
-| 13 | LOW | Deprecation | `src/renderer/src/App.tsx` |
-| 14 | LOW | Observability | `src/preload/index.ts` |
+### 모듈 배치와 엣지 생성 검증
+
+- 대상: `src/main/db.ts`, `src/renderer/src/App.tsx`
+- 조치: 모듈은 공통 모듈이거나 같은 워크스페이스 소속이어야 프로젝트에 배치할 수 있습니다. 엣지는 같은 프로젝트의 노드끼리만 만들 수 있고, 중복 입력, 순환 연결, 자기 연결, Start 입력, End 출력은 차단합니다.
+
+### Preload fallback 제거
+
+- 대상: `src/preload/index.ts`
+- 조치: `contextIsolation`이 꺼진 상태에서 `window.api`를 직접 붙이는 fallback을 제거했습니다.
+
+### 실행 환경 기준 수정
+
+- 대상: `src/renderer/src/App.tsx`
+- 조치: API 실행, 미리보기, 리포트 생성은 사이드바 선택 워크스페이스가 아니라 현재 열린 프로젝트의 워크스페이스/환경을 기준으로 합니다.
+
+### 타입 검증 보강
+
+- 대상: `src/renderer/src/globals.d.ts`, `src/types/ambient.d.ts`, `tsconfig.*.json`
+- 조치: 전역 타입, CSS/worker/sql.js 선언을 보강해 `npx tsc -b --noEmit` 검증이 통과하도록 했습니다.
+
+## 높음
+
+### IPC 입력 검증 스키마 부재
+
+- 대상: `src/main/ipc.ts`
+- 위험: Renderer에서 들어오는 문자열, ID, 설정 JSON이 구조 검증 없이 DB 함수로 전달됩니다.
+- 권장 조치: `zod` 같은 스키마 검증을 IPC 경계에 추가합니다. 특히 `env:upsert`, `mod:create`, `node:create`, `edge:create`, `file:write` 입력을 검증해야 합니다.
+
+### DB 스키마 수준 외래 키와 UNIQUE 제약 부재
+
+- 대상: `src/main/db.ts`
+- 위험: 코드 레벨 삭제/검증은 보강했지만, 기존 DB 호환성 때문에 스키마 수준 `FOREIGN KEY`, `UNIQUE` 제약은 아직 없습니다.
+- 권장 조치: 마이그레이션 버전 테이블을 추가한 뒤 안전하게 `ON DELETE CASCADE`, `UNIQUE(project_id, source_node_id, target_node_id)` 등을 적용합니다.
+
+### 사용자 스크립트 격리 부재
+
+- 대상: `src/renderer/src/utils/scriptRuntime.ts`
+- 위험: Pre Request, Post Response 스크립트는 `AsyncFunction`으로 실행됩니다. 현재는 사용자를 신뢰하는 로컬 앱 모델입니다.
+- 권장 조치: Worker 또는 별도 제한 런타임으로 격리하고, 사용할 수 있는 API를 명시적으로 제한합니다.
+
+## 중간
+
+### End 리포트 실패 표시 개선
+
+- 대상: `src/renderer/src/App.tsx`
+- 현재 조치: 파일 저장 실패 시 End 노드를 error 상태로 표시합니다.
+- 남은 작업: End 노드 자체도 실행 로그에 별도 항목으로 남기고, 실패 원인을 UI에서 바로 확인할 수 있게 합니다.
+
+### API 실패 후 실행 정책
+
+- 대상: `src/renderer/src/App.tsx`
+- 현재 조치: API 실패 시 이후 업무 노드는 중단하고 End 노드로 이동해 실패 리포트를 생성할 수 있게 했습니다.
+- 남은 작업: “실패 시 즉시 중단”, “실패 후 다음 브랜치 계속”, “항상 End 실행” 같은 실행 정책을 프로젝트 또는 Start 노드 설정으로 분리할지 결정해야 합니다.
+
+### 문서와 계획서 상태 관리
+
+- 대상: `docs/*.html`
+- 위험: `script-feature-plan.html`, `end-node-report-plan.html`은 구현 전 계획서 성격이 강해 실제 구현 완료 상태와 섞여 보입니다.
+- 권장 조치: 완료된 계획서는 `docs/archive/`로 옮기거나, 각 문서 상단에 완료/보류/변경 사항을 명시합니다.
+
+### 개발 스크립트의 프로세스 종료 범위
+
+- 대상: `dev.bat`, `run.bat`, `dev.sh`, `run.sh`
+- 위험: 현재 스크립트 일부는 다른 Electron 또는 electron-vite 프로세스까지 종료할 수 있습니다.
+- 권장 조치: 프로젝트별 PID 파일 기반 종료로 좁힙니다.
+
+## 낮음
+
+### React 19 JSX 반환 타입 정리
+
+- 대상: 여러 `*.tsx`
+- 현황: `JSX.Element` 호환 선언을 추가해 타입 검사는 통과합니다.
+- 권장 조치: 새 코드에서는 명시 반환 타입을 생략하거나 `React.ReactElement`/`React.ReactNode`로 점진 변경합니다.
+
+### 패키징 설정 상세화
+
+- 대상: `package.json`
+- 현재 조치: `electron-builder`의 `appId`, `productName`, `files`, `directories.output` 기본 설정을 추가했습니다.
+- 남은 작업: 아이콘, 코드 서명, 플랫폼별 artifact 이름, extraResources 정책을 배포 시점에 추가합니다.

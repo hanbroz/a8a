@@ -2,28 +2,206 @@ import { useState, useRef, useEffect, useCallback } from 'react'
 import { IcoX } from '../Icon'
 
 interface Props {
-  data: Record<string, unknown>[]
-  onConfirm: (selectedRows: Record<string, unknown>[]) => void
+  data: unknown
+  initialSelectedRowIndices?: number[]
+  initialSelectedJsonPaths?: string[]
+  initialMode?: 'table' | 'json'
+  selectionType?: 'multiple' | 'single'
+  onConfirm: (selectedValues: unknown[], selection: SelectionPopupSelection) => void
   onCancel: () => void
 }
 
-export default function SelectionPopup({ data, onConfirm, onCancel }: Props): JSX.Element {
-  const [selectedIndex, setSelectedIndex] = useState<number | null>(null)
+type JsonPathPart = string | number
+
+export type SelectionPopupSelection =
+  | { mode: 'table'; selectedRowIndices: number[] }
+  | { mode: 'json'; selectedJsonPaths: string[] }
+
+type JsonNode = {
+  id: string
+  path: string
+  key: string
+  value: unknown
+  depth: number
+  type: string
+  parts: JsonPathPart[]
+  hasChildren: boolean
+  selectable: boolean
+}
+
+const SIZE_KEY = 'selection-popup-size'
+const MIN_W = 560
+const MIN_H = 360
+
+function getTableRows(data: unknown): Record<string, unknown>[] | null {
+  if (!Array.isArray(data) || data.length === 0) return null
+  if (typeof data[0] !== 'object' || data[0] === null || Array.isArray(data[0])) return null
+  return data as Record<string, unknown>[]
+}
+
+function readSavedSize(): { w: number; h: number } {
+  try {
+    const parsed = JSON.parse(localStorage.getItem(SIZE_KEY) ?? '{}') as Partial<{ w: number; h: number }>
+    const w = Number.isFinite(parsed.w) ? parsed.w! : 820
+    const h = Number.isFinite(parsed.h) ? parsed.h! : 520
+    return {
+      w: Math.max(MIN_W, Math.min(window.innerWidth - 24, w)),
+      h: Math.max(MIN_H, Math.min(window.innerHeight - 24, h)),
+    }
+  } catch {
+    return { w: 820, h: 520 }
+  }
+}
+
+function saveSize(size: { w: number; h: number }): void {
+  localStorage.setItem(SIZE_KEY, JSON.stringify(size))
+}
+
+function valueType(value: unknown): string {
+  if (Array.isArray(value)) return 'array'
+  if (value === null) return 'null'
+  return typeof value
+}
+
+function isContainer(value: unknown): boolean {
+  return Array.isArray(value) || (typeof value === 'object' && value !== null)
+}
+
+function valuePreview(value: unknown): string {
+  if (value === null) return 'null'
+  if (typeof value === 'string') return value
+  if (typeof value === 'number' || typeof value === 'boolean') return String(value)
+  if (Array.isArray(value)) return `[${value.length}]`
+  if (typeof value === 'object') return `{${Object.keys(value as Record<string, unknown>).length}}`
+  return String(value)
+}
+
+function childPath(parentPath: string, key: JsonPathPart): string {
+  if (typeof key === 'number') return `${parentPath}[${key}]`
+  return /^[A-Za-z_$][\w$]*$/.test(key) ? `${parentPath}.${key}` : `${parentPath}[${JSON.stringify(key)}]`
+}
+
+function cloneJsonValue(value: unknown): unknown {
+  if (!isContainer(value)) return value
+  return JSON.parse(JSON.stringify(value)) as unknown
+}
+
+function flattenJson(value: unknown, path = '$', key = '$', depth = 0, parts: JsonPathPart[] = []): JsonNode[] {
+  const hasChildren = isContainer(value) && (
+    Array.isArray(value)
+      ? value.length > 0
+      : Object.keys(value as Record<string, unknown>).length > 0
+  )
+  const current: JsonNode = {
+    id: path,
+    path,
+    key,
+    value,
+    depth,
+    type: valueType(value),
+    parts,
+    hasChildren,
+    selectable: true,
+  }
+
+  if (Array.isArray(value)) {
+    return [
+      current,
+      ...value.flatMap((item, index) =>
+        flattenJson(item, childPath(path, index), `[${index}]`, depth + 1, [...parts, index]),
+      ),
+    ]
+  }
+
+  if (value && typeof value === 'object') {
+    return [
+      current,
+      ...Object.entries(value as Record<string, unknown>).flatMap(([childKey, childValue]) =>
+        flattenJson(childValue, childPath(path, childKey), childKey, depth + 1, [...parts, childKey]),
+      ),
+    ]
+  }
+
+  return [current]
+}
+
+function getVisibleNodes(nodes: JsonNode[], expandedIds: Set<string>): JsonNode[] {
+  return nodes.filter(node => {
+    if (node.depth === 0) return true
+    const parentParts = node.parts.slice(0, -1)
+    let path = '$'
+    if (!expandedIds.has(path)) return false
+    for (const part of parentParts) {
+      path = childPath(path, part)
+      if (!expandedIds.has(path)) return false
+    }
+    return true
+  })
+}
+
+function expandedIdsForSelectedNodes(nodes: JsonNode[], selectedIds: Set<string>): Set<string> {
+  const expanded = new Set<string>()
+  nodes.forEach(node => {
+    if (!selectedIds.has(node.id)) return
+    expanded.add('$')
+    let path = '$'
+    node.parts.slice(0, -1).forEach(part => {
+      path = childPath(path, part)
+      expanded.add(path)
+    })
+  })
+  return expanded
+}
+
+export default function SelectionPopup({
+  data,
+  initialSelectedRowIndices = [],
+  initialSelectedJsonPaths = [],
+  initialMode,
+  selectionType = 'multiple',
+  onConfirm,
+  onCancel,
+}: Props): JSX.Element {
+  const tableRows = getTableRows(data)
+  const canUseTable = tableRows !== null
+  const jsonData = tableRows && tableRows.length === 1 ? tableRows[0] : data
+  const jsonNodes = flattenJson(jsonData)
+  const columns = tableRows && tableRows.length > 0 ? Object.keys(tableRows[0]) : []
+  const initialJsonPaths = initialSelectedJsonPaths.filter(path => jsonNodes.some(node => node.id === path && node.selectable))
+  const initialJsonNodeIds = new Set(selectionType === 'single' ? initialJsonPaths.slice(0, 1) : initialJsonPaths)
+  const initialTableIndices = canUseTable
+    ? initialSelectedRowIndices.filter(index => index >= 0 && index < tableRows.length)
+    : []
+
+  const [mode, setMode] = useState<'table' | 'json'>(() => {
+    if (initialMode === 'json' && initialJsonNodeIds.size > 0) return 'json'
+    if (initialMode === 'table' && canUseTable) return 'table'
+    if (initialJsonNodeIds.size > 0) return 'json'
+    return canUseTable && tableRows.length > 1 ? 'table' : 'json'
+  })
+  const [selectedIndices, setSelectedIndices] = useState<number[]>(selectionType === 'single' ? initialTableIndices.slice(0, 1) : initialTableIndices)
+  const [selectedNodeIds, setSelectedNodeIds] = useState<Set<string>>(() => initialJsonNodeIds)
+  const [expandedIds, setExpandedIds] = useState<Set<string>>(() =>
+    expandedIdsForSelectedNodes(jsonNodes, initialJsonNodeIds),
+  )
+  const [size, setSize] = useState(readSavedSize)
   const [pos, setPos] = useState<{ x: number; y: number } | null>(null)
   const dragRef = useRef<{ ox: number; oy: number } | null>(null)
   const modalRef = useRef<HTMLDivElement>(null)
 
+  const selectedJsonNodes = Array.from(selectedNodeIds)
+    .map(nodeId => jsonNodes.find(node => node.id === nodeId && node.selectable))
+    .filter((node): node is JsonNode => !!node)
+  const visibleJsonNodes = getVisibleNodes(jsonNodes, expandedIds)
+
   useEffect(() => {
-    if (modalRef.current && pos === null) {
-      const el = modalRef.current
-      const w = el.offsetWidth || 800
-      const h = el.offsetHeight || 400
+    if (pos === null) {
       setPos({
-        x: Math.max(0, (window.innerWidth - w) / 2),
-        y: Math.max(0, (window.innerHeight - h) / 2),
+        x: Math.max(0, (window.innerWidth - size.w) / 2),
+        y: Math.max(0, (window.innerHeight - size.h) / 2),
       })
     }
-  }, [pos])
+  }, [pos, size.h, size.w])
 
   const onHeaderDown = useCallback((e: React.MouseEvent) => {
     if (!pos) return
@@ -33,8 +211,8 @@ export default function SelectionPopup({ data, onConfirm, onCancel }: Props): JS
     const onMove = (me: MouseEvent) => {
       if (!dragRef.current) return
       setPos({
-        x: Math.max(0, Math.min(window.innerWidth - 100, me.clientX - dragRef.current.ox)),
-        y: Math.max(0, Math.min(window.innerHeight - 40, me.clientY - dragRef.current.oy)),
+        x: Math.max(0, Math.min(window.innerWidth - size.w, me.clientX - dragRef.current.ox)),
+        y: Math.max(0, Math.min(window.innerHeight - size.h, me.clientY - dragRef.current.oy)),
       })
     }
     const onUp = () => {
@@ -44,22 +222,84 @@ export default function SelectionPopup({ data, onConfirm, onCancel }: Props): JS
     }
     window.addEventListener('mousemove', onMove)
     window.addEventListener('mouseup', onUp)
-  }, [pos])
+  }, [pos, size.h, size.w])
 
-  const columns = data.length > 0 ? Object.keys(data[0]) : []
+  const onResizeDown = useCallback((e: React.MouseEvent) => {
+    e.preventDefault()
+    e.stopPropagation()
+    const startX = e.clientX
+    const startY = e.clientY
+    const startSize = size
+    let latest = startSize
+
+    const onMove = (me: MouseEvent) => {
+      latest = {
+        w: Math.max(MIN_W, Math.min(window.innerWidth - (pos?.x ?? 0), startSize.w + me.clientX - startX)),
+        h: Math.max(MIN_H, Math.min(window.innerHeight - (pos?.y ?? 0), startSize.h + me.clientY - startY)),
+      }
+      setSize(latest)
+    }
+    const onUp = () => {
+      saveSize(latest)
+      window.removeEventListener('mousemove', onMove)
+      window.removeEventListener('mouseup', onUp)
+    }
+
+    window.addEventListener('mousemove', onMove)
+    window.addEventListener('mouseup', onUp)
+  }, [pos?.x, pos?.y, size])
 
   const toggleRow = (idx: number) => {
-    setSelectedIndex(prev => prev === idx ? null : idx)
+    setSelectedIndices(prev => {
+      if (selectionType === 'single') return prev.includes(idx) ? [] : [idx]
+      return prev.includes(idx) ? prev.filter(item => item !== idx) : [...prev, idx]
+    })
+  }
+
+  const toggleExpanded = (nodeId: string) => {
+    setExpandedIds(prev => {
+      const next = new Set(prev)
+      if (next.has(nodeId)) next.delete(nodeId)
+      else next.add(nodeId)
+      return next
+    })
+  }
+
+  const toggleJsonNode = (node: JsonNode) => {
+    if (!node.selectable) {
+      if (node.hasChildren) toggleExpanded(node.id)
+      return
+    }
+    setSelectedNodeIds(prev => {
+      if (selectionType === 'single') return prev.has(node.id) ? new Set<string>() : new Set([node.id])
+      const next = new Set(prev)
+      if (next.has(node.id)) next.delete(node.id)
+      else next.add(node.id)
+      return next
+    })
   }
 
   const handleConfirm = () => {
-    if (selectedIndex === null) return
-    onConfirm([data[selectedIndex]])
+    if (mode === 'table' && tableRows) {
+      if (selectedIndices.length === 0) return
+      const selectedRows = selectedIndices
+        .map(index => tableRows[index])
+        .filter((row): row is Record<string, unknown> => row !== undefined)
+      onConfirm(selectedRows, { mode: 'table', selectedRowIndices: selectedIndices })
+      return
+    }
+    if (selectedJsonNodes.length === 0) return
+    onConfirm(
+      selectedJsonNodes.map(node => cloneJsonValue(node.value)),
+      { mode: 'json', selectedJsonPaths: selectedJsonNodes.map(node => node.id) },
+    )
   }
 
+  const hasSelection = mode === 'table' && tableRows ? selectedIndices.length > 0 : selectedJsonNodes.length > 0
+
   const modalStyle: React.CSSProperties = pos
-    ? { position: 'fixed', left: pos.x, top: pos.y, margin: 0 }
-    : { position: 'fixed', left: '50%', top: '50%', transform: 'translate(-50%, -50%)', margin: 0 }
+    ? { position: 'fixed', left: pos.x, top: pos.y, width: size.w, height: size.h, margin: 0 }
+    : { position: 'fixed', left: '50%', top: '50%', width: size.w, height: size.h, transform: 'translate(-50%, -50%)', margin: 0 }
 
   return (
     <div className="sp-overlay" style={{ pointerEvents: 'none' }}>
@@ -70,14 +310,38 @@ export default function SelectionPopup({ data, onConfirm, onCancel }: Props): JS
       >
         <div className="sp-hd" style={{ cursor: 'move' }} onMouseDown={onHeaderDown}>
           <div className="sp-hd-left">
-            <span className="sp-title">데이터 선택</span>
-            <span className="sp-subtitle">다음 모듈로 전달할 행을 선택하세요</span>
+            <span className="sp-title">{mode === 'table' ? '데이터 선택' : 'JSON 노드 선택'}</span>
+            <span className="sp-subtitle">
+              {mode === 'table'
+                ? selectionType === 'single' ? '다음 모듈로 전달할 행을 하나만 선택하세요.' : '다음 모듈로 전달할 행을 선택하세요.'
+                : selectionType === 'single' ? '전달할 JSON 노드를 하나만 선택하세요.' : '전달할 JSON 노드를 선택하세요. 선택된 노드 값은 배열로 전달됩니다.'}
+            </span>
           </div>
-          <button className="btn ghost icon dm-close-btn" onMouseDown={e => e.stopPropagation()} onClick={onCancel}><IcoX size={13} /></button>
+          <div className="sp-hd-actions" onMouseDown={e => e.stopPropagation()}>
+            {canUseTable && (
+              <div className="sm-view-toggle">
+                <button
+                  className={`sm-view-btn${mode === 'table' ? ' active' : ''}`}
+                  onClick={() => setMode('table')}
+                >
+                  Table
+                </button>
+                <button
+                  className={`sm-view-btn${mode === 'json' ? ' active' : ''}`}
+                  onClick={() => setMode('json')}
+                >
+                  JSON
+                </button>
+              </div>
+            )}
+            <button className="btn ghost icon dm-close-btn" onClick={onCancel}>
+              <IcoX size={13} />
+            </button>
+          </div>
         </div>
 
         <div className="sp-body">
-          {data.length > 0 ? (
+          {mode === 'table' && tableRows ? (
             <div className="sm-input-table">
               <table>
                 <thead>
@@ -87,8 +351,8 @@ export default function SelectionPopup({ data, onConfirm, onCancel }: Props): JS
                   </tr>
                 </thead>
                 <tbody>
-                  {data.map((row, idx) => {
-                    const isChecked = selectedIndex === idx
+                  {tableRows.map((row, idx) => {
+                    const isChecked = selectedIndices.includes(idx)
                     return (
                       <tr
                         key={idx}
@@ -96,7 +360,7 @@ export default function SelectionPopup({ data, onConfirm, onCancel }: Props): JS
                         onClick={() => toggleRow(idx)}
                       >
                         <td>
-                          <div className={`sm-col-check${isChecked ? ' checked' : ''}`} />
+                          <div className={`sm-col-check${selectionType === 'single' ? ' sm-col-check-radio' : ''}${isChecked ? ' checked' : ''}`} />
                         </td>
                         {columns.map(col => (
                           <td key={col}>{String(row[col] ?? '')}</td>
@@ -108,21 +372,54 @@ export default function SelectionPopup({ data, onConfirm, onCancel }: Props): JS
               </table>
             </div>
           ) : (
-            <div className="sm-col-empty">데이터가 없습니다</div>
+            <div className="sp-json-tree">
+              {visibleJsonNodes.map(node => {
+                const selected = selectedNodeIds.has(node.id)
+                const expanded = expandedIds.has(node.id)
+                return (
+                  <button
+                    key={node.id}
+                    className={`sp-json-node${selected ? ' sp-json-node-selected' : ''}`}
+                    style={{ paddingLeft: 12 + node.depth * 18 }}
+                    onClick={() => toggleJsonNode(node)}
+                  >
+                    <span
+                      className={`sp-json-expander${node.hasChildren ? ' sp-json-expander-visible' : ''}`}
+                      onClick={(e) => {
+                        e.stopPropagation()
+                        if (node.hasChildren) toggleExpanded(node.id)
+                      }}
+                    >
+                      {node.hasChildren ? (expanded ? '-' : '+') : ''}
+                    </span>
+                    <span className={`sm-col-check${selectionType === 'single' ? ' sm-col-check-radio' : ''}${selected ? ' checked' : ''}`} />
+                    <span className="sp-json-key">{node.key}</span>
+                    <span className="sp-json-type">{node.type}</span>
+                    <span className="sp-json-path">{node.path}</span>
+                    <span className="sp-json-preview">{valuePreview(node.value)}</span>
+                  </button>
+                )
+              })}
+            </div>
           )}
         </div>
 
         <div className="sp-ft">
-          <span className="sp-count">{selectedIndex !== null ? `${selectedIndex + 1}번째 행 선택됨` : '미선택'}</span>
+          <span className="sp-count">
+            {mode === 'table' && tableRows
+              ? selectedIndices.length > 0 ? `${selectedIndices.length}개 행 선택됨` : '미선택'
+              : selectedJsonNodes.length > 0 ? `${selectedJsonNodes.length}개 항목 선택됨` : '미선택'}
+          </span>
           <button className="btn ghost" onClick={onCancel}>취소</button>
           <button
             className="btn primary"
             onClick={handleConfirm}
-            disabled={selectedIndex === null}
+            disabled={!hasSelection}
           >
             선택 완료
           </button>
         </div>
+        <div className="sp-resize-handle" onMouseDown={onResizeDown} />
       </div>
     </div>
   )

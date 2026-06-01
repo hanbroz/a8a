@@ -1,0 +1,136 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8">
+  <title>a8a 다중 에이전트 교차 검토 보고서</title>
+  <style>
+    body {
+      margin: 0;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Noto Sans KR", sans-serif;
+      background: #f6f8fa;
+      color: #1f2328;
+      line-height: 1.65;
+    }
+    main {
+      max-width: 1040px;
+      margin: 0 auto;
+      padding: 40px 28px 72px;
+    }
+    h1 {
+      margin: 0 0 8px;
+      font-size: 28px;
+    }
+    h2 {
+      margin-top: 32px;
+      border-bottom: 1px solid #d0d7de;
+      padding-bottom: 8px;
+      font-size: 20px;
+    }
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      background: #fff;
+      border: 1px solid #d0d7de;
+      border-radius: 8px;
+      overflow: hidden;
+    }
+    th, td {
+      border-bottom: 1px solid #d0d7de;
+      padding: 10px 12px;
+      text-align: left;
+      vertical-align: top;
+      font-size: 14px;
+    }
+    th {
+      background: #f0f3f6;
+      font-weight: 700;
+    }
+    tr:last-child td {
+      border-bottom: 0;
+    }
+    code {
+      background: #eef1f4;
+      border-radius: 4px;
+      padding: 2px 5px;
+      font-family: Consolas, "SFMono-Regular", monospace;
+      font-size: 13px;
+    }
+    .meta {
+      color: #57606a;
+      margin-bottom: 24px;
+    }
+    .decision {
+      border-left: 4px solid #0969da;
+      background: #fff;
+      padding: 12px 16px;
+      margin: 12px 0;
+    }
+    .done { color: #1a7f37; font-weight: 700; }
+    .defer { color: #9a6700; font-weight: 700; }
+  </style>
+</head>
+<body>
+<main>
+  <h1>a8a 다중 에이전트 교차 검토 보고서</h1>
+  <div class="meta">작성일: 2026-05-27 · 범위: Main/DB/IPC, Renderer 워크플로우, 문서/설정/빌드</div>
+
+  <h2>검토 방식</h2>
+  <p>세 개의 독립 검토 관점으로 코드를 확인했습니다. 내부 추론 과정은 기록하지 않고, 재현 가능한 발견 사항과 조치만 정리했습니다.</p>
+  <table>
+    <thead>
+      <tr><th>검토 관점</th><th>주요 범위</th><th>결론</th></tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td>메인/DB/IPC</td>
+        <td><code>src/main</code>, <code>src/preload</code>, IPC 경계</td>
+        <td>고아 데이터, 모듈 배치 검증, 엣지 검증, 파일 저장 제한, preload 노출 범위를 수정했습니다.</td>
+      </tr>
+      <tr>
+        <td>렌더러 워크플로우</td>
+        <td><code>App.tsx</code>, 캔버스, API 실행, 리포트</td>
+        <td>실행 환경 기준, 순환 연결, 단일 입력 정책, API 실패 후 End 리포트 흐름을 수정했습니다.</td>
+      </tr>
+      <tr>
+        <td>문서/설정</td>
+        <td>문서 언어, 타입 검사, 빌드 설정, 실행 스크립트</td>
+        <td>한국어 문서 정책과 타입 검증을 정리하고, 패키징 설정과 줄바꿈 정책을 추가했습니다.</td>
+      </tr>
+    </tbody>
+  </table>
+
+  <h2>의사결정 사항</h2>
+  <div class="decision">
+    <strong>모듈 삭제 정책</strong>
+    <p><span class="done">결정:</span> 현재 UI 문구와 구현 방향을 유지해, 사이드바에서 모듈 원본을 삭제하면 해당 모듈을 사용하는 캔버스 노드 인스턴스도 함께 삭제합니다. 대신 DB에서 관련 엣지를 먼저 삭제해 고아 연결선을 남기지 않도록 했습니다.</p>
+  </div>
+  <div class="decision">
+    <strong>워크플로우 연결 모델</strong>
+    <p><span class="done">결정:</span> 현재 실행기는 단일 입력 노드 흐름을 기준으로 동작하므로, 노드 하나에 입력 연결 하나만 허용합니다. 다중 입력 DAG 실행 모델은 후속 기능으로 분리합니다.</p>
+  </div>
+  <div class="decision">
+    <strong>API 실패 후 리포트 생성</strong>
+    <p><span class="done">결정:</span> API 노드가 실패하면 이후 업무 노드는 중단하되, 연결된 End 노드로 이동해 실패 로그가 포함된 리포트를 생성할 수 있게 했습니다.</p>
+  </div>
+  <div class="decision">
+    <strong>사용자 스크립트 격리</strong>
+    <p><span class="defer">보류:</span> Pre/Post 스크립트는 현재 로컬 신뢰 실행 모델을 유지합니다. Worker 또는 별도 샌드박스 격리는 보안 설계가 필요한 후속 과제로 남겼습니다.</p>
+  </div>
+  <div class="decision">
+    <strong>계획 HTML 문서 처리</strong>
+    <p><span class="defer">보류:</span> 기존 계획 문서는 삭제하지 않았습니다. 대신 현재 아키텍처와 기술부채 문서를 최신 상태로 고쳤고, 계획 문서의 archive 이동 여부는 별도 정리 작업으로 남겼습니다.</p>
+  </div>
+
+  <h2>검증 결과</h2>
+  <table>
+    <thead>
+      <tr><th>명령</th><th>결과</th></tr>
+    </thead>
+    <tbody>
+      <tr><td><code>npx tsc -b --noEmit</code></td><td>통과</td></tr>
+      <tr><td><code>npm run build</code></td><td>통과</td></tr>
+    </tbody>
+  </table>
+</main>
+</body>
+</html>

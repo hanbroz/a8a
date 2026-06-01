@@ -2,7 +2,7 @@ import initSqlJs from 'sql.js'
 import type { Database } from 'sql.js'
 import { app } from 'electron'
 import { join } from 'path'
-import { readFileSync, writeFileSync, existsSync } from 'fs'
+import { existsSync, readFileSync, renameSync, openSync, writeSync, fsyncSync, closeSync } from 'fs'
 import { randomUUID } from 'crypto'
 
 let db: Database
@@ -24,11 +24,14 @@ function wasmDir(): string {
 
 function queryAll<T extends object>(sql: string, params: (string | number | null)[] = []): T[] {
   const stmt = db.prepare(sql)
-  stmt.bind(params)
-  const rows: T[] = []
-  while (stmt.step()) rows.push(stmt.getAsObject() as T)
-  stmt.free()
-  return rows
+  try {
+    stmt.bind(params)
+    const rows: T[] = []
+    while (stmt.step()) rows.push(stmt.getAsObject() as T)
+    return rows
+  } finally {
+    stmt.free()
+  }
 }
 
 function queryOne<T extends object>(sql: string, params: (string | number | null)[] = []): T | null {
@@ -36,7 +39,68 @@ function queryOne<T extends object>(sql: string, params: (string | number | null
 }
 
 function save(): void {
-  writeFileSync(dbPath(), Buffer.from(db.export()))
+  const path = dbPath()
+  const tmpPath = `${path}.tmp`
+  // 임시 파일에 쓰고 fsync로 디스크에 강제 반영한 뒤 원자적으로 교체한다.
+  // fsync가 없으면 rename은 반영됐는데 데이터 블록은 미반영된 채 크래시가 나
+  // a8a.db가 0바이트/잘린 상태로 남아 전체 DB가 유실될 수 있다.
+  const fd = openSync(tmpPath, 'w')
+  try {
+    writeSync(fd, Buffer.from(db.export()))
+    fsyncSync(fd)
+  } finally {
+    closeSync(fd)
+  }
+  renameSync(tmpPath, path)
+}
+
+function withTransaction<T>(work: () => T): T {
+  db.run('BEGIN')
+  try {
+    const result = work()
+    db.run('COMMIT')
+    return result
+  } catch (err) {
+    db.run('ROLLBACK')
+    throw err
+  }
+}
+
+function ensureProjectExists(projectId: string): { id: string; workspace_id: string } {
+  const project = queryOne<{ id: string; workspace_id: string }>(
+    'SELECT id, workspace_id FROM projects WHERE id = ?',
+    [projectId]
+  )
+  if (!project) throw new Error(`Project ${projectId} not found`)
+  return project
+}
+
+function ensureWorkspaceExists(workspaceId: string): void {
+  const workspace = queryOne<{ id: string }>('SELECT id FROM workspaces WHERE id = ?', [workspaceId])
+  if (!workspace) throw new Error(`Workspace ${workspaceId} not found`)
+}
+
+function edgeWouldCreateCycle(projectId: string, sourceNodeId: string, targetNodeId: string): boolean {
+  const rows = queryAll<{ source_node_id: string; target_node_id: string }>(
+    'SELECT source_node_id, target_node_id FROM edges WHERE project_id = ?',
+    [projectId]
+  )
+  const stack = [targetNodeId]
+  const visited = new Set<string>()
+  while (stack.length > 0) {
+    const current = stack.pop()!
+    if (current === sourceNodeId) return true
+    if (visited.has(current)) continue
+    visited.add(current)
+    rows
+      .filter(e => e.source_node_id === current)
+      .forEach(e => stack.push(e.target_node_id))
+  }
+  return false
+}
+
+function allowsMultipleIncoming(type: string): boolean {
+  return type === 'api' || type === 'branch'
 }
 
 // ── Init ──────────────────────────────────────────
@@ -101,7 +165,8 @@ function createSchema(): void {
       id             TEXT PRIMARY KEY,
       project_id     TEXT NOT NULL,
       source_node_id TEXT NOT NULL,
-      target_node_id TEXT NOT NULL
+      target_node_id TEXT NOT NULL,
+      source_port    TEXT
     );
   `)
   try {
@@ -135,9 +200,15 @@ function createSchema(): void {
   try {
     db.run("ALTER TABLE modules ADD COLUMN is_common INTEGER DEFAULT 0")
   } catch { /* column already exists */ }
+  try {
+    db.run("ALTER TABLE modules ADD COLUMN sort INTEGER DEFAULT 0")
+  } catch { /* column already exists */ }
   // Node module_id migration
   try {
     db.run("ALTER TABLE nodes ADD COLUMN module_id TEXT")
+  } catch { /* column already exists */ }
+  try {
+    db.run("ALTER TABLE edges ADD COLUMN source_port TEXT")
   } catch { /* column already exists */ }
   // Remove legacy 'name' NOT NULL column from modules if it exists
   try {
@@ -186,8 +257,10 @@ export function listWorkspaces(): WsRow[] {
 export function createWorkspace(name: string, description = ''): WsRow {
   const id = randomUUID()
   const envId = randomUUID()
-  db.run('INSERT INTO workspaces (id, name, description) VALUES (?, ?, ?)', [id, name, description])
-  db.run('INSERT INTO environments (id, workspace_id, name, is_base) VALUES (?, ?, ?, ?)', [envId, id, 'BASE', 1])
+  withTransaction(() => {
+    db.run('INSERT INTO workspaces (id, name, description) VALUES (?, ?, ?)', [id, name, description])
+    db.run('INSERT INTO environments (id, workspace_id, name, is_base) VALUES (?, ?, ?, ?)', [envId, id, 'BASE', 1])
+  })
   save()
   return { id, name, description }
 }
@@ -198,11 +271,25 @@ export function updateWorkspace(id: string, name: string, description: string): 
 }
 
 export function deleteWorkspace(id: string): void {
-  const envIds = queryAll<{ id: string }>('SELECT id FROM environments WHERE workspace_id = ?', [id])
-  envIds.forEach(e => db.run('DELETE FROM env_vars WHERE environment_id = ?', [e.id]))
-  db.run('DELETE FROM environments WHERE workspace_id = ?', [id])
-  db.run('DELETE FROM projects WHERE workspace_id = ?', [id])
-  db.run('DELETE FROM workspaces WHERE id = ?', [id])
+  withTransaction(() => {
+    const projectIds = queryAll<{ id: string }>('SELECT id FROM projects WHERE workspace_id = ?', [id])
+    projectIds.forEach(p => {
+      db.run('DELETE FROM edges WHERE project_id = ?', [p.id])
+      db.run('DELETE FROM nodes WHERE project_id = ?', [p.id])
+    })
+    const moduleIds = queryAll<{ id: string }>('SELECT id FROM modules WHERE workspace_id = ?', [id])
+    moduleIds.forEach(m => {
+      const linkedNodeIds = queryAll<{ id: string }>('SELECT id FROM nodes WHERE module_id = ?', [m.id])
+      linkedNodeIds.forEach(n => db.run('DELETE FROM edges WHERE source_node_id = ? OR target_node_id = ?', [n.id, n.id]))
+      db.run('DELETE FROM nodes WHERE module_id = ?', [m.id])
+    })
+    const envIds = queryAll<{ id: string }>('SELECT id FROM environments WHERE workspace_id = ?', [id])
+    envIds.forEach(e => db.run('DELETE FROM env_vars WHERE environment_id = ?', [e.id]))
+    db.run('DELETE FROM modules WHERE workspace_id = ?', [id])
+    db.run('DELETE FROM environments WHERE workspace_id = ?', [id])
+    db.run('DELETE FROM projects WHERE workspace_id = ?', [id])
+    db.run('DELETE FROM workspaces WHERE id = ?', [id])
+  })
   save()
 }
 
@@ -229,22 +316,32 @@ export function listEnvironments(workspaceId: string): EnvRow[] {
 }
 
 export function upsertEnvironment(workspaceId: string, env: EnvRow): void {
-  const exists = queryOne('SELECT id FROM environments WHERE id = ?', [env.id])
-  if (exists) {
-    db.run('UPDATE environments SET name = ?, color = ?, initial = ? WHERE id = ?', [env.name, env.color, env.initial, env.id])
-  } else {
-    db.run(
-      'INSERT INTO environments (id, workspace_id, name, is_base, color, initial) VALUES (?, ?, ?, ?, ?, ?)',
-      [env.id, workspaceId, env.name, env.isBase ? 1 : 0, env.color, env.initial]
+  ensureWorkspaceExists(workspaceId)
+  withTransaction(() => {
+    const exists = queryOne<{ workspace_id: string; is_base: number }>(
+      'SELECT workspace_id, is_base FROM environments WHERE id = ?',
+      [env.id]
     )
-  }
-  db.run('DELETE FROM env_vars WHERE environment_id = ?', [env.id])
-  env.vars.forEach((v, i) =>
-    db.run(
-      'INSERT INTO env_vars (id, environment_id, key, value, enabled, sort) VALUES (?, ?, ?, ?, ?, ?)',
-      [v.id, env.id, v.key, v.value, v.enabled ? 1 : 0, i]
+    if (exists && exists.workspace_id !== workspaceId) {
+      throw new Error('다른 워크스페이스의 환경은 수정할 수 없습니다.')
+    }
+    if (exists) {
+      const name = exists.is_base === 1 ? 'BASE' : env.name
+      db.run('UPDATE environments SET name = ?, color = ?, initial = ? WHERE id = ?', [name, env.color, env.initial, env.id])
+    } else {
+      db.run(
+        'INSERT INTO environments (id, workspace_id, name, is_base, color, initial) VALUES (?, ?, ?, ?, ?, ?)',
+        [env.id, workspaceId, env.name, env.isBase ? 1 : 0, env.color, env.initial]
+      )
+    }
+    db.run('DELETE FROM env_vars WHERE environment_id = ?', [env.id])
+    env.vars.forEach((v, i) =>
+      db.run(
+        'INSERT INTO env_vars (id, environment_id, key, value, enabled, sort) VALUES (?, ?, ?, ?, ?, ?)',
+        [v.id, env.id, v.key, v.value, v.enabled ? 1 : 0, i]
+      )
     )
-  )
+  })
   save()
 }
 
@@ -265,10 +362,13 @@ export function listProjects(workspaceId: string): ProjectRow[] {
 }
 
 export function createProject(workspaceId: string, name: string, description: string): ProjectRow {
+  ensureWorkspaceExists(workspaceId)
   const id = randomUUID()
-  db.run('INSERT INTO projects (id, workspace_id, name, description) VALUES (?, ?, ?, ?)', [id, workspaceId, name, description])
-  db.run('INSERT INTO nodes (id, project_id, type, label, x, y) VALUES (?, ?, ?, ?, ?, ?)', [randomUUID(), id, 'start', 'Start', 80, 160])
-  db.run('INSERT INTO nodes (id, project_id, type, label, x, y) VALUES (?, ?, ?, ?, ?, ?)', [randomUUID(), id, 'end', 'End', 520, 160])
+  withTransaction(() => {
+    db.run('INSERT INTO projects (id, workspace_id, name, description) VALUES (?, ?, ?, ?)', [id, workspaceId, name, description])
+    db.run('INSERT INTO nodes (id, project_id, type, label, x, y) VALUES (?, ?, ?, ?, ?, ?)', [randomUUID(), id, 'start', 'Start', 80, 160])
+    db.run('INSERT INTO nodes (id, project_id, type, label, x, y) VALUES (?, ?, ?, ?, ?, ?)', [randomUUID(), id, 'end', 'End', 520, 160])
+  })
   save()
   return { id, name, description }
 }
@@ -279,18 +379,58 @@ export function updateProject(id: string, name: string, description: string): vo
 }
 
 export function deleteProject(id: string): void {
-  db.run('DELETE FROM edges WHERE project_id = ?', [id])
-  db.run('DELETE FROM nodes WHERE project_id = ?', [id])
-  db.run('DELETE FROM projects WHERE id = ?', [id])
+  withTransaction(() => {
+    db.run('DELETE FROM edges WHERE project_id = ?', [id])
+    db.run('DELETE FROM nodes WHERE project_id = ?', [id])
+    db.run('DELETE FROM projects WHERE id = ?', [id])
+  })
   save()
 }
 
 // ── Node ──────────────────────────────────────────
-export type NodeRow = { id: string; projectId: string; type: string; label: string; x: number; y: number; config: string; moduleId: string | null }
+export type NodeRow = {
+  id: string
+  projectId: string
+  type: string
+  label: string
+  displayLabel: string
+  moduleLabel: string | null
+  x: number
+  y: number
+  config: string
+  moduleId: string | null
+}
+
+function mergeNodeModuleConfig(moduleConfig: string | null, nodeConfig: string | null): string {
+  const base = moduleConfig ?? ''
+  const override = nodeConfig ?? ''
+  if (!override.trim()) return base
+  if (!base.trim()) return override
+  try {
+    const baseJson = JSON.parse(base) as unknown
+    const overrideJson = JSON.parse(override) as unknown
+    if (
+      baseJson &&
+      overrideJson &&
+      typeof baseJson === 'object' &&
+      typeof overrideJson === 'object' &&
+      !Array.isArray(baseJson) &&
+      !Array.isArray(overrideJson)
+    ) {
+      return JSON.stringify({ ...(baseJson as Record<string, unknown>), ...(overrideJson as Record<string, unknown>) })
+    }
+  } catch {
+    return override
+  }
+  return override
+}
 
 function ensureDefaultNodes(projectId: string): void {
-  db.run('INSERT INTO nodes (id, project_id, type, label, x, y) VALUES (?, ?, ?, ?, ?, ?)', [randomUUID(), projectId, 'start', 'Start', 80, 160])
-  db.run('INSERT INTO nodes (id, project_id, type, label, x, y) VALUES (?, ?, ?, ?, ?, ?)', [randomUUID(), projectId, 'end', 'End', 520, 160])
+  ensureProjectExists(projectId)
+  withTransaction(() => {
+    db.run('INSERT INTO nodes (id, project_id, type, label, x, y) VALUES (?, ?, ?, ?, ?, ?)', [randomUUID(), projectId, 'start', 'Start', 80, 160])
+    db.run('INSERT INTO nodes (id, project_id, type, label, x, y) VALUES (?, ?, ?, ?, ?, ?)', [randomUUID(), projectId, 'end', 'End', 520, 160])
+  })
   save()
 }
 
@@ -313,19 +453,22 @@ export function listNodes(projectId: string): NodeRow[] {
     id: r.id,
     projectId: r.project_id,
     type: r.module_id && r.mod_type ? r.mod_type : r.type,
-    label: r.module_id && r.mod_label != null ? r.mod_label : r.label,
+    label: r.label.trim() ? r.label : (r.module_id && r.mod_label != null ? r.mod_label : r.label),
+    displayLabel: r.label,
+    moduleLabel: r.mod_label ?? null,
     x: r.x,
     y: r.y,
-    config: r.module_id && r.mod_config != null ? r.mod_config : r.config,
+    config: r.module_id && r.mod_config != null ? mergeNodeModuleConfig(r.mod_config, r.config) : r.config,
     moduleId: r.module_id ?? null
   }))
 }
 
 export function createNode(projectId: string, type: string, label: string, x: number, y: number): NodeRow {
+  ensureProjectExists(projectId)
   const id = randomUUID()
   db.run('INSERT INTO nodes (id, project_id, type, label, x, y, config) VALUES (?, ?, ?, ?, ?, ?, ?)', [id, projectId, type, label, x, y, ''])
   save()
-  return { id, projectId, type, label, x, y, config: '', moduleId: null }
+  return { id, projectId, type, label, displayLabel: label, moduleLabel: null, x, y, config: '', moduleId: null }
 }
 
 export function updateNodePosition(id: string, x: number, y: number): void {
@@ -344,26 +487,62 @@ export function updateNodeConfig(id: string, config: string): void {
 }
 
 export function deleteNode(id: string): void {
-  db.run('DELETE FROM edges WHERE source_node_id = ? OR target_node_id = ?', [id, id])
-  db.run('DELETE FROM nodes WHERE id = ?', [id])
+  withTransaction(() => {
+    db.run('DELETE FROM edges WHERE source_node_id = ? OR target_node_id = ?', [id, id])
+    db.run('DELETE FROM nodes WHERE id = ?', [id])
+  })
   save()
 }
 
 // ── Edge ──────────────────────────────────────────
-export type EdgeRow = { id: string; projectId: string; sourceNodeId: string; targetNodeId: string }
+export type EdgeRow = { id: string; projectId: string; sourceNodeId: string; targetNodeId: string; sourcePort: string | null }
 
 export function listEdges(projectId: string): EdgeRow[] {
-  return queryAll<{ id: string; project_id: string; source_node_id: string; target_node_id: string }>(
-    'SELECT id, project_id, source_node_id, target_node_id FROM edges WHERE project_id = ?',
+  return queryAll<{ id: string; project_id: string; source_node_id: string; target_node_id: string; source_port: string | null }>(
+    'SELECT id, project_id, source_node_id, target_node_id, source_port FROM edges WHERE project_id = ?',
     [projectId]
-  ).map(r => ({ id: r.id, projectId: r.project_id, sourceNodeId: r.source_node_id, targetNodeId: r.target_node_id }))
+  ).map(r => ({ id: r.id, projectId: r.project_id, sourceNodeId: r.source_node_id, targetNodeId: r.target_node_id, sourcePort: r.source_port ?? null }))
 }
 
-export function createEdge(projectId: string, sourceNodeId: string, targetNodeId: string): EdgeRow {
+export function createEdge(projectId: string, sourceNodeId: string, targetNodeId: string, sourcePort?: string | null): EdgeRow {
+  if (sourceNodeId === targetNodeId) throw new Error('같은 노드끼리는 연결할 수 없습니다.')
+  const endpoints = queryAll<{ id: string; project_id: string; type: string }>(
+    'SELECT id, project_id, type FROM nodes WHERE id IN (?, ?)',
+    [sourceNodeId, targetNodeId]
+  )
+  const source = endpoints.find(n => n.id === sourceNodeId)
+  const target = endpoints.find(n => n.id === targetNodeId)
+  if (!source || !target) throw new Error('연결할 노드를 찾을 수 없습니다.')
+  if (source.project_id !== projectId || target.project_id !== projectId) {
+    throw new Error('같은 프로젝트의 노드만 연결할 수 있습니다.')
+  }
+  if (source.type === 'end') throw new Error('End 노드에서는 연결을 시작할 수 없습니다.')
+  if (target.type === 'start') throw new Error('Start 노드로는 연결할 수 없습니다.')
+  const normalizedSourcePort = source.type === 'branch' ? (sourcePort === 'true' || sourcePort === 'false' ? sourcePort : 'true') : null
+  const existing = queryOne<{ id: string; project_id: string; source_node_id: string; target_node_id: string; source_port: string | null }>(
+    'SELECT id, project_id, source_node_id, target_node_id, source_port FROM edges WHERE project_id = ? AND source_node_id = ? AND target_node_id = ?',
+    [projectId, sourceNodeId, targetNodeId]
+  )
+  if (existing) {
+    return { id: existing.id, projectId: existing.project_id, sourceNodeId: existing.source_node_id, targetNodeId: existing.target_node_id, sourcePort: existing.source_port ?? null }
+  }
+  const inbound = queryOne<{ id: string }>(
+    'SELECT id FROM edges WHERE project_id = ? AND target_node_id = ?',
+    [projectId, targetNodeId]
+  )
+  if (!allowsMultipleIncoming(target.type) && inbound) throw new Error('한 노드에는 하나의 입력 연결만 허용됩니다.')
+  const outbound = queryOne<{ id: string }>(
+    'SELECT id FROM edges WHERE project_id = ? AND source_node_id = ?',
+    [projectId, sourceNodeId]
+  )
+  if (source.type === 'start' && outbound) throw new Error('Start 노드에는 하나의 출력 연결만 허용됩니다.')
+  if (edgeWouldCreateCycle(projectId, sourceNodeId, targetNodeId)) {
+    throw new Error('순환 연결은 만들 수 없습니다.')
+  }
   const id = randomUUID()
-  db.run('INSERT INTO edges (id, project_id, source_node_id, target_node_id) VALUES (?, ?, ?, ?)', [id, projectId, sourceNodeId, targetNodeId])
+  db.run('INSERT INTO edges (id, project_id, source_node_id, target_node_id, source_port) VALUES (?, ?, ?, ?, ?)', [id, projectId, sourceNodeId, targetNodeId, normalizedSourcePort])
   save()
-  return { id, projectId, sourceNodeId, targetNodeId }
+  return { id, projectId, sourceNodeId, targetNodeId, sourcePort: normalizedSourcePort }
 }
 
 export function deleteEdge(id: string): void {
@@ -373,6 +552,13 @@ export function deleteEdge(id: string): void {
 
 // ── Module ────────────────────────────────────────
 export type ModuleRow = { id: string; workspaceId: string | null; type: string; label: string; config: string; isCommon: boolean }
+
+function nextModuleSort(workspaceId: string | null, type: string, isCommon: boolean): number {
+  const row = workspaceId === null || isCommon
+    ? queryOne<{ max_sort: number | null }>('SELECT MAX(sort) as max_sort FROM modules WHERE workspace_id IS NULL AND is_common = 1 AND type = ?', [type])
+    : queryOne<{ max_sort: number | null }>('SELECT MAX(sort) as max_sort FROM modules WHERE workspace_id = ? AND is_common = 0 AND type = ?', [workspaceId, type])
+  return (row?.max_sort ?? -1) + 1
+}
 
 export function listModules(workspaceId: string): ModuleRow[] {
   const rows = queryAll<{ id: string; workspace_id: string | null; type: string; label: string; config: string; is_common: number }>(
@@ -391,14 +577,17 @@ export function listAllModules(): ModuleRow[] {
 
 export function createCommonModule(type: string, label: string, config: string): ModuleRow {
   const id = randomUUID()
-  db.run('INSERT INTO modules (id, workspace_id, type, label, config, is_common) VALUES (?, NULL, ?, ?, ?, 1)', [id, type, label, config])
+  const sort = nextModuleSort(null, type, true)
+  db.run('INSERT INTO modules (id, workspace_id, type, label, config, is_common, sort) VALUES (?, NULL, ?, ?, ?, 1, ?)', [id, type, label, config, sort])
   save()
   return { id, workspaceId: null, type, label, config, isCommon: true }
 }
 
 export function createModule(workspaceId: string, type: string, label: string, config: string): ModuleRow {
+  ensureWorkspaceExists(workspaceId)
   const id = randomUUID()
-  db.run('INSERT INTO modules (id, workspace_id, type, label, config, is_common) VALUES (?, ?, ?, ?, ?, 0)', [id, workspaceId, type, label, config])
+  const sort = nextModuleSort(workspaceId, type, false)
+  db.run('INSERT INTO modules (id, workspace_id, type, label, config, is_common, sort) VALUES (?, ?, ?, ?, ?, 0, ?)', [id, workspaceId, type, label, config, sort])
   save()
   return { id, workspaceId, type, label, config, isCommon: false }
 }
@@ -409,31 +598,60 @@ export function updateModule(id: string, label: string, config: string): void {
 }
 
 export function setModuleCommon(id: string, isCommon: boolean, workspaceId: string): void {
+  const mod = queryOne<{ type: string }>('SELECT type FROM modules WHERE id = ?', [id])
+  if (!mod) throw new Error(`Module ${id} not found`)
   if (isCommon) {
-    db.run('UPDATE modules SET is_common = 1, workspace_id = NULL WHERE id = ?', [id])
+    db.run('UPDATE modules SET is_common = 1, workspace_id = NULL, sort = ? WHERE id = ?', [nextModuleSort(null, mod.type, true), id])
   } else {
-    db.run('UPDATE modules SET is_common = 0, workspace_id = ? WHERE id = ?', [workspaceId, id])
+    ensureWorkspaceExists(workspaceId)
+    db.run('UPDATE modules SET is_common = 0, workspace_id = ?, sort = ? WHERE id = ?', [workspaceId, nextModuleSort(workspaceId, mod.type, false), id])
   }
   save()
 }
 
+export function reorderCommonModules(type: string, orderedIds: string[]): void {
+  const rows = queryAll<{ id: string }>(
+    'SELECT id FROM modules WHERE workspace_id IS NULL AND is_common = 1 AND type = ? ORDER BY sort, rowid',
+    [type]
+  )
+  const currentIds = rows.map(row => row.id)
+  const currentSet = new Set(currentIds)
+  if (orderedIds.length !== currentIds.length || orderedIds.some(id => !currentSet.has(id))) {
+    throw new Error('같은 카테고리의 공통 모듈 안에서만 순서를 변경할 수 있습니다.')
+  }
+  withTransaction(() => {
+    orderedIds.forEach((id, index) => {
+      db.run('UPDATE modules SET sort = ? WHERE id = ?', [index, id])
+    })
+  })
+  save()
+}
+
 export function deleteModule(id: string): void {
-  db.run('DELETE FROM nodes WHERE module_id = ?', [id])
-  db.run('DELETE FROM modules WHERE id = ?', [id])
+  withTransaction(() => {
+    const nodeIds = queryAll<{ id: string }>('SELECT id FROM nodes WHERE module_id = ?', [id])
+    nodeIds.forEach(n => db.run('DELETE FROM edges WHERE source_node_id = ? OR target_node_id = ?', [n.id, n.id]))
+    db.run('DELETE FROM nodes WHERE module_id = ?', [id])
+    db.run('DELETE FROM modules WHERE id = ?', [id])
+  })
   save()
 }
 
 export function createNodeFromModule(projectId: string, moduleId: string, x: number, y: number): NodeRow {
-  const mod = queryOne<{ type: string; label: string; config: string }>(
-    'SELECT type, label, COALESCE(config, \'\') as config FROM modules WHERE id = ?',
+  const project = ensureProjectExists(projectId)
+  const mod = queryOne<{ workspace_id: string | null; is_common: number; type: string; label: string; config: string }>(
+    'SELECT workspace_id, is_common, type, label, COALESCE(config, \'\') as config FROM modules WHERE id = ?',
     [moduleId]
   )
   if (!mod) throw new Error(`Module ${moduleId} not found`)
+  if (mod.is_common !== 1 && mod.workspace_id !== project.workspace_id) {
+    throw new Error('다른 워크스페이스의 모듈은 이 프로젝트에 배치할 수 없습니다.')
+  }
   const id = randomUUID()
   db.run(
     'INSERT INTO nodes (id, project_id, type, label, x, y, config, module_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
-    [id, projectId, mod.type, mod.label, x, y, '', moduleId]
+    [id, projectId, mod.type, '', x, y, '', moduleId]
   )
   save()
-  return { id, projectId, type: mod.type, label: mod.label, x, y, config: mod.config, moduleId }
+  return { id, projectId, type: mod.type, label: mod.label, displayLabel: '', moduleLabel: mod.label, x, y, config: mod.config, moduleId }
 }

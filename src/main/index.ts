@@ -16,6 +16,8 @@ function createWindow(): void {
     titleBarStyle: 'default',
     webPreferences: {
       preload: join(__dirname, '../preload/index.js'),
+      contextIsolation: true,
+      nodeIntegration: false,
       sandbox: false
     }
   })
@@ -31,7 +33,14 @@ function createWindow(): void {
   })
 
   mainWindow.webContents.setWindowOpenHandler((details) => {
-    shell.openExternal(details.url)
+    try {
+      const url = new URL(details.url)
+      if (url.protocol === 'http:' || url.protocol === 'https:') {
+        shell.openExternal(details.url)
+      }
+    } catch {
+      // 잘못된 URL은 외부 브라우저로 전달하지 않습니다.
+    }
     return { action: 'deny' }
   })
 

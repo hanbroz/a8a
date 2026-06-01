@@ -19,10 +19,21 @@ export interface ReportApiDetail {
   responseText?: string
 }
 
+export interface ReportScriptConsoleEntry {
+  level: string
+  message: string
+  timestamp: string
+}
+
+export interface ReportScriptLogs {
+  pre: ReportScriptConsoleEntry[]
+  post: ReportScriptConsoleEntry[]
+}
+
 export interface ReportNode {
   nodeId: string
   label: string
-  type: 'start' | 'end' | 'data' | 'select' | 'api'
+  type: 'start' | 'end' | 'data' | 'select' | 'api' | 'branch'
   status: 'success' | 'error' | 'skip' | 'running'
   input: unknown
   output?: unknown
@@ -31,6 +42,13 @@ export interface ReportNode {
   apiDetail?: ReportApiDetail
   preScript?: string
   postScript?: string
+  scriptLogs?: ReportScriptLogs
+}
+
+export interface ReportVariable {
+  kind: 'env' | 'input'
+  name: string
+  value: unknown
 }
 
 export interface ReportInput {
@@ -39,6 +57,7 @@ export interface ReportInput {
   // sections are emitted only for nodes in selectedModuleIds.
   nodes: ReportNode[]
   selectedModuleIds: Set<string>
+  variables?: ReportVariable[]
 }
 
 function escapeHtml(s: string): string {
@@ -59,6 +78,7 @@ function formatDuration(ms?: number): string {
 const TYPE_COLOR: Record<string, string> = {
   data: '#1f6feb',
   select: '#8957e5',
+  branch: '#d29922',
   api: '#3fb950',
   start: '#6e7781',
   end: '#6e7781',
@@ -155,6 +175,37 @@ function kvTable(rows: Array<[string, string]>): string {
 </table>`
 }
 
+function formatVariableValue(value: unknown): string {
+  if (value === undefined) return '(undefined)'
+  if (value === null) return 'null'
+  if (typeof value === 'string') return value
+  if (typeof value === 'number' || typeof value === 'boolean' || typeof value === 'bigint') return String(value)
+  try { return JSON.stringify(value, null, 2) } catch { return String(value) }
+}
+
+function hasReportValue(value: unknown): boolean {
+  return value !== null && value !== undefined
+}
+
+function htmlValueSection(title: string, value: unknown): string {
+  return hasReportValue(value) ? `<h3>${escapeHtml(title)}</h3>${jsonViewerBlock(value)}` : ''
+}
+
+function htmlScriptLogSection(title: string, logs?: ReportScriptConsoleEntry[]): string {
+  if (!logs || logs.length === 0) return ''
+  return `
+<h3>${escapeHtml(title)}</h3>
+<div class="script-log">
+  ${logs.map(log => `
+    <div class="script-log-row script-log-${escapeHtml(log.level)}">
+      <span class="script-log-time">${escapeHtml(new Date(log.timestamp).toLocaleTimeString('ko-KR', { hour12: false }))}</span>
+      <span class="script-log-level">${escapeHtml(log.level)}</span>
+      <pre>${escapeHtml(log.message)}</pre>
+    </div>
+  `).join('')}
+</div>`
+}
+
 function htmlNodeSection(n: ReportNode, index: number): string {
   const typeColor = TYPE_COLOR[n.type] || '#6e7781'
   const statusColor = STATUS_COLOR[n.status] || '#8b949e'
@@ -171,6 +222,9 @@ function htmlNodeSection(n: ReportNode, index: number): string {
 </div>`
 
   let body = ''
+
+  body += htmlValueSection('INPUT', n.input)
+  body += htmlValueSection('OUTPUT', n.output)
 
   if (n.type === 'api' && n.apiDetail) {
     const a = n.apiDetail
@@ -194,14 +248,10 @@ ${a.body && a.body.trim() ? `<h3>요청 바디</h3>${jsonViewerBlock(reqBodyJson
 
 ${a.responseText !== undefined ? `<h3>응답 바디</h3>${jsonViewerBlock(resBodyJson)}` : ''}
 `
-  } else if (n.type === 'data' || n.type === 'select') {
-    if (n.input !== null && n.input !== undefined) {
-      body += `<h3>INPUT</h3>${jsonViewerBlock(n.input)}`
-    }
-    if (n.output !== null && n.output !== undefined) {
-      body += `<h3>OUTPUT</h3>${jsonViewerBlock(n.output)}`
-    }
   }
+
+  body += htmlScriptLogSection('PRE REQUEST / INPUT CONSOLE', n.scriptLogs?.pre)
+  body += htmlScriptLogSection('POST RESPONSE CONSOLE', n.scriptLogs?.post)
 
   if (n.preScript && n.preScript.trim()) {
     body += `<h3>Pre Request 스크립트</h3><pre class="code-block">${escapeHtml(n.preScript)}</pre>`
@@ -216,9 +266,41 @@ ${a.responseText !== undefined ? `<h3>응답 바디</h3>${jsonViewerBlock(resBod
   return `<details class="node-section"><summary class="node-hd-summary">${headerBar}</summary><div class="node-body">${body}</div></details>`
 }
 
+function htmlVariablesSection(variables?: ReportVariable[]): string {
+  if (!variables || variables.length === 0) return ''
+  const rows = variables.map(variable => `
+    <tr>
+      <td><span class="var-kind var-kind-${escapeHtml(variable.kind)}">${variable.kind === 'env' ? 'ENV' : 'INPUT'}</span></td>
+      <th>${escapeHtml(variable.name)}</th>
+      <td><pre>${escapeHtml(formatVariableValue(variable.value))}</pre></td>
+    </tr>
+  `).join('')
+
+  return `
+<details class="node-section variable-section">
+  <summary class="node-hd-summary">
+    <div class="node-hd">
+      <span class="node-toggle"></span>
+      <span class="node-type-badge variable-badge">VARS</span>
+      <span class="node-label">사용된 변수</span>
+      <span class="node-duration">${variables.length}개</span>
+    </div>
+  </summary>
+  <div class="node-body">
+    <table class="variable-table">
+      <thead>
+        <tr><th>구분</th><th>변수명</th><th>최종 값</th></tr>
+      </thead>
+      <tbody>${rows}</tbody>
+    </table>
+  </div>
+</details>`
+}
+
 function buildHtml(input: ReportInput): string {
   const reportNodes = input.nodes.filter(n => input.selectedModuleIds.has(n.nodeId) && n.type !== 'start' && n.type !== 'end')
   const bodyHtml = reportNodes.map((n, i) => htmlNodeSection(n, i + 1)).join('')
+  const variablesHtml = htmlVariablesSection(input.variables)
 
   return `<!DOCTYPE html>
 <html lang="ko">
@@ -281,6 +363,28 @@ table.kv { border-collapse: collapse; width: 100%; font-size: 12px; }
 table.kv th { text-align: left; background: #f9fafb; color: #6e7781; font-weight: 600; padding: 6px 10px; border: 1px solid #d1d9e0; width: 200px; font-family: "JetBrains Mono", monospace; vertical-align: top; }
 table.kv td { padding: 6px 10px; border: 1px solid #d1d9e0; color: #1f2328; font-family: "JetBrains Mono", monospace; word-break: break-all; }
 
+.variable-section { margin-top: 28px; }
+.variable-badge { background: #6e778122; color: #6e7781; border-color: #6e778155; }
+.variable-table { border-collapse: collapse; width: 100%; font-size: 12px; }
+.variable-table th,
+.variable-table td { padding: 8px 10px; border: 1px solid #d1d9e0; text-align: left; vertical-align: top; }
+.variable-table thead th { background: #f9fafb; color: #6e7781; font-weight: 700; }
+.variable-table tbody th { width: 220px; color: #1f2328; font-family: "JetBrains Mono", monospace; font-weight: 700; word-break: break-all; }
+.variable-table td:first-child { width: 72px; }
+.variable-table pre { margin: 0; max-height: 260px; overflow: auto; white-space: pre-wrap; word-break: break-word; font-family: "JetBrains Mono", monospace; font-size: 12px; line-height: 1.5; color: #1f2328; }
+.var-kind { display: inline-flex; align-items: center; justify-content: center; min-width: 48px; height: 22px; padding: 0 8px; border-radius: 4px; font-size: 10px; font-weight: 700; border: 1px solid; }
+.var-kind-env { color: #3fb950; background: #3fb9501c; border-color: #3fb95055; }
+.var-kind-input { color: #8957e5; background: #8957e51c; border-color: #8957e555; }
+
+.script-log { border: 1px solid #d1d9e0; border-radius: 6px; overflow: hidden; background: #0f1720; }
+.script-log-row { display: grid; grid-template-columns: 90px 64px minmax(0, 1fr); gap: 10px; align-items: start; padding: 7px 10px; border-bottom: 1px solid #263241; font-family: "JetBrains Mono", monospace; font-size: 12px; line-height: 1.5; }
+.script-log-row:last-child { border-bottom: 0; }
+.script-log-time { color: #8b949e; white-space: nowrap; }
+.script-log-level { color: #58a6ff; font-weight: 700; text-transform: uppercase; }
+.script-log-warn .script-log-level { color: #d29922; }
+.script-log-error .script-log-level { color: #f85149; }
+.script-log-row pre { margin: 0; color: #c9d1d9; white-space: pre-wrap; word-break: break-word; font-family: inherit; font-size: inherit; line-height: inherit; }
+
 .code-block { background: #fff; border: 1px solid #d1d9e0; border-radius: 6px; padding: 10px 14px; font-family: "JetBrains Mono", monospace; font-size: 12px; line-height: 1.55; color: #1f2328; white-space: pre-wrap; max-height: 400px; overflow: auto; margin: 0; }
 .err-box { background: #fee2e2; border-left: 3px solid #f85149; padding: 10px 14px; border-radius: 4px; color: #7f1d1d; font-size: 13px; margin-top: 12px; }
 .empty { color: #6e7781; font-style: italic; font-size: 12px; padding: 6px 0; }
@@ -292,6 +396,7 @@ ${JSON_VIEWER_CSS}
   ${htmlHeader(input.meta)}
   ${htmlFlowDiagram(reportNodes)}
   ${bodyHtml}
+  ${variablesHtml}
 </div>
 <script>${JSON_VIEWER_JS}</script>
 </body>
@@ -433,6 +538,21 @@ function buildMarkdown(input: ReportInput): string {
     lines.push(mdNodeSection(n, i + 1))
     lines.push('')
   })
+
+  if (input.variables && input.variables.length > 0) {
+    lines.push('<details>')
+    lines.push('<summary>사용된 변수</summary>')
+    lines.push('')
+    lines.push('| 구분 | 변수명 | 최종 값 |')
+    lines.push('|---|---|---|')
+    for (const variable of input.variables) {
+      const value = formatVariableValue(variable.value).replace(/\|/g, '\\|').replace(/\n/g, '<br>')
+      lines.push(`| ${variable.kind === 'env' ? 'ENV' : 'INPUT'} | \`${variable.name.replace(/`/g, '\\`')}\` | ${value} |`)
+    }
+    lines.push('')
+    lines.push('</details>')
+    lines.push('')
+  }
 
   return lines.join('\n')
 }

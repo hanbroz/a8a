@@ -1,13 +1,16 @@
 import { useState, useRef, useCallback, useEffect } from 'react'
 import ExcelJS from 'exceljs'
-import { IcoTrash, IcoX } from '../Icon'
+import { IcoMaximize, IcoRestore, IcoTrash, IcoX } from '../Icon'
+import JsonMonacoEditor from './JsonMonacoEditor'
+import { useModalMaximize } from './useModalMaximize'
 
 interface Props {
   node: ApiNode
   isNew?: boolean
   initialInput?: string
-  onRun?: () => string
-  onSave: (nodeId: string, label: string, config: string) => Promise<void>
+  onRun?: () => string | Promise<string>
+  moduleLabel?: string
+  onSave: (nodeId: string, displayLabel: string, moduleLabel: string, config: string) => Promise<void>
   onDelete?: () => Promise<void>
   onClose: () => void
 }
@@ -102,7 +105,9 @@ interface ExcelInfo {
 
 export default function DataNodeModal({ node, isNew, initialInput, onRun, onSave, onDelete, onClose }: Props): JSX.Element {
   const initial = parseConfig(node.config)
-  const [label, setLabel] = useState(node.label)
+  const initialModuleLabel = node.moduleLabel ?? node.label
+  const [displayLabel, setDisplayLabel] = useState(node.displayLabel ?? (node.projectId ? node.label : ''))
+  const [moduleName, setModuleName] = useState(initialModuleLabel)
   const [outputJson, setOutputJson] = useState(initial.output)
   const [outputError, setOutputError] = useState(false)
   const [excelInfo, setExcelInfo] = useState<ExcelInfo | null>(null)
@@ -123,6 +128,7 @@ export default function DataNodeModal({ node, isNew, initialInput, onRun, onSave
     const h = Math.min(wh - 80, Math.max(480, Math.round(wh * 0.8)))
     return { x: Math.round((ww - w) / 2), y: Math.round((wh - h) / 2), w, h }
   })
+  const { isMaximized, toggleMaximized } = useModalMaximize(rect, setRect)
 
   const dragRef = useRef<{ ox: number; oy: number } | null>(null)
   const resizeRef = useRef<{ dir: ResizeDir; ox: number; oy: number; rx: number; ry: number; rw: number; rh: number } | null>(null)
@@ -131,11 +137,23 @@ export default function DataNodeModal({ node, isNew, initialInput, onRun, onSave
   const [leftW, setLeftW] = useState(() => Math.round(rect.w / 3))
   const [rightW, setRightW] = useState(() => Math.round(rect.w / 3))
 
+  useEffect(() => {
+    const nextInitial = parseConfig(node.config)
+    setDisplayLabel(node.displayLabel ?? (node.projectId ? node.label : ''))
+    setModuleName(node.moduleLabel ?? node.label)
+    setOutputJson(nextInitial.output)
+    setOutputError(false)
+    setInputJson(initialInput ?? '')
+    setInputError(false)
+    setExcelInfo(null)
+  }, [node.id, node.label, node.displayLabel, node.moduleLabel, node.projectId, node.config, initialInput])
+
   const onHeaderDown = useCallback((e: React.MouseEvent) => {
+    if (isMaximized) return
     if ((e.target as HTMLElement).closest('button')) return
     e.preventDefault()
     dragRef.current = { ox: e.clientX - rect.x, oy: e.clientY - rect.y }
-  }, [rect])
+  }, [isMaximized, rect])
 
   const onResizeDown = useCallback((e: React.MouseEvent, dir: ResizeDir) => {
     e.preventDefault(); e.stopPropagation()
@@ -258,8 +276,17 @@ export default function DataNodeModal({ node, isNew, initialInput, onRun, onSave
 
   const handleSave = async () => {
     setSaving(true)
-    const config: DataConfig = { output: outputJson }
-    await onSave(node.id, label.trim() || 'Data', JSON.stringify(config))
+    const result = formatJson(outputJson)
+    if (result.error) {
+      setOutputJson(result.value)
+      setOutputError(result.error)
+      setSaving(false)
+      return
+    }
+    const config: DataConfig = { output: result.value }
+    const nextDisplayLabel = displayLabel.trim()
+    const nextModuleName = moduleName.trim() || nextDisplayLabel || 'Data'
+    await onSave(node.id, nextDisplayLabel, nextModuleName, JSON.stringify(config))
     setSaving(false); onClose()
   }
 
@@ -273,7 +300,7 @@ export default function DataNodeModal({ node, isNew, initialInput, onRun, onSave
         onChange={handleFileChange}
       />
 
-      <div className="dm-modal" style={{ left: rect.x, top: rect.y, width: rect.w, height: rect.h }}>
+      <div className={`dm-modal${isMaximized ? ' is-maximized' : ''}`} style={{ left: rect.x, top: rect.y, width: rect.w, height: rect.h }}>
         {RESIZE_DIRS.map(dir => (
           <div key={dir} className={`dm-resize-handle dm-resize-${dir}`} onMouseDown={e => onResizeDown(e, dir)} />
         ))}
@@ -286,7 +313,17 @@ export default function DataNodeModal({ node, isNew, initialInput, onRun, onSave
               <div className="dm-hd-icon"><DataIcon size={13} /></div>
               <span className="dm-hd-title">{isNew ? 'Data 모듈 추가' : 'Data 모듈 설정'}</span>
             </div>
-            <button className="btn ghost icon dm-close-btn" onClick={onClose}><IcoX size={13} /></button>
+            <div className="dm-hd-window-actions">
+              <button
+                className="btn ghost icon dm-window-btn"
+                onClick={toggleMaximized}
+                title={isMaximized ? '이전 크기로 복원' : '창 최대화'}
+                aria-label={isMaximized ? '이전 크기로 복원' : '창 최대화'}
+              >
+                {isMaximized ? <IcoRestore size={13} /> : <IcoMaximize size={13} />}
+              </button>
+              <button className="btn ghost icon dm-close-btn" onClick={onClose} title="닫기" aria-label="닫기"><IcoX size={13} /></button>
+            </div>
           </div>
 
           {/* 3-pane body */}
@@ -302,7 +339,11 @@ export default function DataNodeModal({ node, isNew, initialInput, onRun, onSave
                   {onRun && (
                     <button
                       className="btn ghost icon dm-format-btn dm-run-btn"
-                      onClick={() => { setInputJson(onRun()); setInputError(false) }}
+                      onClick={async () => {
+                        const result = await onRun()
+                        setInputJson(result)
+                        setInputError(false)
+                      }}
                       title="실행 — 연결된 상류 노드 데이터 가져오기"
                     >
                       <RunIcon />
@@ -314,12 +355,12 @@ export default function DataNodeModal({ node, isNew, initialInput, onRun, onSave
                 </div>
               </div>
               <div className="dm-pane-body">
-                <textarea
-                  className={`dm-json-area${inputError ? ' dm-json-area-error' : ''}`}
+                <JsonMonacoEditor
+                  path={`${node.id}/data-input.json`}
                   value={inputJson}
-                  onChange={e => { setInputJson(e.target.value); setInputError(false) }}
+                  onChange={next => { setInputJson(next); setInputError(false) }}
+                  error={inputError}
                   placeholder="{}"
-                  spellCheck={false}
                 />
               </div>
             </div>
@@ -335,7 +376,23 @@ export default function DataNodeModal({ node, isNew, initialInput, onRun, onSave
 
                 <div className="dm-field">
                   <label className="dm-field-label">모듈 이름</label>
-                  <input className="dm-input" value={label} onChange={e => setLabel(e.target.value)} placeholder="Data" autoFocus />
+                  <div className="module-name-row">
+                    <label className="module-name-cell">
+                      <span>표시이름</span>
+                      <input
+                        className="dm-input"
+                        value={displayLabel}
+                        onChange={e => setDisplayLabel(e.target.value)}
+                        placeholder={node.projectId ? (moduleName || 'Data') : '캔버스에서 설정'}
+                        disabled={!node.projectId}
+                        autoFocus={!!node.projectId}
+                      />
+                    </label>
+                    <label className="module-name-cell">
+                      <span>모듈 이름</span>
+                      <input className="dm-input" value={moduleName} onChange={e => setModuleName(e.target.value)} placeholder="Data" autoFocus={!node.projectId} />
+                    </label>
+                  </div>
                 </div>
 
                 {/* Excel upload — populates OUTPUT on success; info chip is local-only */}
@@ -405,12 +462,12 @@ export default function DataNodeModal({ node, isNew, initialInput, onRun, onSave
                 </div>
               </div>
               <div className="dm-pane-body">
-                <textarea
-                  className={`dm-json-area dm-json-area-output${outputError ? ' dm-json-area-error' : ''}`}
+                <JsonMonacoEditor
+                  path={`${node.id}/data-output.json`}
                   value={outputJson}
-                  onChange={e => { setOutputJson(e.target.value); setOutputError(false) }}
+                  onChange={next => { setOutputJson(next); setOutputError(false) }}
+                  error={outputError}
                   placeholder="[]"
-                  spellCheck={false}
                 />
               </div>
             </div>

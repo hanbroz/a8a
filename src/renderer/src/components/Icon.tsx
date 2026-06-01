@@ -110,6 +110,22 @@ export const IcoX = (p: IconProps): JSX.Element => (
   </Icon>
 )
 
+export const IcoMaximize = (p: IconProps): JSX.Element => (
+  <Icon {...p}>
+    <path d="M8 3H5a2 2 0 0 0-2 2v3" />
+    <path d="M16 3h3a2 2 0 0 1 2 2v3" />
+    <path d="M21 16v3a2 2 0 0 1-2 2h-3" />
+    <path d="M8 21H5a2 2 0 0 1-2-2v-3" />
+  </Icon>
+)
+
+export const IcoRestore = (p: IconProps): JSX.Element => (
+  <Icon {...p}>
+    <rect x="4" y="8" width="12" height="12" rx="2" />
+    <path d="M8 4h10a2 2 0 0 1 2 2v10" />
+  </Icon>
+)
+
 export const IcoReset = (p: IconProps): JSX.Element => (
   <Icon {...p}>
     <path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8" />

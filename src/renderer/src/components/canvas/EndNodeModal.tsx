@@ -1,5 +1,6 @@
 import { useState, useRef, useCallback, useEffect, useMemo } from 'react'
-import { IcoX } from '../Icon'
+import { IcoMaximize, IcoRestore, IcoX } from '../Icon'
+import { useModalMaximize } from './useModalMaximize'
 
 interface Props {
   node: ApiNode
@@ -16,17 +17,21 @@ const MIN_H = 480
 
 const DEFAULT_TEMPLATE = '{env}_{ws}_{project}_{ts}'
 
-function parseConfig(raw: string): EndNodeConfig {
+type ParsedEndConfig = EndNodeConfig & { selectedModuleIdsExplicit: boolean }
+
+function parseConfig(raw: string): ParsedEndConfig {
   try {
     const p = JSON.parse(raw) as Partial<EndNodeConfig>
+    const selectedModuleIdsExplicit = Object.prototype.hasOwnProperty.call(p, 'selectedModuleIds')
     return {
       reportFormat: (['none', 'html', 'markdown'].includes(p.reportFormat as string) ? p.reportFormat : 'none') as EndNodeConfig['reportFormat'],
       savePath: typeof p.savePath === 'string' ? p.savePath : '',
       filenameTemplate: typeof p.filenameTemplate === 'string' && p.filenameTemplate ? p.filenameTemplate : DEFAULT_TEMPLATE,
       selectedModuleIds: Array.isArray(p.selectedModuleIds) ? p.selectedModuleIds : [],
+      selectedModuleIdsExplicit,
     }
   } catch {
-    return { reportFormat: 'none', savePath: '', filenameTemplate: DEFAULT_TEMPLATE, selectedModuleIds: [] }
+    return { reportFormat: 'none', savePath: '', filenameTemplate: DEFAULT_TEMPLATE, selectedModuleIds: [], selectedModuleIdsExplicit: false }
   }
 }
 
@@ -38,7 +43,7 @@ export default function EndNodeModal({ node, moduleNodes, onSave, onClose }: Pro
   const [filenameTemplate, setFilenameTemplate] = useState<string>(initial.filenameTemplate || DEFAULT_TEMPLATE)
   const [selectedIds, setSelectedIds] = useState<Set<string>>(() => {
     const allIds = moduleNodes.map(n => n.id)
-    if (initial.selectedModuleIds.length === 0) return new Set(allIds)
+    if (!initial.selectedModuleIdsExplicit) return new Set(allIds)
     return new Set(initial.selectedModuleIds.filter(id => allIds.includes(id)))
   })
   const [saving, setSaving] = useState(false)
@@ -58,15 +63,17 @@ export default function EndNodeModal({ node, moduleNodes, onSave, onClose }: Pro
     const h = Math.min(wh - 80, Math.max(540, Math.round(wh * 0.75)))
     return { x: Math.round((ww - w) / 2), y: Math.round((wh - h) / 2), w, h }
   })
+  const { isMaximized, toggleMaximized } = useModalMaximize(rect, setRect)
 
   const dragRef = useRef<{ ox: number; oy: number } | null>(null)
   const resizeRef = useRef<{ dir: ResizeDir; ox: number; oy: number; rx: number; ry: number; rw: number; rh: number } | null>(null)
 
   const onHeaderDown = useCallback((e: React.MouseEvent) => {
+    if (isMaximized) return
     if ((e.target as HTMLElement).closest('button')) return
     e.preventDefault()
     dragRef.current = { ox: e.clientX - rect.x, oy: e.clientY - rect.y }
-  }, [rect])
+  }, [isMaximized, rect])
 
   const onResizeDown = useCallback((e: React.MouseEvent, dir: ResizeDir) => {
     e.preventDefault(); e.stopPropagation()
@@ -146,7 +153,7 @@ export default function EndNodeModal({ node, moduleNodes, onSave, onClose }: Pro
 
   return (
     <div className="dm-overlay">
-      <div className="dm-modal" style={{ left: rect.x, top: rect.y, width: rect.w, height: rect.h }}>
+      <div className={`dm-modal${isMaximized ? ' is-maximized' : ''}`} style={{ left: rect.x, top: rect.y, width: rect.w, height: rect.h }}>
         {RESIZE_DIRS.map(dir => (
           <div key={dir} className={`dm-resize-handle dm-resize-${dir}`} onMouseDown={e => onResizeDown(e, dir)} />
         ))}
@@ -157,7 +164,17 @@ export default function EndNodeModal({ node, moduleNodes, onSave, onClose }: Pro
               <div className="dm-hd-icon" style={{ background: '#6e778122', color: '#6e7781' }}>■</div>
               <span className="dm-hd-title">End 노드 설정</span>
             </div>
-            <button className="btn ghost icon dm-close-btn" onClick={onClose}><IcoX size={13} /></button>
+            <div className="dm-hd-window-actions">
+              <button
+                className="btn ghost icon dm-window-btn"
+                onClick={toggleMaximized}
+                title={isMaximized ? '이전 크기로 복원' : '창 최대화'}
+                aria-label={isMaximized ? '이전 크기로 복원' : '창 최대화'}
+              >
+                {isMaximized ? <IcoRestore size={13} /> : <IcoMaximize size={13} />}
+              </button>
+              <button className="btn ghost icon dm-close-btn" onClick={onClose} title="닫기" aria-label="닫기"><IcoX size={13} /></button>
+            </div>
           </div>
 
           <div className="dm-body" style={{ flexDirection: 'column' }}>

@@ -1,5 +1,4 @@
 import { contextBridge, ipcRenderer } from 'electron'
-import { electronAPI } from '@electron-toolkit/preload'
 
 const api = {
   dialog: {
@@ -8,6 +7,8 @@ const api = {
   file: {
     write: (path: string, content: string): Promise<{ ok: true; path: string } | { ok: false; error: string }> =>
       ipcRenderer.invoke('file:write', path, content),
+    open: (path: string): Promise<{ ok: true } | { ok: false; error: string }> =>
+      ipcRenderer.invoke('file:open', path),
     downloadsDir: (): Promise<string> => ipcRenderer.invoke('file:downloads-dir')
   },
   workspace: {
@@ -34,6 +35,7 @@ const api = {
     create: (workspaceId: string, type: string, label: string, config: string): Promise<ApiModule> => ipcRenderer.invoke('mod:create', workspaceId, type, label, config),
     update: (id: string, label: string, config: string): Promise<void> => ipcRenderer.invoke('mod:update', id, label, config),
     setCommon: (id: string, isCommon: boolean, workspaceId: string): Promise<void> => ipcRenderer.invoke('mod:set-common', id, isCommon, workspaceId),
+    reorderCommon: (type: string, orderedIds: string[]): Promise<void> => ipcRenderer.invoke('mod:reorder-common', type, orderedIds),
     delete: (id: string): Promise<void> => ipcRenderer.invoke('mod:delete', id)
   },
   node: {
@@ -47,7 +49,7 @@ const api = {
   },
   edge: {
     list: (projectId: string): Promise<{ id: string; projectId: string; sourceNodeId: string; targetNodeId: string }[]> => ipcRenderer.invoke('edge:list', projectId),
-    create: (projectId: string, sourceNodeId: string, targetNodeId: string): Promise<{ id: string; projectId: string; sourceNodeId: string; targetNodeId: string }> => ipcRenderer.invoke('edge:create', projectId, sourceNodeId, targetNodeId),
+    create: (projectId: string, sourceNodeId: string, targetNodeId: string, sourcePort?: string | null): Promise<ApiEdge> => ipcRenderer.invoke('edge:create', projectId, sourceNodeId, targetNodeId, sourcePort),
     delete: (id: string): Promise<void> => ipcRenderer.invoke('edge:delete', id)
   },
   http: {
@@ -56,16 +58,8 @@ const api = {
   }
 }
 
-if (process.contextIsolated) {
-  try {
-    contextBridge.exposeInMainWorld('electron', electronAPI)
-    contextBridge.exposeInMainWorld('api', api)
-  } catch (error) {
-    console.error(error)
-  }
-} else {
-  // @ts-ignore
-  window.electron = electronAPI
-  // @ts-ignore
-  window.api = api
+if (!process.contextIsolated) {
+  throw new Error('BrowserWindow contextIsolation must be enabled.')
 }
+
+contextBridge.exposeInMainWorld('api', api)

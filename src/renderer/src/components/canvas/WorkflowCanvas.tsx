@@ -1,31 +1,50 @@
 import { useRef, useState, useCallback, useEffect } from 'react'
+import type { CSSProperties } from 'react'
 import { IcoPlay, IcoX } from '../Icon'
+import { parseBranchConfig } from '../../utils/branch'
 
 const NODE_W = 160
 const NODE_H = 52
 const DATA_NODE_W = 200
 const DATA_NODE_H = 72
 const SNAP_R = 20
+const MIN_ZOOM = 0.45
+const MAX_ZOOM = 1.8
+const GRID_SIZE = 10
+const AUTO_ARRANGE_PADDING = 80
+const TILE_GAP_X = 50
+const TILE_GAP_Y = 40
+type NodeStatus = 'running' | 'success' | 'error' | 'skip'
+type EdgeLineStyle = 'curve' | 'straight'
+type InputPortSide = 'left' | 'top'
+type OutputPortSide = 'right' | 'bottom'
 
-function nW(type: string): number { return (type === 'data' || type === 'select' || type === 'api') ? DATA_NODE_W : NODE_W }
-function nH(type: string): number { return (type === 'data' || type === 'select' || type === 'api') ? DATA_NODE_H : NODE_H }
+function nW(type: string): number { return (type === 'data' || type === 'select' || type === 'api' || type === 'branch') ? DATA_NODE_W : NODE_W }
+function nH(type: string): number { return (type === 'data' || type === 'select' || type === 'api' || type === 'branch') ? DATA_NODE_H : NODE_H }
 
 interface Props {
   nodes: ApiNode[]
   edges: ApiEdge[]
   onNodeMove: (id: string, x: number, y: number) => void
-  onEdgeCreate: (sourceId: string, targetId: string) => void
+  onEdgeCreate: (sourceId: string, targetId: string, sourcePort?: string | null) => void
   onEdgeDelete: (id: string) => void
-  onEdgeReconnect: (edgeId: string, newSourceId: string, newTargetId: string) => void
+  onEdgeReconnect: (edgeId: string, newSourceId: string, newTargetId: string, sourcePort?: string | null) => void
   onNodeOpen: (nodeId: string) => void
   onNodeRun?: (nodeId: string) => void
+  onNodeCopy?: (nodeId: string) => void
+  onNodePaste?: () => void
+  onNodeDeleteRequest?: (nodeId: string) => void
+  canPasteNode?: boolean
   onModuleDrop: (moduleId: string, x: number, y: number) => void
-  nodeStatuses?: Record<string, 'running' | 'success' | 'error'>
+  nodeStatuses?: Record<string, NodeStatus>
+  branchRoutes?: Record<string, 'true' | 'false'>
   onNodeStatusClick?: (nodeId: string) => void
   activeProjectWsId?: string
 }
 
 interface NodeDrag { nodeId: string; ox: number; oy: number }
+type Point = { x: number; y: number }
+type PortPoint = Point & { side: InputPortSide | OutputPortSide; sourcePort?: string | null }
 
 interface Connecting {
   fromNodeId: string
@@ -34,6 +53,7 @@ interface Connecting {
   mouseX: number
   mouseY: number
   snapTo: string | null
+  sourcePort?: string | null
 }
 
 interface Reconnecting {
@@ -45,6 +65,7 @@ interface Reconnecting {
   mouseX: number
   mouseY: number
   snapTo: string | null
+  sourcePort?: string | null
 }
 
 function StopIcon(): JSX.Element {
@@ -73,9 +94,115 @@ function SelectIcon(): JSX.Element {
   )
 }
 
+function BranchIcon(): JSX.Element {
+  return (
+    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <circle cx="6" cy="6" r="3" />
+      <circle cx="18" cy="6" r="3" />
+      <circle cx="18" cy="18" r="3" />
+      <path d="M8.6 7.4 15.4 16.6" />
+      <path d="M9 6h6" />
+    </svg>
+  )
+}
+
 function bezier(x1: number, y1: number, x2: number, y2: number): string {
   const dx = Math.max(Math.abs(x2 - x1) * 0.45, 50)
   return `M ${x1} ${y1} C ${x1 + dx} ${y1} ${x2 - dx} ${y2} ${x2} ${y2}`
+}
+
+function orthogonalPath(x1: number, y1: number, x2: number, y2: number): string {
+  if (Math.abs(x2 - x1) < 2 || Math.abs(y2 - y1) < 2) {
+    return `M ${x1} ${y1} L ${x2} ${y2}`
+  }
+
+  if (x2 >= x1) {
+    const midX = snapToGrid((x1 + x2) / 2)
+    return `M ${x1} ${y1} L ${midX} ${y1} L ${midX} ${y2} L ${x2} ${y2}`
+  }
+
+  const midY = snapToGrid((y1 + y2) / 2)
+  return `M ${x1} ${y1} L ${x1} ${midY} L ${x2} ${midY} L ${x2} ${y2}`
+}
+
+function edgePath(style: EdgeLineStyle, x1: number, y1: number, x2: number, y2: number): string {
+  return style === 'straight' ? orthogonalPath(x1, y1, x2, y2) : bezier(x1, y1, x2, y2)
+}
+
+function edgeControlPoint(style: EdgeLineStyle, x1: number, y1: number, x2: number, y2: number): Point {
+  if (style === 'straight' && x2 < x1) {
+    return {
+      x: snapToGrid((x1 + x2) / 2),
+      y: snapToGrid((y1 + y2) / 2),
+    }
+  }
+  return {
+    x: snapToGrid((x1 + x2) / 2),
+    y: snapToGrid((y1 + y2) / 2),
+  }
+}
+
+function squaredDistance(a: Point, b: Point): number {
+  const dx = a.x - b.x
+  const dy = a.y - b.y
+  return dx * dx + dy * dy
+}
+
+function nearestPort<T extends PortPoint>(ports: T[], target: Point): T {
+  return ports.reduce((best, port) => squaredDistance(port, target) < squaredDistance(best, target) ? port : best, ports[0])
+}
+
+function inputPorts(node: Pick<ApiNode, 'type' | 'x' | 'y'>): PortPoint[] {
+  if (node.type === 'end') {
+    return [
+      { side: 'left', x: node.x, y: node.y + nH(node.type) / 2 },
+    ]
+  }
+  return [
+    { side: 'left', x: node.x, y: node.y + nH(node.type) / 2 },
+    { side: 'top', x: node.x + nW(node.type) / 2, y: node.y },
+  ]
+}
+
+function outputPorts(node: Pick<ApiNode, 'type' | 'x' | 'y'>): PortPoint[] {
+  if (node.type === 'start') {
+    return [
+      { side: 'right', x: node.x + nW(node.type), y: node.y + nH(node.type) / 2 },
+    ]
+  }
+  if (node.type === 'branch') {
+    return [
+      { side: 'right', sourcePort: 'true', x: node.x + nW(node.type), y: node.y + 22 },
+      { side: 'right', sourcePort: 'false', x: node.x + nW(node.type), y: node.y + nH(node.type) - 22 },
+    ]
+  }
+  return [
+    { side: 'right', x: node.x + nW(node.type), y: node.y + nH(node.type) / 2 },
+    { side: 'bottom', x: node.x + nW(node.type) / 2, y: node.y + nH(node.type) },
+  ]
+}
+
+function outputPort(node: Pick<ApiNode, 'type' | 'x' | 'y'>, side: OutputPortSide, sourcePort?: string | null): PortPoint {
+  return outputPorts(node).find(port => (sourcePort ? port.sourcePort === sourcePort : port.side === side)) ?? outputPorts(node)[0]
+}
+
+function bestEdgePorts(source: ApiNode, target: ApiNode, sourcePort?: string | null): { source: PortPoint; target: PortPoint } {
+  const allSources = outputPorts(source)
+  const effectiveSourcePort = source.type === 'branch' ? (sourcePort ?? 'true') : sourcePort
+  const sources = effectiveSourcePort ? allSources.filter(port => port.sourcePort === effectiveSourcePort) : allSources
+  const targets = inputPorts(target)
+  let best = { source: sources[0] ?? allSources[0], target: targets[0] }
+  let bestDistance = Number.POSITIVE_INFINITY
+  sources.forEach(sourcePort => {
+    targets.forEach(targetPort => {
+      const distance = squaredDistance(sourcePort, targetPort)
+      if (distance < bestDistance) {
+        bestDistance = distance
+        best = { source: sourcePort, target: targetPort }
+      }
+    })
+  })
+  return best
 }
 
 function parseDataConfig(config: string): DataConfig {
@@ -101,7 +228,18 @@ function describeDataOutput(cfg: DataConfig): string {
 }
 
 function parseSelectConfig(config: string): SelectConfig {
-  try { return JSON.parse(config) as SelectConfig } catch { return { selectedRowIndices: [] } }
+  try {
+    const parsed = JSON.parse(config) as Partial<SelectConfig>
+    return {
+      selectedRowIndices: Array.isArray(parsed.selectedRowIndices) ? parsed.selectedRowIndices : [],
+      selectedJsonPaths: Array.isArray(parsed.selectedJsonPaths) ? parsed.selectedJsonPaths : [],
+      selectMode: parsed.selectMode === 'json' ? 'json' : parsed.selectMode === 'table' ? 'table' : undefined,
+      selectionType: parsed.selectionType === 'single' ? 'single' : 'multiple',
+      autoSelect: parsed.autoSelect === true,
+    }
+  } catch {
+    return { selectedRowIndices: [], selectedJsonPaths: [], selectionType: 'multiple' }
+  }
 }
 
 function parseApiConfig(config: string): ApiConfig {
@@ -127,12 +265,86 @@ function apiMethodColor(method: string): string {
   }
 }
 
+function clamp(value: number, min: number, max: number): number {
+  return Math.min(max, Math.max(min, value))
+}
+
+function snapToGrid(value: number): number {
+  return Math.round(value / GRID_SIZE) * GRID_SIZE
+}
+
+function positiveModulo(value: number, divisor: number): number {
+  return ((value % divisor) + divisor) % divisor
+}
+
+function buildExecutionOrderedIds(nodes: ApiNode[], edges: ApiEdge[]): { orderedIds: string[]; reachableIds: Set<string> } {
+  const nodeIds = new Set(nodes.map(node => node.id))
+  const outgoing = new Map<string, ApiEdge[]>()
+  edges.forEach(edge => {
+    if (!nodeIds.has(edge.sourceNodeId) || !nodeIds.has(edge.targetNodeId)) return
+    outgoing.set(edge.sourceNodeId, [...(outgoing.get(edge.sourceNodeId) ?? []), edge])
+  })
+
+  const start = nodes.find(node => node.type === 'start')
+  const reachableIds = new Set<string>()
+  if (start) {
+    const queue = [start.id]
+    while (queue.length > 0) {
+      const id = queue.shift()!
+      if (reachableIds.has(id)) continue
+      reachableIds.add(id)
+      ;(outgoing.get(id) ?? []).forEach(edge => queue.push(edge.targetNodeId))
+    }
+  }
+
+  const reachableEdges = edges.filter(edge => reachableIds.has(edge.sourceNodeId) && reachableIds.has(edge.targetNodeId))
+  const indegree = new Map<string, number>()
+  reachableIds.forEach(id => indegree.set(id, 0))
+  reachableEdges.forEach(edge => {
+    indegree.set(edge.targetNodeId, (indegree.get(edge.targetNodeId) ?? 0) + 1)
+  })
+
+  const orderedIds: string[] = []
+  const visited = new Set<string>()
+  const ready = start ? [start.id] : []
+  while (ready.length > 0) {
+    const id = ready.shift()!
+    if (visited.has(id)) continue
+    visited.add(id)
+    orderedIds.push(id)
+    ;(outgoing.get(id) ?? [])
+      .filter(edge => reachableIds.has(edge.targetNodeId))
+      .forEach(edge => {
+        const nextCount = (indegree.get(edge.targetNodeId) ?? 0) - 1
+        indegree.set(edge.targetNodeId, nextCount)
+        if (nextCount === 0) ready.push(edge.targetNodeId)
+      })
+  }
+
+  // 순환이나 잘못된 연결로 위상 정렬에 빠진 노드는 연결 탐색 순서를 유지해 뒤에 둔다.
+  reachableIds.forEach(id => {
+    if (!visited.has(id)) orderedIds.push(id)
+  })
+  nodes.forEach(node => {
+    if (!reachableIds.has(node.id)) orderedIds.push(node.id)
+  })
+
+  return { orderedIds, reachableIds }
+}
+
+function buildAutoArrangeOrder(nodes: ApiNode[], edges: ApiEdge[]): ApiNode[] {
+  const nodeById = new Map(nodes.map(node => [node.id, node]))
+  const { orderedIds } = buildExecutionOrderedIds(nodes, edges)
+  return orderedIds.map(id => nodeById.get(id)).filter((node): node is ApiNode => !!node)
+}
+
 
 export default function WorkflowCanvas({
   nodes, edges,
   onNodeMove, onEdgeCreate, onEdgeDelete, onEdgeReconnect,
-  onNodeOpen, onNodeRun, onModuleDrop,
-  nodeStatuses, onNodeStatusClick,
+  onNodeOpen, onNodeRun, onNodeCopy, onNodePaste, onNodeDeleteRequest, canPasteNode,
+  onModuleDrop,
+  nodeStatuses, branchRoutes, onNodeStatusClick,
   activeProjectWsId,
 }: Props): JSX.Element {
   const canvasRef = useRef<HTMLDivElement>(null)
@@ -147,19 +359,59 @@ export default function WorkflowCanvas({
   const [reconnecting, setReconnecting] = useState<Reconnecting | null>(null)
   const [hoveredEdgeId, setHoveredEdgeId] = useState<string | null>(null)
   const [canvasDragOver, setCanvasDragOver] = useState(false)
+  const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null)
   const [viewport, setViewport] = useState({ x: 0, y: 0 })
+  const [zoom, setZoom] = useState(1)
+  const [lineStyle, setLineStyle] = useState<EdgeLineStyle>(() =>
+    localStorage.getItem('wf-edge-line-style') === 'straight' ? 'straight' : 'curve',
+  )
   const [panning, setPanning] = useState(false)
   const panRef = useRef<{ startX: number; startY: number; vx0: number; vy0: number } | null>(null)
 
+  const canvasRect = () => canvasRef.current?.getBoundingClientRect()
+
+  const clientToWorld = useCallback((clientX: number, clientY: number): Point | null => {
+    const rect = canvasRect()
+    if (!rect) return null
+    return {
+      x: (clientX - rect.left - viewport.x) / zoom,
+      y: (clientY - rect.top - viewport.y) / zoom,
+    }
+  }, [viewport, zoom])
+
   const onCanvasMouseDown = useCallback((e: React.MouseEvent) => {
-    if (e.button !== 2) return
+    canvasRef.current?.focus({ preventScroll: true })
     const t = e.target as HTMLElement
-    if (t.closest('.wf-node, .wf-port, .wf-edge-endpoint, .wf-edge-delete-btn')) return
+    if (e.button === 0) {
+      if (!t.closest('.wf-node, .wf-port, .wf-edge-endpoint, .wf-edge-delete-btn, .wf-floating-tools') && t.tagName.toLowerCase() !== 'path') {
+        setSelectedNodeId(null)
+      }
+      return
+    }
+    if (e.button !== 2) return
+    if (t.closest('.wf-node, .wf-port, .wf-edge-endpoint, .wf-edge-delete-btn, .wf-floating-tools')) return
     if (t.tagName.toLowerCase() === 'path') return
     e.preventDefault()
     panRef.current = { startX: e.clientX, startY: e.clientY, vx0: viewport.x, vy0: viewport.y }
     setPanning(true)
   }, [viewport])
+
+  const onCanvasWheel = useCallback((e: React.WheelEvent) => {
+    if (!e.ctrlKey) return
+    e.preventDefault()
+    const rect = canvasRect()
+    if (!rect) return
+    const worldX = (e.clientX - rect.left - viewport.x) / zoom
+    const worldY = (e.clientY - rect.top - viewport.y) / zoom
+    const factor = Math.exp(-e.deltaY * 0.0012)
+    const nextZoom = clamp(zoom * factor, MIN_ZOOM, MAX_ZOOM)
+    if (Math.abs(nextZoom - zoom) < 0.001) return
+    setZoom(nextZoom)
+    setViewport({
+      x: e.clientX - rect.left - worldX * nextZoom,
+      y: e.clientY - rect.top - worldY * nextZoom,
+    })
+  }, [viewport, zoom])
 
   useEffect(() => {
     setPositions(prev => {
@@ -169,37 +421,51 @@ export default function WorkflowCanvas({
     })
   }, [nodes])
 
-  const canvasRect = () => canvasRef.current?.getBoundingClientRect()
+  useEffect(() => {
+    localStorage.setItem('wf-edge-line-style', lineStyle)
+  }, [lineStyle])
+
+  useEffect(() => {
+    if (selectedNodeId && !nodes.some(node => node.id === selectedNodeId)) {
+      setSelectedNodeId(null)
+    }
+  }, [nodes, selectedNodeId])
 
   const onNodeDown = useCallback((e: React.MouseEvent, nodeId: string) => {
     if (e.button !== 0) return
     if ((e.target as HTMLElement).closest('.wf-port')) return
     e.preventDefault()
+    canvasRef.current?.focus({ preventScroll: true })
+    setSelectedNodeId(nodeId)
     const pos = positions[nodeId]
     if (!pos) return
-    nodeDragRef.current = { nodeId, ox: e.clientX - pos.x, oy: e.clientY - pos.y }
+    const world = clientToWorld(e.clientX, e.clientY)
+    if (!world) return
+    nodeDragRef.current = { nodeId, ox: world.x - pos.x, oy: world.y - pos.y }
     setDraggingId(nodeId)
-  }, [positions])
+  }, [clientToWorld, positions])
 
-  const onOutputPortDown = useCallback((e: React.MouseEvent, nodeId: string, nodeType: string) => {
+  const onOutputPortDown = useCallback((e: React.MouseEvent, nodeId: string, nodeType: ApiNode['type'], side: OutputPortSide, sourcePort?: string | null) => {
     if (e.button !== 0) return
     e.stopPropagation()
     e.preventDefault()
-    const rect = canvasRect()
-    if (!rect) return
     const pos = positions[nodeId]
     if (!pos) return
+    const world = clientToWorld(e.clientX, e.clientY)
+    if (!world) return
+    const port = outputPort({ type: nodeType, x: pos.x, y: pos.y }, side, sourcePort)
     const state: Connecting = {
       fromNodeId: nodeId,
-      fromX: pos.x + nW(nodeType),
-      fromY: pos.y + nH(nodeType) / 2,
-      mouseX: e.clientX - rect.left - viewport.x,
-      mouseY: e.clientY - rect.top - viewport.y,
+      fromX: port.x,
+      fromY: port.y,
+      mouseX: world.x,
+      mouseY: world.y,
       snapTo: null,
+      sourcePort: port.sourcePort ?? null,
     }
     connectRef.current = state
     setConnecting(state)
-  }, [positions, viewport])
+  }, [clientToWorld, positions])
 
   const onEndpointDown = useCallback((
     e: React.MouseEvent,
@@ -212,22 +478,43 @@ export default function WorkflowCanvas({
     if (e.button !== 0) return
     e.stopPropagation()
     e.preventDefault()
-    const rect = canvasRect()
-    if (!rect) return
+    const world = clientToWorld(e.clientX, e.clientY)
+    if (!world) return
     const state: Reconnecting = {
       edgeId: edge.id,
       dragging,
       fixedNodeId,
       fixedX,
       fixedY,
-      mouseX: e.clientX - rect.left - viewport.x,
-      mouseY: e.clientY - rect.top - viewport.y,
+      mouseX: world.x,
+      mouseY: world.y,
       snapTo: null,
+      sourcePort: dragging === 'target' ? (edge.sourcePort ?? null) : null,
     }
     reconnectRef.current = state
     setReconnecting(state)
     setHoveredEdgeId(null)
-  }, [viewport])
+  }, [clientToWorld])
+
+  const onInputPortUp = useCallback((e: React.MouseEvent, targetNodeId: string) => {
+    e.preventDefault()
+    e.stopPropagation()
+
+    const conn = connectRef.current
+    if (conn) {
+      if (conn.fromNodeId !== targetNodeId) onEdgeCreate(conn.fromNodeId, targetNodeId, conn.sourcePort ?? null)
+      connectRef.current = null
+      setConnecting(null)
+      return
+    }
+
+    const rc = reconnectRef.current
+    if (rc?.dragging === 'target') {
+      if (rc.fixedNodeId !== targetNodeId) onEdgeReconnect(rc.edgeId, rc.fixedNodeId, targetNodeId, rc.sourcePort ?? null)
+      reconnectRef.current = null
+      setReconnecting(null)
+    }
+  }, [onEdgeCreate, onEdgeReconnect])
 
   const onMouseMove = useCallback((e: React.MouseEvent) => {
     const rect = canvasRect()
@@ -241,23 +528,25 @@ export default function WorkflowCanvas({
 
     const nd = nodeDragRef.current
     if (nd) {
-      const node = nodes.find(n => n.id === nd.nodeId)
-      const w = nW(node?.type ?? '')
-      const h = nH(node?.type ?? '')
-      const x = Math.max(0, Math.min(rect.width - w, e.clientX - nd.ox))
-      const y = Math.max(0, Math.min(rect.height - h, e.clientY - nd.oy))
+      const world = clientToWorld(e.clientX, e.clientY)
+      if (!world) return
+      const x = snapToGrid(world.x - nd.ox)
+      const y = snapToGrid(world.y - nd.oy)
       setPositions(prev => ({ ...prev, [nd.nodeId]: { x, y } }))
     }
 
     if (connectRef.current) {
-      const mx = e.clientX - rect.left - viewport.x
-      const my = e.clientY - rect.top - viewport.y
+      const world = clientToWorld(e.clientX, e.clientY)
+      if (!world) return
+      const mx = world.x
+      const my = world.y
       let snapTo: string | null = null
       for (const n of nodes) {
         if (n.type === 'start' || n.id === connectRef.current.fromNodeId) continue
         const pos = positions[n.id]
         if (!pos) continue
-        if (Math.hypot(mx - pos.x, my - (pos.y + nH(n.type) / 2)) < SNAP_R) { snapTo = n.id; break }
+        const nearest = nearestPort(inputPorts({ type: n.type, x: pos.x, y: pos.y }), { x: mx, y: my })
+        if (Math.hypot(mx - nearest.x, my - nearest.y) < SNAP_R) { snapTo = n.id; break }
       }
       const next: Connecting = { ...connectRef.current, mouseX: mx, mouseY: my, snapTo }
       connectRef.current = next
@@ -265,8 +554,10 @@ export default function WorkflowCanvas({
     }
 
     if (reconnectRef.current) {
-      const mx = e.clientX - rect.left - viewport.x
-      const my = e.clientY - rect.top - viewport.y
+      const world = clientToWorld(e.clientX, e.clientY)
+      if (!world) return
+      const mx = world.x
+      const my = world.y
       const rc = reconnectRef.current
       let snapTo: string | null = null
       for (const n of nodes) {
@@ -276,18 +567,20 @@ export default function WorkflowCanvas({
         if (rc.dragging === 'target') {
           // Dragging target end → snap to input port (left side), exclude start nodes
           if (n.type === 'start') continue
-          if (Math.hypot(mx - pos.x, my - (pos.y + nH(n.type) / 2)) < SNAP_R) { snapTo = n.id; break }
+          const nearest = nearestPort(inputPorts({ type: n.type, x: pos.x, y: pos.y }), { x: mx, y: my })
+          if (Math.hypot(mx - nearest.x, my - nearest.y) < SNAP_R) { snapTo = n.id; break }
         } else {
           // Dragging source end → snap to output port (right side), exclude end nodes
           if (n.type === 'end') continue
-          if (Math.hypot(mx - (pos.x + nW(n.type)), my - (pos.y + nH(n.type) / 2)) < SNAP_R) { snapTo = n.id; break }
+          const nearest = nearestPort(outputPorts({ type: n.type, x: pos.x, y: pos.y }), { x: mx, y: my })
+          if (Math.hypot(mx - nearest.x, my - nearest.y) < SNAP_R) { snapTo = n.id; break }
         }
       }
       const next: Reconnecting = { ...rc, mouseX: mx, mouseY: my, snapTo }
       reconnectRef.current = next
       setReconnecting(next)
     }
-  }, [nodes, positions, viewport])
+  }, [clientToWorld, nodes, positions])
 
   const onMouseUp = useCallback(() => {
     if (panRef.current) {
@@ -305,7 +598,7 @@ export default function WorkflowCanvas({
 
     const conn = connectRef.current
     if (conn) {
-      if (conn.snapTo) onEdgeCreate(conn.fromNodeId, conn.snapTo)
+      if (conn.snapTo) onEdgeCreate(conn.fromNodeId, conn.snapTo, conn.sourcePort ?? null)
       connectRef.current = null
       setConnecting(null)
     }
@@ -315,12 +608,20 @@ export default function WorkflowCanvas({
       if (rc.snapTo) {
         const newSourceId = rc.dragging === 'target' ? rc.fixedNodeId : rc.snapTo
         const newTargetId = rc.dragging === 'target' ? rc.snapTo : rc.fixedNodeId
-        onEdgeReconnect(rc.edgeId, newSourceId, newTargetId)
+        let nextSourcePort = rc.dragging === 'target' ? (rc.sourcePort ?? null) : null
+        if (rc.dragging === 'source') {
+          const sourceNode = nodes.find(n => n.id === rc.snapTo)
+          const sourcePos = rc.snapTo ? positions[rc.snapTo] : undefined
+          if (sourceNode && sourcePos) {
+            nextSourcePort = nearestPort(outputPorts({ type: sourceNode.type, x: sourcePos.x, y: sourcePos.y }), { x: rc.fixedX, y: rc.fixedY }).sourcePort ?? null
+          }
+        }
+        onEdgeReconnect(rc.edgeId, newSourceId, newTargetId, nextSourcePort)
       }
       reconnectRef.current = null
       setReconnecting(null)
     }
-  }, [positions, onNodeMove, onEdgeCreate, onEdgeReconnect])
+  }, [nodes, positions, onNodeMove, onEdgeCreate, onEdgeReconnect])
 
   const setEdgeHover = (id: string | null) => {
     if (hoverTimerRef.current) clearTimeout(hoverTimerRef.current)
@@ -331,21 +632,175 @@ export default function WorkflowCanvas({
     }
   }
 
+  const autoArrangeNodes = useCallback(() => {
+    const rect = canvasRect()
+    if (!rect || nodes.length === 0) return
+
+    const orderedNodes = buildAutoArrangeOrder(nodes, edges)
+    if (orderedNodes.length === 0) return
+
+    const visibleW = rect.width / zoom
+    const visibleH = rect.height / zoom
+    const safePadding = snapToGrid(Math.min(AUTO_ARRANGE_PADDING, Math.max(40, Math.min(visibleW, visibleH) * 0.12)))
+    const worldLeft = Math.max(0, -viewport.x / zoom) + safePadding
+    const worldTop = Math.max(0, -viewport.y / zoom) + safePadding
+    const usableW = Math.max(1, visibleW - safePadding * 2)
+    const usableH = Math.max(1, visibleH - safePadding * 2)
+    const maxNodeW = Math.max(...orderedNodes.map(node => nW(node.type)))
+    const maxNodeH = Math.max(...orderedNodes.map(node => nH(node.type)))
+    const maxColsByWidth = Math.max(1, Math.floor((usableW + TILE_GAP_X) / (maxNodeW + TILE_GAP_X)))
+    const targetAspect = usableW / Math.max(1, usableH)
+    const idealCols = Math.ceil(Math.sqrt(orderedNodes.length * targetAspect * (maxNodeH / maxNodeW)))
+    const cols = clamp(idealCols, 1, Math.min(orderedNodes.length, maxColsByWidth))
+    const rows = Math.ceil(orderedNodes.length / cols)
+    const colGap = cols > 1
+      ? Math.max(TILE_GAP_X, (usableW - maxNodeW * cols) / (cols - 1))
+      : 0
+    const rowGap = rows > 1
+      ? Math.max(TILE_GAP_Y, (usableH - maxNodeH * rows) / (rows - 1))
+      : 0
+    const gridW = maxNodeW * cols + colGap * Math.max(0, cols - 1)
+    const gridH = maxNodeH * rows + rowGap * Math.max(0, rows - 1)
+    const startX = worldLeft + Math.max(0, (usableW - gridW) / 2)
+    const startY = worldTop + Math.max(0, (usableH - gridH) / 2)
+
+    const nextPositions: Record<string, { x: number; y: number }> = {}
+    orderedNodes.forEach((node, index) => {
+      const col = index % cols
+      const row = Math.floor(index / cols)
+      nextPositions[node.id] = {
+        x: snapToGrid(startX + col * (maxNodeW + colGap) + (maxNodeW - nW(node.type)) / 2),
+        y: snapToGrid(startY + row * (maxNodeH + rowGap) + (maxNodeH - nH(node.type)) / 2),
+      }
+    })
+
+    setPositions(prev => ({ ...prev, ...nextPositions }))
+    orderedNodes.forEach(node => {
+      const pos = nextPositions[node.id]
+      onNodeMove(node.id, pos.x, pos.y)
+    })
+  }, [edges, nodes, onNodeMove, viewport, zoom])
+
   const liveNodes = nodes.map(n => ({ ...n, x: positions[n.id]?.x ?? n.x, y: positions[n.id]?.y ?? n.y }))
+  const selectedNode = selectedNodeId ? liveNodes.find(node => node.id === selectedNodeId) ?? null : null
+  const selectedCopyableNode = selectedNode && selectedNode.type !== 'start' && selectedNode.type !== 'end' ? selectedNode : null
+
+  const onCanvasKeyDown = useCallback((e: React.KeyboardEvent<HTMLDivElement>) => {
+    const key = e.key.toLowerCase()
+    if (key === 'delete' && selectedCopyableNode && onNodeDeleteRequest) {
+      e.preventDefault()
+      onNodeDeleteRequest(selectedCopyableNode.id)
+      return
+    }
+    if (!(e.ctrlKey || e.metaKey) || e.altKey) return
+    if (key === 'c' && selectedCopyableNode && onNodeCopy) {
+      e.preventDefault()
+      onNodeCopy(selectedCopyableNode.id)
+    }
+    if (key === 'v' && canPasteNode && onNodePaste) {
+      e.preventDefault()
+      onNodePaste()
+    }
+  }, [canPasteNode, onNodeCopy, onNodeDeleteRequest, onNodePaste, selectedCopyableNode])
 
   // Snap indicators: which input/output ports to highlight
   const snapInputId = connecting?.snapTo ?? (reconnecting?.dragging === 'target' ? reconnecting.snapTo : null)
   const snapOutputId = reconnecting?.dragging === 'source' ? reconnecting.snapTo : null
+  const gridScreenSize = GRID_SIZE * zoom
+  const gridX = positiveModulo(viewport.x, gridScreenSize)
+  const gridY = positiveModulo(viewport.y, gridScreenSize)
+  const renderInputPorts = (node: ApiNode): JSX.Element | null => {
+    if (node.type === 'start') return null
+    const active = snapInputId === node.id ? ' wf-port-snap' : ''
+    if (node.type === 'end') {
+      return (
+        <div
+          className={`wf-port wf-port-input wf-port-input-left${active}`}
+          onMouseUp={e => onInputPortUp(e, node.id)}
+          title="INPUT"
+        />
+      )
+    }
+    return (
+      <>
+        <div
+          className={`wf-port wf-port-input wf-port-input-left${active}`}
+          onMouseUp={e => onInputPortUp(e, node.id)}
+          title="INPUT"
+        />
+        <div
+          className={`wf-port wf-port-input wf-port-input-top${active}`}
+          onMouseUp={e => onInputPortUp(e, node.id)}
+          title="INPUT"
+        />
+      </>
+    )
+  }
+  const renderOutputPorts = (node: ApiNode): JSX.Element | null => {
+    if (node.type === 'end') return null
+    const active = connecting?.fromNodeId === node.id || snapOutputId === node.id ? ' wf-port-active' : ''
+    if (node.type === 'start') {
+      return (
+        <div
+          className={`wf-port wf-port-output wf-port-output-right${active}`}
+          onMouseDown={e => onOutputPortDown(e, node.id, node.type, 'right')}
+          title="OUTPUT"
+        />
+      )
+    }
+    if (node.type === 'branch') {
+      const cfg = parseBranchConfig(node.config)
+      const selectedRoute = branchRoutes?.[node.id]
+      return (
+        <>
+          <div
+            className={`wf-port wf-port-output wf-port-output-branch wf-port-output-branch-true${active}`}
+            onMouseDown={e => onOutputPortDown(e, node.id, node.type, 'right', 'true')}
+            title={cfg.trueLabel ?? 'TRUE'}
+          />
+          <span className={`wf-branch-port-label wf-branch-port-label-true${selectedRoute === 'true' ? ' wf-branch-port-label-selected' : ''}`}>{cfg.trueLabel ?? 'TRUE'}</span>
+          <div
+            className={`wf-port wf-port-output wf-port-output-branch wf-port-output-branch-false${active}`}
+            onMouseDown={e => onOutputPortDown(e, node.id, node.type, 'right', 'false')}
+            title={cfg.falseLabel ?? 'FALSE'}
+          />
+          <span className={`wf-branch-port-label wf-branch-port-label-false${selectedRoute === 'false' ? ' wf-branch-port-label-selected' : ''}`}>{cfg.falseLabel ?? 'FALSE'}</span>
+        </>
+      )
+    }
+    return (
+      <>
+        <div
+          className={`wf-port wf-port-output wf-port-output-right${active}`}
+          onMouseDown={e => onOutputPortDown(e, node.id, node.type, 'right')}
+          title="OUTPUT"
+        />
+        <div
+          className={`wf-port wf-port-output wf-port-output-bottom${active}`}
+          onMouseDown={e => onOutputPortDown(e, node.id, node.type, 'bottom')}
+          title="OUTPUT"
+        />
+      </>
+    )
+  }
 
   return (
     <div
       ref={canvasRef}
       className={`wf-canvas${canvasDragOver ? ' wf-canvas-dragover' : ''}${panning ? ' wf-canvas-panning' : ''}`}
+      style={{
+        '--wf-grid-size': `${gridScreenSize}px`,
+        '--wf-grid-x': `${gridX}px`,
+        '--wf-grid-y': `${gridY}px`,
+      } as CSSProperties}
       onMouseDown={onCanvasMouseDown}
       onContextMenu={e => e.preventDefault()}
+      onWheel={onCanvasWheel}
       onMouseMove={onMouseMove}
       onMouseUp={onMouseUp}
       onMouseLeave={onMouseUp}
+      onKeyDown={onCanvasKeyDown}
+      tabIndex={0}
       onDragOver={e => { e.preventDefault(); e.dataTransfer.dropEffect = 'copy'; setCanvasDragOver(true) }}
       onDragLeave={() => setCanvasDragOver(false)}
       onDrop={e => {
@@ -356,16 +811,63 @@ export default function WorkflowCanvas({
         const moduleWsId = e.dataTransfer.getData('moduleWsId')
         // 워크스페이스 모듈(공통 아닌)은 현재 프로젝트의 워크스페이스와 일치해야 드롭 허용
         if (moduleWsId && activeProjectWsId && moduleWsId !== activeProjectWsId) return
-        const rect = canvasRef.current.getBoundingClientRect()
-        onModuleDrop(moduleId, e.clientX - rect.left - viewport.x - 100, e.clientY - rect.top - viewport.y - 36)
+        const world = clientToWorld(e.clientX, e.clientY)
+        if (!world) return
+        onModuleDrop(moduleId, snapToGrid(world.x - 100), snapToGrid(world.y - 36))
       }}
     >
+      <div className="wf-floating-tools" onMouseDown={e => e.stopPropagation()}>
+        {onNodeCopy && (
+          <button
+            type="button"
+            className="wf-floating-tool-btn"
+            disabled={!selectedCopyableNode}
+            onClick={() => { if (selectedCopyableNode) onNodeCopy(selectedCopyableNode.id) }}
+            title="선택한 모듈 복사 (Ctrl+C)"
+          >
+            복사
+          </button>
+        )}
+        {onNodePaste && (
+          <button
+            type="button"
+            className="wf-floating-tool-btn"
+            disabled={!canPasteNode}
+            onClick={() => { if (canPasteNode) onNodePaste() }}
+            title="복사한 모듈 붙여넣기 (Ctrl+V)"
+          >
+            붙여넣기
+          </button>
+        )}
+        <button type="button" className="wf-floating-tool-btn" onClick={autoArrangeNodes} title="연결 순서 기준 자동정렬">
+          자동정렬
+        </button>
+        <div className="wf-line-style-toggle" role="group" aria-label="연결선 형태">
+          <button
+            type="button"
+            className={`wf-line-style-btn${lineStyle === 'curve' ? ' active' : ''}`}
+            onClick={() => setLineStyle('curve')}
+            title="곡선 연결선"
+          >
+            곡선
+          </button>
+          <button
+            type="button"
+            className={`wf-line-style-btn${lineStyle === 'straight' ? ' active' : ''}`}
+            onClick={() => setLineStyle('straight')}
+            title="직선 연결선"
+          >
+            직선
+          </button>
+        </div>
+        <span className="wf-zoom-indicator">{Math.round(zoom * 100)}%</span>
+      </div>
       <div
         className="wf-viewport"
         style={{
           position: 'absolute',
           inset: 0,
-          transform: `translate3d(${viewport.x}px, ${viewport.y}px, 0)`,
+          transform: `translate3d(${viewport.x}px, ${viewport.y}px, 0) scale(${zoom})`,
           transformOrigin: '0 0',
         }}
       >
@@ -392,14 +894,18 @@ export default function WorkflowCanvas({
           const src = liveNodes.find(n => n.id === edge.sourceNodeId)
           const tgt = liveNodes.find(n => n.id === edge.targetNodeId)
           if (!src || !tgt) return null
-          const x1 = src.x + nW(src.type)
-          const y1 = src.y + nH(src.type) / 2
-          const x2 = tgt.x
-          const y2 = tgt.y + nH(tgt.type) / 2
-          const d = bezier(x1, y1, x2, y2)
+          const ports = bestEdgePorts(src, tgt, edge.sourcePort)
+          const x1 = ports.source.x
+          const y1 = ports.source.y
+          const x2 = ports.target.x
+          const y2 = ports.target.y
+          const d = edgePath(lineStyle, x1, y1, x2, y2)
           const isReconnecting = reconnecting?.edgeId === edge.id
           const isHovered = hoveredEdgeId === edge.id && !connecting && !reconnecting
-          const execStatus = nodeStatuses?.[edge.sourceNodeId]
+          const selectedBranchRoute = src.type === 'branch' ? branchRoutes?.[src.id] : undefined
+          const isExecutedBranchEdge = src.type !== 'branch'
+            || (selectedBranchRoute !== undefined && (edge.sourcePort ?? 'true') === selectedBranchRoute)
+          const execStatus = isExecutedBranchEdge ? nodeStatuses?.[edge.sourceNodeId] : undefined
           const execClass = execStatus === 'running' ? ' wf-edge-exec-running'
             : execStatus === 'success' ? ' wf-edge-exec-success'
             : ''
@@ -431,11 +937,12 @@ export default function WorkflowCanvas({
         {/* Pending bezier for new connection */}
         {connecting && (() => {
           const snap = connecting.snapTo ? liveNodes.find(n => n.id === connecting.snapTo) : null
-          const toX = snap ? snap.x : connecting.mouseX
-          const toY = snap ? snap.y + nH(snap.type) / 2 : connecting.mouseY
+          const snapTarget = snap ? nearestPort(inputPorts(snap), { x: connecting.fromX, y: connecting.fromY }) : null
+          const toX = snapTarget ? snapTarget.x : connecting.mouseX
+          const toY = snapTarget ? snapTarget.y : connecting.mouseY
           return (
             <path
-              d={bezier(connecting.fromX, connecting.fromY, toX, toY)}
+              d={edgePath(lineStyle, connecting.fromX, connecting.fromY, toX, toY)}
               className={`wf-edge-pending${snap ? ' wf-edge-snap' : ''}`}
               markerEnd="url(#wf-arrow-pending)"
             />
@@ -448,16 +955,18 @@ export default function WorkflowCanvas({
           let x1: number, y1: number, x2: number, y2: number
           if (reconnecting.dragging === 'target') {
             x1 = reconnecting.fixedX; y1 = reconnecting.fixedY
-            x2 = snap ? snap.x : reconnecting.mouseX
-            y2 = snap ? snap.y + nH(snap.type) / 2 : reconnecting.mouseY
+            const snapTarget = snap ? nearestPort(inputPorts(snap), { x: x1, y: y1 }) : null
+            x2 = snapTarget ? snapTarget.x : reconnecting.mouseX
+            y2 = snapTarget ? snapTarget.y : reconnecting.mouseY
           } else {
-            x1 = snap ? snap.x + nW(snap.type) : reconnecting.mouseX
-            y1 = snap ? snap.y + nH(snap.type) / 2 : reconnecting.mouseY
+            const snapSource = snap ? nearestPort(outputPorts(snap), { x: reconnecting.fixedX, y: reconnecting.fixedY }) : null
+            x1 = snapSource ? snapSource.x : reconnecting.mouseX
+            y1 = snapSource ? snapSource.y : reconnecting.mouseY
             x2 = reconnecting.fixedX; y2 = reconnecting.fixedY
           }
           return (
             <path
-              d={bezier(x1, y1, x2, y2)}
+              d={edgePath(lineStyle, x1, y1, x2, y2)}
               className={`wf-edge-pending${snap ? ' wf-edge-snap' : ''}`}
               markerEnd="url(#wf-arrow-pending)"
             />
@@ -471,12 +980,12 @@ export default function WorkflowCanvas({
         const src = liveNodes.find(n => n.id === edge.sourceNodeId)
         const tgt = liveNodes.find(n => n.id === edge.targetNodeId)
         if (!src || !tgt) return null
-        const srcX = src.x + nW(src.type)
-        const srcY = src.y + nH(src.type) / 2
-        const tgtX = tgt.x
-        const tgtY = tgt.y + nH(tgt.type) / 2
-        const midX = (srcX + tgtX) / 2
-        const midY = (srcY + tgtY) / 2
+        const ports = bestEdgePorts(src, tgt, edge.sourcePort)
+        const srcX = ports.source.x
+        const srcY = ports.source.y
+        const tgtX = ports.target.x
+        const tgtY = ports.target.y
+        const controlPoint = edgeControlPoint(lineStyle, srcX, srcY, tgtX, tgtY)
         return (
           <div key={`ec-${edge.id}`}>
             {/* Source endpoint handle */}
@@ -500,7 +1009,7 @@ export default function WorkflowCanvas({
             {/* Delete button */}
             <button
               className="wf-edge-delete-btn"
-              style={{ left: midX, top: midY }}
+              style={{ left: controlPoint.x, top: controlPoint.y }}
               onMouseEnter={() => setEdgeHover(edge.id)}
               onMouseLeave={() => setEdgeHover(null)}
               onClick={() => onEdgeDelete(edge.id)}
@@ -520,7 +1029,7 @@ export default function WorkflowCanvas({
             onMouseDown={e => e.stopPropagation()}
             onClick={e => { e.stopPropagation(); onNodeStatusClick?.(node.id) }}
           >
-            {ns === 'running' ? '실행중' : ns === 'success' ? '완료' : '오류'}
+            {ns === 'running' ? '실행중' : ns === 'success' ? '완료' : ns === 'skip' ? '건너뜀' : '오류'}
           </div>
         ) : null
 
@@ -530,13 +1039,13 @@ export default function WorkflowCanvas({
           return (
             <div
               key={node.id}
-              className="wf-node wf-node-data"
+              className={`wf-node wf-node-data${selectedNodeId === node.id ? ' wf-node-selected' : ''}`}
               data-dragging={draggingId === node.id ? 'true' : undefined}
               style={{ left: node.x, top: node.y }}
               onMouseDown={e => onNodeDown(e, node.id)}
               onDoubleClick={() => onNodeOpen(node.id)}
             >
-              <div className={`wf-port wf-port-input${snapInputId === node.id ? ' wf-port-snap' : ''}`} />
+              {renderInputPorts(node)}
               <div className="wf-node-icon"><DataIcon /></div>
               <div className="wf-node-data-content">
                 <span className="wf-node-label">{node.label}</span>
@@ -545,10 +1054,7 @@ export default function WorkflowCanvas({
                 </div>
               </div>
               {statusBullet}
-              <div
-                className={`wf-port wf-port-output${connecting?.fromNodeId === node.id || snapOutputId === node.id ? ' wf-port-active' : ''}`}
-                onMouseDown={e => onOutputPortDown(e, node.id, node.type)}
-              />
+              {renderOutputPorts(node)}
             </div>
           )
         }
@@ -560,13 +1066,13 @@ export default function WorkflowCanvas({
           return (
             <div
               key={node.id}
-              className="wf-node wf-node-select"
+              className={`wf-node wf-node-select${selectedNodeId === node.id ? ' wf-node-selected' : ''}`}
               data-dragging={draggingId === node.id ? 'true' : undefined}
               style={{ left: node.x, top: node.y }}
               onMouseDown={e => onNodeDown(e, node.id)}
               onDoubleClick={() => onNodeOpen(node.id)}
             >
-              <div className={`wf-port wf-port-input${snapInputId === node.id ? ' wf-port-snap' : ''}`} />
+              {renderInputPorts(node)}
               <div className="wf-node-icon"><SelectIcon /></div>
               <div className="wf-node-data-content">
                 <span className="wf-node-label">{node.label}</span>
@@ -575,10 +1081,7 @@ export default function WorkflowCanvas({
                 </div>
               </div>
               {statusBullet}
-              <div
-                className={`wf-port wf-port-output${connecting?.fromNodeId === node.id || snapOutputId === node.id ? ' wf-port-active' : ''}`}
-                onMouseDown={e => onOutputPortDown(e, node.id, node.type)}
-              />
+              {renderOutputPorts(node)}
             </div>
           )
         }
@@ -589,13 +1092,13 @@ export default function WorkflowCanvas({
           return (
             <div
               key={node.id}
-              className="wf-node wf-node-api"
+              className={`wf-node wf-node-api${selectedNodeId === node.id ? ' wf-node-selected' : ''}`}
               data-dragging={draggingId === node.id ? 'true' : undefined}
               style={{ left: node.x, top: node.y }}
               onMouseDown={e => onNodeDown(e, node.id)}
               onDoubleClick={() => onNodeOpen(node.id)}
             >
-              <div className={`wf-port wf-port-input${snapInputId === node.id ? ' wf-port-snap' : ''}`} />
+              {renderInputPorts(node)}
               <div className="wf-node-icon wf-node-icon-api"><ApiIcon /></div>
               <div className="wf-node-data-content">
                 <span className="wf-node-label wf-node-label-api">{node.label}</span>
@@ -605,10 +1108,31 @@ export default function WorkflowCanvas({
                 </div>
               </div>
               {statusBullet}
-              <div
-                className={`wf-port wf-port-output${connecting?.fromNodeId === node.id || snapOutputId === node.id ? ' wf-port-active' : ''}`}
-                onMouseDown={e => onOutputPortDown(e, node.id, node.type)}
-              />
+              {renderOutputPorts(node)}
+            </div>
+          )
+        }
+
+        if (node.type === 'branch') {
+          const cfg = parseBranchConfig(node.config)
+          const modeLabel = cfg.mode === 'manual' ? '직접선택' : '조건식'
+          return (
+            <div
+              key={node.id}
+              className={`wf-node wf-node-branch${selectedNodeId === node.id ? ' wf-node-selected' : ''}`}
+              data-dragging={draggingId === node.id ? 'true' : undefined}
+              style={{ left: node.x, top: node.y }}
+              onMouseDown={e => onNodeDown(e, node.id)}
+              onDoubleClick={() => onNodeOpen(node.id)}
+            >
+              {renderInputPorts(node)}
+              <div className="wf-node-icon wf-node-icon-branch"><BranchIcon /></div>
+              <div className="wf-node-data-content">
+                <span className="wf-node-label wf-node-label-branch">{node.label}</span>
+                <div className="wf-node-branch-meta">{modeLabel}</div>
+              </div>
+              {statusBullet}
+              {renderOutputPorts(node)}
             </div>
           )
         }
@@ -616,26 +1140,19 @@ export default function WorkflowCanvas({
         return (
           <div
             key={node.id}
-            className={`wf-node wf-node-${node.type}`}
+            className={`wf-node wf-node-${node.type}${selectedNodeId === node.id ? ' wf-node-selected' : ''}`}
             data-dragging={draggingId === node.id ? 'true' : undefined}
             style={{ left: node.x, top: node.y }}
             onMouseDown={e => onNodeDown(e, node.id)}
             onDoubleClick={() => onNodeOpen(node.id)}
           >
-            {node.type !== 'start' && (
-              <div className={`wf-port wf-port-input${snapInputId === node.id ? ' wf-port-snap' : ''}`} />
-            )}
+            {renderInputPorts(node)}
             <div className="wf-node-icon">
               {node.type === 'start' ? <IcoPlay size={13} /> : <StopIcon />}
             </div>
             <span className="wf-node-label">{node.label}</span>
             {statusBullet}
-            {node.type !== 'end' && (
-              <div
-                className={`wf-port wf-port-output${connecting?.fromNodeId === node.id || snapOutputId === node.id ? ' wf-port-active' : ''}`}
-                onMouseDown={e => onOutputPortDown(e, node.id, node.type)}
-              />
-            )}
+            {renderOutputPorts(node)}
           </div>
         )
       })}

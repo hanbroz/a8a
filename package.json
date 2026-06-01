@@ -20,6 +20,38 @@
   "author": "Eastar Jet",
   "license": "MIT",
   "main_process": "src/main/index.ts",
+  "build": {
+    "appId": "com.eastarjet.a8a",
+    "productName": "a8a",
+    "directories": {
+      "output": "dist"
+    },
+    "files": [
+      "out/**",
+      "package.json",
+      "node_modules/sql.js/**"
+    ],
+    "asarUnpack": [
+      "node_modules/sql.js/dist/*.wasm"
+    ],
+    "win": {
+      "target": [
+        {
+          "target": "nsis",
+          "arch": ["x64"]
+        }
+      ],
+      "artifactName": "${productName}-Setup-${version}.${ext}"
+    },
+    "nsis": {
+      "oneClick": false,
+      "perMachine": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "shortcutName": "a8a"
+    }
+  },
   "dependencies": {
     "@monaco-editor/react": "^4.7.0",
     "electron-updater": "^6.6.2",
