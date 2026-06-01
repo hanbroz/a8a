@@ -1,10 +1,16 @@
 import { app, shell, BrowserWindow } from 'electron'
+import { existsSync } from 'fs'
 import { join } from 'path'
 import { electronApp, optimizer, is } from '@electron-toolkit/utils'
 import { initDb } from './db'
 import { registerIpcHandlers } from './ipc'
 import { initializeAutoUpdater, registerUpdaterIpcHandlers } from './updater'
 import { resolveInitialWindowState, saveWindowState } from './windowState'
+
+function resolveAppIconPath(): string | undefined {
+  const iconPath = is.dev ? join(__dirname, '../../build/icon.png') : join(process.resourcesPath, 'icon.png')
+  return existsSync(iconPath) ? iconPath : undefined
+}
 
 function createWindow(): void {
   const init = resolveInitialWindowState()
@@ -15,6 +21,7 @@ function createWindow(): void {
     show: false,
     autoHideMenuBar: true,
     titleBarStyle: 'default',
+    icon: resolveAppIconPath(),
     webPreferences: {
       preload: join(__dirname, '../preload/index.js'),
       contextIsolation: true,
