@@ -8,9 +8,10 @@
     "dev": "electron-vite dev",
     "build": "electron-vite build",
     "preview": "electron-vite preview",
-    "build:win": "npm run build && electron-builder --win",
-    "build:mac": "npm run build && electron-builder --mac",
-    "build:linux": "npm run build && electron-builder --linux"
+    "version:stamp": "node scripts/stamp-version.cjs",
+    "build:win": "npm run build && electron-builder --config electron-builder.config.cjs --win",
+    "build:mac": "npm run build && electron-builder --config electron-builder.config.cjs --mac",
+    "build:linux": "npm run build && electron-builder --config electron-builder.config.cjs --linux"
   },
   "keywords": [
     "electron",

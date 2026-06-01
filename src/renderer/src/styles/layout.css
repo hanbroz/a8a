@@ -74,6 +74,14 @@
   text-overflow: ellipsis;
 }
 
+.brand-version {
+  color: var(--text-4);
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  font-weight: 700;
+  white-space: nowrap;
+}
+
 .sidebar-toggle-btn {
   flex-shrink: 0;
   font-size: 16px;
@@ -381,6 +389,11 @@
   flex-shrink: 0;
 }
 
+.topbar-update-btn {
+  min-width: 104px;
+  justify-content: center;
+}
+
 .project-title {
   font-weight: 600;
   font-size: 13.5px;
@@ -544,6 +557,83 @@
 }
 
 /* ── Log panel ───────────────────────────────────── */
+.update-notice {
+  position: fixed;
+  top: 14px;
+  right: 14px;
+  z-index: 600;
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  width: min(520px, calc(100vw - 28px));
+  padding: 12px 14px;
+  border: 1px solid var(--border-2);
+  border-radius: 8px;
+  background: var(--bg-2);
+  box-shadow: var(--shadow-panel);
+}
+
+.update-notice-main {
+  min-width: 0;
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+
+.update-notice-title {
+  font-size: 13px;
+  font-weight: 800;
+  color: var(--text-1);
+}
+
+.update-notice-message {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  color: var(--text-3);
+  font-size: 11.5px;
+  line-height: 1.45;
+}
+
+.update-notice-version {
+  color: var(--text-2);
+  font-family: var(--font-mono);
+}
+
+.update-notice-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-shrink: 0;
+}
+
+.update-progress {
+  height: 5px;
+  overflow: hidden;
+  border-radius: 999px;
+  background: var(--bg-3);
+}
+
+.update-progress-bar {
+  height: 100%;
+  border-radius: inherit;
+  background: var(--state-running);
+  transition: width 0.2s ease;
+}
+
+@media (max-width: 640px) {
+  .update-notice {
+    left: 14px;
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .update-notice-actions {
+    justify-content: flex-end;
+  }
+}
+
 .log-panel {
   background: var(--bg-2);
   border-top: 1px solid var(--border-1);
@@ -888,6 +978,16 @@
 }
 
 .btn:hover { background: var(--bg-hover); border-color: var(--border-3); }
+
+.btn:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+.btn:disabled:hover {
+  background: var(--bg-3);
+  border-color: var(--border-2);
+}
 
 .btn.ghost {
   background: transparent;

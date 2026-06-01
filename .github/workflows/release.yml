@@ -1,0 +1,50 @@
+name: Release
+
+on:
+  push:
+    branches:
+      - main
+      - master
+
+permissions:
+  contents: write
+
+jobs:
+  windows-release:
+    runs-on: windows-latest
+    env:
+      A8A_UPDATE_GITHUB_REPO: ${{ github.repository }}
+      TZ: Asia/Seoul
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Stamp date version
+        shell: pwsh
+        run: |
+          $version = Get-Date -Format 'yyyy.MM.dd.HH.mm'
+          "A8A_APP_VERSION=$version" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          npm run version:stamp -- $version
+
+      - name: Build Windows installer
+        run: npm run build:win
+
+      - name: Publish GitHub release
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $tag = "v$env:A8A_APP_VERSION"
+          $installer = "dist/a8a-Setup-$env:A8A_APP_VERSION.exe"
+          $blockmap = "$installer.blockmap"
+          gh release create $tag $installer $blockmap --latest --title $env:A8A_APP_VERSION --notes "a8a $env:A8A_APP_VERSION"

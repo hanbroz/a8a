@@ -158,6 +158,24 @@ declare global {
     sourcePort?: string | null
   }
 
+  type AppUpdateStatus =
+    | 'idle'
+    | 'checking'
+    | 'available'
+    | 'not-available'
+    | 'downloading'
+    | 'downloaded'
+    | 'error'
+    | 'disabled'
+
+  interface AppUpdateState {
+    status: AppUpdateStatus
+    currentVersion: string
+    availableVersion?: string
+    progress?: number
+    message?: string
+  }
+
   interface AppApi {
     dialog: {
       openDirectory: (defaultPath?: string) => Promise<string | null>
@@ -210,6 +228,13 @@ declare global {
     }
     http: {
       fetch: (url: string, options: { method: string; headers: Record<string, string>; body?: string }) => Promise<{ status: number; statusText: string; text: string; ok: boolean }>
+    }
+    update: {
+      getState: () => Promise<AppUpdateState>
+      check: () => Promise<AppUpdateState>
+      download: () => Promise<AppUpdateState>
+      install: () => Promise<AppUpdateState>
+      onStatus: (listener: (state: AppUpdateState) => void) => () => void
     }
   }
 

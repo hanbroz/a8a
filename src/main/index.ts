@@ -3,6 +3,7 @@ import { join } from 'path'
 import { electronApp, optimizer, is } from '@electron-toolkit/utils'
 import { initDb } from './db'
 import { registerIpcHandlers } from './ipc'
+import { initializeAutoUpdater, registerUpdaterIpcHandlers } from './updater'
 import { resolveInitialWindowState, saveWindowState } from './windowState'
 
 function createWindow(): void {
@@ -60,8 +61,10 @@ app.whenReady().then(async () => {
 
   await initDb()
   registerIpcHandlers()
+  registerUpdaterIpcHandlers()
 
   createWindow()
+  initializeAutoUpdater()
 
   app.on('activate', function () {
     if (BrowserWindow.getAllWindows().length === 0) createWindow()

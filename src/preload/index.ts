@@ -55,6 +55,17 @@ const api = {
   http: {
     fetch: (url: string, options: { method: string; headers: Record<string, string>; body?: string }): Promise<{ status: number; statusText: string; text: string; ok: boolean }> =>
       ipcRenderer.invoke('http:fetch', url, options)
+  },
+  update: {
+    getState: (): Promise<AppUpdateState> => ipcRenderer.invoke('update:get-state'),
+    check: (): Promise<AppUpdateState> => ipcRenderer.invoke('update:check'),
+    download: (): Promise<AppUpdateState> => ipcRenderer.invoke('update:download'),
+    install: (): Promise<AppUpdateState> => ipcRenderer.invoke('update:install'),
+    onStatus: (listener: (state: AppUpdateState) => void): (() => void) => {
+      const wrapped = (_event: Electron.IpcRendererEvent, state: AppUpdateState): void => listener(state)
+      ipcRenderer.on('update:status', wrapped)
+      return () => ipcRenderer.removeListener('update:status', wrapped)
+    }
   }
 }
 

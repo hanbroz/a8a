@@ -6,7 +6,7 @@ import { isScriptRuntimeError, runPreRequest, runPostResponse } from './utils/sc
 import { generateReport, fillFilenameTemplate } from './utils/reportGenerator'
 import type { ReportNode, ReportApiDetail, ReportVariable } from './utils/reportGenerator'
 import type { ScriptConsoleEntry } from './utils/scriptRuntime'
-import { IcoPanelL, IcoPlay, IcoReset, IcoSave, IcoSun, IcoMoon, IcoPanelB, IcoChevD, IcoX } from './components/Icon'
+import { IcoPanelL, IcoPlay, IcoReset, IcoSave, IcoSun, IcoMoon, IcoPanelB, IcoChevD, IcoX, IcoDownload } from './components/Icon'
 import WorkspaceHeader from './components/sidebar/WorkspaceHeader'
 import ModuleSection from './components/sidebar/ModuleSection'
 import ProjectSection from './components/sidebar/ProjectSection'
@@ -793,6 +793,9 @@ export default function App(): JSX.Element {
     config: SelectConfig
     resolve: (result: SelectPopupResult | null) => void
   } | null>(null)
+  const [updateState, setUpdateState] = useState<AppUpdateState | null>(null)
+  const [updateNoticeHidden, setUpdateNoticeHidden] = useState(false)
+  const [manualUpdateRequested, setManualUpdateRequested] = useState(false)
 
   const setScriptLogsForNode = useCallback((nodeId: string, phase: keyof ScriptLogBundle, logs: ScriptConsoleEntry[]): void => {
     setNodeScriptLogs(prev => ({
@@ -922,6 +925,50 @@ export default function App(): JSX.Element {
   useEffect(() => {
     window.api.module.listAll().then(setAllModules).catch(console.error)
   }, [])
+
+  useEffect(() => {
+    let mounted = true
+    window.api.update.getState()
+      .then(state => {
+        if (mounted) setUpdateState(state)
+      })
+      .catch(console.error)
+    const unsubscribe = window.api.update.onStatus(state => {
+      setUpdateState(state)
+      if (state.status === 'available' || state.status === 'downloading' || state.status === 'downloaded') {
+        setUpdateNoticeHidden(false)
+      }
+    })
+    return () => {
+      mounted = false
+      unsubscribe()
+    }
+  }, [])
+
+  const handleUpdateAction = useCallback(async (): Promise<void> => {
+    setManualUpdateRequested(true)
+    setUpdateNoticeHidden(false)
+    try {
+      if (updateState?.status === 'downloaded') {
+        await window.api.update.install()
+        return
+      }
+      if (updateState?.status === 'available') {
+        const next = await window.api.update.download()
+        setUpdateState(next)
+        return
+      }
+      const next = await window.api.update.check()
+      setUpdateState(next)
+    } catch (err) {
+      setUpdateState(prev => ({
+        status: 'error',
+        currentVersion: prev?.currentVersion ?? '',
+        availableVersion: prev?.availableVersion,
+        message: String((err as Error)?.message ?? err),
+      }))
+    }
+  }, [updateState?.status])
 
   const handleNodeMove = useCallback(async (id: string, x: number, y: number): Promise<void> => {
     await window.api.node.updatePosition(id, x, y)
@@ -2112,12 +2159,93 @@ export default function App(): JSX.Element {
     setConfirmDeleteProject(null)
   }
 
+  const manualUpdateNoticeVisible = !!updateState
+    && manualUpdateRequested
+    && (updateState.status === 'checking' || updateState.status === 'not-available' || updateState.status === 'error' || updateState.status === 'disabled')
+  const updateNoticeVisible = !!updateState
+    && !updateNoticeHidden
+    && (
+      updateState.status === 'available'
+      || updateState.status === 'downloading'
+      || updateState.status === 'downloaded'
+      || manualUpdateNoticeVisible
+    )
+  const updateProgress = Math.round(updateState?.progress ?? 0)
+  const updateDisplayTitle = updateState?.status === 'downloaded'
+    ? '업데이트 준비 완료'
+    : updateState?.status === 'downloading'
+      ? '업데이트 다운로드 중'
+      : updateState?.status === 'checking'
+        ? '업데이트 확인 중'
+        : updateState?.status === 'not-available'
+          ? '최신 버전'
+          : updateState?.status === 'error'
+            ? '업데이트 확인 실패'
+            : updateState?.status === 'disabled'
+              ? '업데이트 확인 비활성화'
+              : '새 업데이트 발견'
+  const updateDisplayMessage = updateState?.message
+    ?? (updateState?.availableVersion
+      ? `버전 ${updateState.availableVersion} 업데이트를 사용할 수 있습니다.`
+      : '새 버전 업데이트를 사용할 수 있습니다.')
+  const updateActionBusy = updateState?.status === 'checking' || updateState?.status === 'downloading'
+  const updateActionLabel = updateState?.status === 'downloaded'
+    ? '업데이트 적용'
+    : updateState?.status === 'available'
+      ? '업데이트 다운로드'
+      : updateState?.status === 'downloading'
+        ? `다운로드 ${updateProgress}%`
+        : updateState?.status === 'checking'
+          ? '확인 중'
+          : '업데이트 확인'
+
   if (loading) {
     return <div className="app" data-theme={theme} style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'var(--text-4)', fontSize: 13 }}>로드 중…</div>
   }
 
   return (
     <div className="app" data-theme={theme}>
+      {updateNoticeVisible && updateState && (
+        <div className="update-notice no-drag">
+          <div className="update-notice-main">
+            <div className="update-notice-title">{updateDisplayTitle}</div>
+            <div className="update-notice-message">
+              {updateDisplayMessage}
+              {updateState.availableVersion && (
+                <span className="update-notice-version">
+                  현재 {updateState.currentVersion} → 최신 {updateState.availableVersion}
+                </span>
+              )}
+            </div>
+            {updateState.status === 'downloading' && (
+              <div className="update-progress" aria-label={`업데이트 다운로드 ${updateProgress}%`}>
+                <div className="update-progress-bar" style={{ width: `${updateProgress}%` }} />
+              </div>
+            )}
+          </div>
+          <div className="update-notice-actions">
+            {updateState.status === 'available' && (
+              <button className="btn" onClick={() => { void window.api.update.download() }}>
+                다운로드
+              </button>
+            )}
+            {updateState.status === 'downloaded' && (
+              <button className="btn primary" onClick={() => { void window.api.update.install() }}>
+                재시작 후 적용
+              </button>
+            )}
+            <button
+              className="btn ghost"
+              onClick={() => {
+                setUpdateNoticeHidden(true)
+                setManualUpdateRequested(false)
+              }}
+            >
+              나중에
+            </button>
+          </div>
+        </div>
+      )}
       {/* ── Sidebar ── */}
       <aside
         ref={sidebarRef}
@@ -2131,6 +2259,7 @@ export default function App(): JSX.Element {
               <div className="sidebar-brand">
                 <div className="brand-mark">a8a</div>
                 <span className="brand-name">a8a</span>
+                <span className="brand-version">{updateState?.currentVersion ? `ver. ${updateState.currentVersion}` : ''}</span>
               </div>
               <button
                 className="btn ghost icon"
@@ -2289,6 +2418,15 @@ export default function App(): JSX.Element {
             )}
           </div>
           <div className="topbar-right no-drag">
+            <button
+              className="btn topbar-update-btn"
+              onClick={() => { void handleUpdateAction() }}
+              disabled={updateActionBusy}
+              title="최신 버전 확인"
+            >
+              <IcoDownload size={13} />
+              {updateActionLabel}
+            </button>
             <button className="btn ghost icon" onClick={toggleTheme} title={theme === 'dark' ? '라이트 테마' : '다크 테마'}>
               {theme === 'dark' ? <IcoSun size={15} /> : <IcoMoon size={15} />}
             </button>
