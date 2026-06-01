@@ -25,6 +25,12 @@ export const JSON_VIEWER_CSS = `
 .jv-key { font-weight: 600; font-size: 12px; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1; }
 .jv-path { color: #8b949e; font-size: 10px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 90px; font-family: "JetBrains Mono", Consolas, monospace; }
 .jv-val { font-size: 13px; word-break: break-all; line-height: 1.4; }
+.jv-copy { width: 24px; height: 24px; border: 1px solid transparent; border-radius: 6px; background: transparent; color: #6e7781; display: inline-flex; align-items: center; justify-content: center; cursor: pointer; flex-shrink: 0; padding: 0; }
+.jv-copy:hover { background: rgba(31,35,40,0.06); border-color: rgba(31,35,40,0.12); color: #1f2328; }
+.jv-copy:focus-visible { outline: 2px solid #d97706; outline-offset: 2px; }
+.jv-copy.copied { background: #dcfce7; border-color: #86efac; color: #166534; }
+.jv-copy.failed { background: #fee2e2; border-color: #fca5a5; color: #991b1b; }
+.jv-copy svg { width: 14px; height: 14px; pointer-events: none; }
 .jv-card.t-str { background: #ecfdf5; border-color: #a7f3d0; }
 .jv-card.t-str .jv-icon, .jv-card.t-str .jv-val { color: #047857; }
 .jv-card.t-str .jv-key { color: #064e3b; }
@@ -92,21 +98,60 @@ export const JSON_VIEWER_JS = `
     while (target.firstChild) target.removeChild(target.firstChild);
     target.insertAdjacentHTML('beforeend', html);
   }
+  function copyValueText(value) {
+    if (typeof value === 'string') return value;
+    if (value === undefined) return 'undefined';
+    try { return JSON.stringify(value, null, 2); } catch(e) { return String(value); }
+  }
+  function copyButton(value) {
+    return '<button type="button" class="jv-copy" data-copy="'+escapeHtml(copyValueText(value))+'" title="값 복사" aria-label="값 복사"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2"></rect><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path></svg></button>';
+  }
+  function copyText(text) {
+    function fallback() {
+      var textarea = document.createElement('textarea');
+      textarea.value = text;
+      textarea.setAttribute('readonly', '');
+      textarea.style.position = 'fixed';
+      textarea.style.top = '0';
+      textarea.style.left = '-9999px';
+      document.body.appendChild(textarea);
+      textarea.focus();
+      textarea.select();
+      var ok = false;
+      try { ok = document.execCommand('copy'); } finally { document.body.removeChild(textarea); }
+      return ok ? Promise.resolve() : Promise.reject(new Error('copy failed'));
+    }
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      return navigator.clipboard.writeText(text).catch(fallback);
+    }
+    return fallback();
+  }
+  function showCopyResult(button, ok) {
+    button.classList.remove('copied', 'failed');
+    button.classList.add(ok ? 'copied' : 'failed');
+    button.setAttribute('title', ok ? '복사됨' : '복사 실패');
+    button.setAttribute('aria-label', ok ? '복사됨' : '복사 실패');
+    window.setTimeout(function(){
+      button.classList.remove('copied', 'failed');
+      button.setAttribute('title', '값 복사');
+      button.setAttribute('aria-label', '값 복사');
+    }, 1200);
+  }
   function renderUiNode(key, value) {
     var t = typeOf(value);
     var labelKey = escapeHtml(humanKey(String(key)));
     var pathKey = escapeHtml(String(key));
     if (t === 'string') {
-      return '<div class="jv-card t-str"><div class="jv-card-hd"><span class="jv-icon">T</span><span class="jv-key">'+labelKey+'</span><span class="jv-path">'+pathKey+'</span></div><div class="jv-val">'+escapeHtml(value)+'</div></div>';
+      return '<div class="jv-card t-str"><div class="jv-card-hd"><span class="jv-icon">T</span><span class="jv-key">'+labelKey+'</span><span class="jv-path">'+pathKey+'</span>'+copyButton(value)+'</div><div class="jv-val">'+escapeHtml(value)+'</div></div>';
     }
     if (t === 'number') {
-      return '<div class="jv-card t-num"><div class="jv-card-hd"><span class="jv-icon">#</span><span class="jv-key">'+labelKey+'</span><span class="jv-path">'+pathKey+'</span></div><div class="jv-val">'+escapeHtml(String(value))+'</div></div>';
+      return '<div class="jv-card t-num"><div class="jv-card-hd"><span class="jv-icon">#</span><span class="jv-key">'+labelKey+'</span><span class="jv-path">'+pathKey+'</span>'+copyButton(value)+'</div><div class="jv-val">'+escapeHtml(String(value))+'</div></div>';
     }
     if (t === 'boolean') {
-      return '<div class="jv-card t-bool"><div class="jv-card-hd"><span class="jv-icon">?</span><span class="jv-key">'+labelKey+'</span><span class="jv-path">'+pathKey+'</span></div><div class="jv-val">'+(value ? 'true' : 'false')+'</div></div>';
+      return '<div class="jv-card t-bool"><div class="jv-card-hd"><span class="jv-icon">?</span><span class="jv-key">'+labelKey+'</span><span class="jv-path">'+pathKey+'</span>'+copyButton(value)+'</div><div class="jv-val">'+(value ? 'true' : 'false')+'</div></div>';
     }
     if (t === 'null') {
-      return '<div class="jv-card t-null"><div class="jv-card-hd"><span class="jv-icon">∅</span><span class="jv-key">'+labelKey+'</span><span class="jv-path">'+pathKey+'</span></div><div class="jv-val">null</div></div>';
+      return '<div class="jv-card t-null"><div class="jv-card-hd"><span class="jv-icon">∅</span><span class="jv-key">'+labelKey+'</span><span class="jv-path">'+pathKey+'</span>'+copyButton(value)+'</div><div class="jv-val">null</div></div>';
     }
     var isArr = (t === 'array');
     var count = isArr ? value.length : Object.keys(value).length;
@@ -122,7 +167,7 @@ export const JSON_VIEWER_JS = `
       inner = parts2.join('');
     }
     var iconStr = isArr ? '[]' : '{}';
-    return '<div class="jv-group"><div class="jv-group-hd" data-toggle="group"><span class="jv-toggle"></span><span class="jv-icon">'+iconStr+'</span><span class="jv-group-name">'+labelKey+'</span><span class="jv-count">('+count+')</span></div><div class="jv-group-body"><div class="jv-grid">'+inner+'</div></div></div>';
+    return '<div class="jv-group"><div class="jv-group-hd" data-toggle="group"><span class="jv-toggle"></span><span class="jv-icon">'+iconStr+'</span><span class="jv-group-name">'+labelKey+'</span><span class="jv-count">('+count+')</span>'+copyButton(value)+'</div><div class="jv-group-body"><div class="jv-grid">'+inner+'</div></div></div>';
   }
   function renderUi(data) {
     if (data === null || data === undefined) return '<div class="jv-note">데이터 없음</div>';
@@ -213,6 +258,13 @@ export const JSON_VIEWER_JS = `
           if (allPanes[j].getAttribute('data-pane') === which) allPanes[j].classList.add('active');
           else allPanes[j].classList.remove('active');
         }
+        return;
+      }
+      var copyBtn = target.closest && target.closest('.jv-copy');
+      if (copyBtn && el.contains(copyBtn)) {
+        e.preventDefault();
+        e.stopPropagation();
+        copyText(copyBtn.getAttribute('data-copy') || '').then(function(){ showCopyResult(copyBtn, true); }).catch(function(){ showCopyResult(copyBtn, false); });
         return;
       }
       var groupHd = target.closest && target.closest('[data-toggle="group"]');

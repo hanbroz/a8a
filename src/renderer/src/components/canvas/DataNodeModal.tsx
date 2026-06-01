@@ -9,8 +9,7 @@ interface Props {
   isNew?: boolean
   initialInput?: string
   onRun?: () => string | Promise<string>
-  moduleLabel?: string
-  onSave: (nodeId: string, displayLabel: string, moduleLabel: string, config: string) => Promise<void>
+  onSave: (nodeId: string, label: string, config: string) => Promise<void>
   onDelete?: () => Promise<void>
   onClose: () => void
 }
@@ -105,9 +104,7 @@ interface ExcelInfo {
 
 export default function DataNodeModal({ node, isNew, initialInput, onRun, onSave, onDelete, onClose }: Props): JSX.Element {
   const initial = parseConfig(node.config)
-  const initialModuleLabel = node.moduleLabel ?? node.label
-  const [displayLabel, setDisplayLabel] = useState(node.displayLabel ?? (node.projectId ? node.label : ''))
-  const [moduleName, setModuleName] = useState(initialModuleLabel)
+  const [moduleName, setModuleName] = useState(node.label)
   const [outputJson, setOutputJson] = useState(initial.output)
   const [outputError, setOutputError] = useState(false)
   const [excelInfo, setExcelInfo] = useState<ExcelInfo | null>(null)
@@ -139,14 +136,13 @@ export default function DataNodeModal({ node, isNew, initialInput, onRun, onSave
 
   useEffect(() => {
     const nextInitial = parseConfig(node.config)
-    setDisplayLabel(node.displayLabel ?? (node.projectId ? node.label : ''))
-    setModuleName(node.moduleLabel ?? node.label)
+    setModuleName(node.label)
     setOutputJson(nextInitial.output)
     setOutputError(false)
     setInputJson(initialInput ?? '')
     setInputError(false)
     setExcelInfo(null)
-  }, [node.id, node.label, node.displayLabel, node.moduleLabel, node.projectId, node.config, initialInput])
+  }, [node.id, node.label, node.config, initialInput])
 
   const onHeaderDown = useCallback((e: React.MouseEvent) => {
     if (isMaximized) return
@@ -284,9 +280,8 @@ export default function DataNodeModal({ node, isNew, initialInput, onRun, onSave
       return
     }
     const config: DataConfig = { output: result.value }
-    const nextDisplayLabel = displayLabel.trim()
-    const nextModuleName = moduleName.trim() || nextDisplayLabel || 'Data'
-    await onSave(node.id, nextDisplayLabel, nextModuleName, JSON.stringify(config))
+    const nextModuleName = moduleName.trim() || 'DATA'
+    await onSave(node.id, nextModuleName, JSON.stringify(config))
     setSaving(false); onClose()
   }
 
@@ -376,23 +371,7 @@ export default function DataNodeModal({ node, isNew, initialInput, onRun, onSave
 
                 <div className="dm-field">
                   <label className="dm-field-label">모듈 이름</label>
-                  <div className="module-name-row">
-                    <label className="module-name-cell">
-                      <span>표시이름</span>
-                      <input
-                        className="dm-input"
-                        value={displayLabel}
-                        onChange={e => setDisplayLabel(e.target.value)}
-                        placeholder={node.projectId ? (moduleName || 'Data') : '캔버스에서 설정'}
-                        disabled={!node.projectId}
-                        autoFocus={!!node.projectId}
-                      />
-                    </label>
-                    <label className="module-name-cell">
-                      <span>모듈 이름</span>
-                      <input className="dm-input" value={moduleName} onChange={e => setModuleName(e.target.value)} placeholder="Data" autoFocus={!node.projectId} />
-                    </label>
-                  </div>
+                  <input className="dm-input" value={moduleName} onChange={e => setModuleName(e.target.value)} placeholder="DATA" autoFocus />
                 </div>
 
                 {/* Excel upload — populates OUTPUT on success; info chip is local-only */}
@@ -488,7 +467,7 @@ export default function DataNodeModal({ node, isNew, initialInput, onRun, onSave
             )}
             {confirmDelete && (
               <>
-                <span className="dm-delete-warn">⚠ {node.moduleId ? '캔버스에서 노드만 제거됩니다. 모듈은 유지됩니다.' : '이 노드가 삭제됩니다.'}</span>
+                <span className="dm-delete-warn">⚠ 이 모듈이 삭제됩니다.</span>
                 <button className="btn ghost" onClick={() => setConfirmDelete(false)}>취소</button>
                 <button
                   className="btn dm-delete-confirm-btn"

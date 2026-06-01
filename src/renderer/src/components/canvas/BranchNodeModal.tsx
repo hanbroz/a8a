@@ -10,8 +10,7 @@ interface Props {
   isNew?: boolean
   initialInput?: string
   onRun?: () => string | Promise<string>
-  moduleLabel?: string
-  onSave: (nodeId: string, displayLabel: string, moduleLabel: string, config: string) => Promise<void>
+  onSave: (nodeId: string, label: string, config: string) => Promise<void>
   onDelete?: () => Promise<void>
   onClose: () => void
 }
@@ -92,8 +91,7 @@ function isEmptyBranchConfig(raw: string): boolean {
 export default function BranchNodeModal({ node, isNew, initialInput, onRun, onSave, onDelete, onClose }: Props): JSX.Element {
   const initial = parseBranchConfig(node.config)
   const emptyConfig = isEmptyBranchConfig(node.config)
-  const [displayLabel, setDisplayLabel] = useState(node.displayLabel ?? (node.projectId ? node.label : ''))
-  const [moduleName, setModuleName] = useState(node.moduleLabel ?? node.label)
+  const [moduleName, setModuleName] = useState(node.label)
   const [mode, setMode] = useState<BranchMode>(initial.mode ?? (isNew || emptyConfig ? 'manual' : 'condition'))
   const [expression, setExpression] = useState(initial.expression)
   const [trueLabel, setTrueLabel] = useState(initial.trueLabel ?? 'TRUE')
@@ -289,9 +287,8 @@ export default function BranchNodeModal({ node, isNew, initialInput, onRun, onSa
         selectedRoute,
         manualSource,
       }
-      const nextDisplayLabel = displayLabel.trim()
-      const nextModuleName = moduleName.trim() || nextDisplayLabel || 'Branch'
-      await onSave(node.id, nextDisplayLabel, nextModuleName, JSON.stringify(config, null, 2))
+      const nextModuleName = moduleName.trim() || 'BRANCH'
+      await onSave(node.id, nextModuleName, JSON.stringify(config, null, 2))
       onClose()
     } finally {
       setSaving(false)
@@ -369,29 +366,13 @@ export default function BranchNodeModal({ node, isNew, initialInput, onRun, onSa
             <div className="branch-settings-pane">
               <div className="dm-field">
                 <label className="dm-field-label">모듈 이름</label>
-                <div className="module-name-row">
-                  <label className="module-name-cell">
-                    <span>표시이름</span>
-                    <input
-                      className="dm-input"
-                      value={displayLabel}
-                      onChange={e => setDisplayLabel(e.target.value)}
-                      placeholder={node.projectId ? (moduleName || 'Branch') : '캔버스에서 설정'}
-                      disabled={!node.projectId}
-                      autoFocus={!!node.projectId}
-                    />
-                  </label>
-                  <label className="module-name-cell">
-                    <span>모듈 이름</span>
-                    <input
-                      className="dm-input"
-                      value={moduleName}
-                      onChange={e => setModuleName(e.target.value)}
-                      placeholder="Branch"
-                      autoFocus={!node.projectId}
-                    />
-                  </label>
-                </div>
+                <input
+                  className="dm-input"
+                  value={moduleName}
+                  onChange={e => setModuleName(e.target.value)}
+                  placeholder="BRANCH"
+                  autoFocus
+                />
               </div>
 
               <div className="dm-field">
@@ -554,7 +535,7 @@ export default function BranchNodeModal({ node, isNew, initialInput, onRun, onSa
             )}
             {confirmDelete ? (
               <>
-                <span className="dm-delete-warn">{node.moduleId ? '캔버스에서 노드만 제거합니다. 모듈은 유지됩니다.' : '이 노드가 삭제됩니다.'}</span>
+                <span className="dm-delete-warn">이 모듈이 삭제됩니다.</span>
                 <button className="btn ghost" onClick={() => setConfirmDelete(false)}>취소</button>
                 <button className="btn dm-delete-confirm-btn" onClick={async () => { await onDelete?.(); onClose() }}>삭제 확인</button>
               </>

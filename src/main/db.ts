@@ -236,6 +236,7 @@ function createSchema(): void {
       }
     }
   } catch { /* migration failed, continue */ }
+  migrateLegacyModuleNodesToStandalone()
 }
 
 function seedIfEmpty(): void {
@@ -276,12 +277,6 @@ export function deleteWorkspace(id: string): void {
     projectIds.forEach(p => {
       db.run('DELETE FROM edges WHERE project_id = ?', [p.id])
       db.run('DELETE FROM nodes WHERE project_id = ?', [p.id])
-    })
-    const moduleIds = queryAll<{ id: string }>('SELECT id FROM modules WHERE workspace_id = ?', [id])
-    moduleIds.forEach(m => {
-      const linkedNodeIds = queryAll<{ id: string }>('SELECT id FROM nodes WHERE module_id = ?', [m.id])
-      linkedNodeIds.forEach(n => db.run('DELETE FROM edges WHERE source_node_id = ? OR target_node_id = ?', [n.id, n.id]))
-      db.run('DELETE FROM nodes WHERE module_id = ?', [m.id])
     })
     const envIds = queryAll<{ id: string }>('SELECT id FROM environments WHERE workspace_id = ?', [id])
     envIds.forEach(e => db.run('DELETE FROM env_vars WHERE environment_id = ?', [e.id]))
@@ -393,12 +388,9 @@ export type NodeRow = {
   projectId: string
   type: string
   label: string
-  displayLabel: string
-  moduleLabel: string | null
   x: number
   y: number
   config: string
-  moduleId: string | null
 }
 
 function mergeNodeModuleConfig(moduleConfig: string | null, nodeConfig: string | null): string {
@@ -425,6 +417,39 @@ function mergeNodeModuleConfig(moduleConfig: string | null, nodeConfig: string |
   return override
 }
 
+function migrateLegacyModuleNodesToStandalone(): void {
+  const linkedNodes = queryAll<{
+    id: string
+    type: string
+    label: string
+    config: string
+    mod_type: string | null
+    mod_label: string | null
+    mod_config: string | null
+  }>(
+    `SELECT n.id, n.type, n.label, COALESCE(n.config, '') as config,
+      m.type as mod_type, m.label as mod_label, m.config as mod_config
+     FROM nodes n LEFT JOIN modules m ON n.module_id = m.id
+     WHERE n.module_id IS NOT NULL`
+  )
+
+  withTransaction(() => {
+    linkedNodes.forEach(node => {
+      const nextType = node.mod_type ?? node.type
+      const nextLabel = node.label.trim() || node.mod_label || node.label || nextType
+      const nextConfig = node.mod_config != null
+        ? mergeNodeModuleConfig(node.mod_config, node.config)
+        : node.config
+      db.run(
+        'UPDATE nodes SET type = ?, label = ?, config = ?, module_id = NULL WHERE id = ?',
+        [nextType, nextLabel, nextConfig, node.id]
+      )
+    })
+    db.run('UPDATE nodes SET module_id = NULL WHERE module_id IS NOT NULL')
+    db.run('DELETE FROM modules')
+  })
+}
+
 function ensureDefaultNodes(projectId: string): void {
   ensureProjectExists(projectId)
   withTransaction(() => {
@@ -436,13 +461,11 @@ function ensureDefaultNodes(projectId: string): void {
 
 export function listNodes(projectId: string): NodeRow[] {
   const rows = queryAll<{
-    id: string; project_id: string; type: string; label: string; x: number; y: number; config: string; module_id: string | null;
-    mod_type: string | null; mod_label: string | null; mod_config: string | null
+    id: string; project_id: string; type: string; label: string; x: number; y: number; config: string
   }>(
-    `SELECT n.id, n.project_id, n.type, n.label, n.x, n.y, COALESCE(n.config, '') as config, n.module_id,
-      m.type as mod_type, m.label as mod_label, m.config as mod_config
-     FROM nodes n LEFT JOIN modules m ON n.module_id = m.id
-     WHERE n.project_id = ?`,
+    `SELECT id, project_id, type, label, x, y, COALESCE(config, '') as config
+     FROM nodes
+     WHERE project_id = ?`,
     [projectId]
   )
   if (rows.length === 0) {
@@ -452,14 +475,11 @@ export function listNodes(projectId: string): NodeRow[] {
   return rows.map(r => ({
     id: r.id,
     projectId: r.project_id,
-    type: r.module_id && r.mod_type ? r.mod_type : r.type,
-    label: r.label.trim() ? r.label : (r.module_id && r.mod_label != null ? r.mod_label : r.label),
-    displayLabel: r.label,
-    moduleLabel: r.mod_label ?? null,
+    type: r.type,
+    label: r.label,
     x: r.x,
     y: r.y,
-    config: r.module_id && r.mod_config != null ? mergeNodeModuleConfig(r.mod_config, r.config) : r.config,
-    moduleId: r.module_id ?? null
+    config: r.config
   }))
 }
 
@@ -468,7 +488,7 @@ export function createNode(projectId: string, type: string, label: string, x: nu
   const id = randomUUID()
   db.run('INSERT INTO nodes (id, project_id, type, label, x, y, config) VALUES (?, ?, ?, ?, ?, ?, ?)', [id, projectId, type, label, x, y, ''])
   save()
-  return { id, projectId, type, label, displayLabel: label, moduleLabel: null, x, y, config: '', moduleId: null }
+  return { id, projectId, type, label, x, y, config: '' }
 }
 
 export function updateNodePosition(id: string, x: number, y: number): void {
@@ -561,97 +581,57 @@ function nextModuleSort(workspaceId: string | null, type: string, isCommon: bool
 }
 
 export function listModules(workspaceId: string): ModuleRow[] {
-  const rows = queryAll<{ id: string; workspace_id: string | null; type: string; label: string; config: string; is_common: number }>(
-    'SELECT id, workspace_id, type, label, COALESCE(config, \'\') as config, is_common FROM modules WHERE workspace_id = ? OR is_common = 1 ORDER BY sort, rowid',
-    [workspaceId]
-  )
-  return rows.map(r => ({ id: r.id, workspaceId: r.workspace_id, type: r.type, label: r.label, config: r.config, isCommon: r.is_common === 1 }))
+  ensureWorkspaceExists(workspaceId)
+  return []
 }
 
 export function listAllModules(): ModuleRow[] {
-  const rows = queryAll<{ id: string; workspace_id: string | null; type: string; label: string; config: string; is_common: number }>(
-    'SELECT id, workspace_id, type, label, COALESCE(config, \'\') as config, is_common FROM modules ORDER BY sort, rowid'
-  )
-  return rows.map(r => ({ id: r.id, workspaceId: r.workspace_id, type: r.type, label: r.label, config: r.config, isCommon: r.is_common === 1 }))
+  return []
 }
 
 export function createCommonModule(type: string, label: string, config: string): ModuleRow {
-  const id = randomUUID()
-  const sort = nextModuleSort(null, type, true)
-  db.run('INSERT INTO modules (id, workspace_id, type, label, config, is_common, sort) VALUES (?, NULL, ?, ?, ?, 1, ?)', [id, type, label, config, sort])
-  save()
-  return { id, workspaceId: null, type, label, config, isCommon: true }
+  void type
+  void label
+  void config
+  throw new Error('모듈 등록은 더 이상 지원되지 않습니다. 캔버스에 타입을 드래그해 독립 노드를 생성하세요.')
 }
 
 export function createModule(workspaceId: string, type: string, label: string, config: string): ModuleRow {
   ensureWorkspaceExists(workspaceId)
-  const id = randomUUID()
-  const sort = nextModuleSort(workspaceId, type, false)
-  db.run('INSERT INTO modules (id, workspace_id, type, label, config, is_common, sort) VALUES (?, ?, ?, ?, ?, 0, ?)', [id, workspaceId, type, label, config, sort])
-  save()
-  return { id, workspaceId, type, label, config, isCommon: false }
+  void type
+  void label
+  void config
+  throw new Error('모듈 등록은 더 이상 지원되지 않습니다. 캔버스에 타입을 드래그해 독립 노드를 생성하세요.')
 }
 
 export function updateModule(id: string, label: string, config: string): void {
-  db.run('UPDATE modules SET label = ?, config = ? WHERE id = ?', [label, config, id])
-  save()
+  void id
+  void label
+  void config
+  throw new Error('모듈 수정은 더 이상 지원되지 않습니다. 캔버스 노드를 직접 수정하세요.')
 }
 
 export function setModuleCommon(id: string, isCommon: boolean, workspaceId: string): void {
-  const mod = queryOne<{ type: string }>('SELECT type FROM modules WHERE id = ?', [id])
-  if (!mod) throw new Error(`Module ${id} not found`)
-  if (isCommon) {
-    db.run('UPDATE modules SET is_common = 1, workspace_id = NULL, sort = ? WHERE id = ?', [nextModuleSort(null, mod.type, true), id])
-  } else {
-    ensureWorkspaceExists(workspaceId)
-    db.run('UPDATE modules SET is_common = 0, workspace_id = ?, sort = ? WHERE id = ?', [workspaceId, nextModuleSort(workspaceId, mod.type, false), id])
-  }
-  save()
+  void id
+  void isCommon
+  ensureWorkspaceExists(workspaceId)
+  throw new Error('공통 모듈 전환은 더 이상 지원되지 않습니다.')
 }
 
 export function reorderCommonModules(type: string, orderedIds: string[]): void {
-  const rows = queryAll<{ id: string }>(
-    'SELECT id FROM modules WHERE workspace_id IS NULL AND is_common = 1 AND type = ? ORDER BY sort, rowid',
-    [type]
-  )
-  const currentIds = rows.map(row => row.id)
-  const currentSet = new Set(currentIds)
-  if (orderedIds.length !== currentIds.length || orderedIds.some(id => !currentSet.has(id))) {
-    throw new Error('같은 카테고리의 공통 모듈 안에서만 순서를 변경할 수 있습니다.')
-  }
-  withTransaction(() => {
-    orderedIds.forEach((id, index) => {
-      db.run('UPDATE modules SET sort = ? WHERE id = ?', [index, id])
-    })
-  })
-  save()
+  void type
+  void orderedIds
 }
 
 export function deleteModule(id: string): void {
-  withTransaction(() => {
-    const nodeIds = queryAll<{ id: string }>('SELECT id FROM nodes WHERE module_id = ?', [id])
-    nodeIds.forEach(n => db.run('DELETE FROM edges WHERE source_node_id = ? OR target_node_id = ?', [n.id, n.id]))
-    db.run('DELETE FROM nodes WHERE module_id = ?', [id])
-    db.run('DELETE FROM modules WHERE id = ?', [id])
-  })
+  db.run('DELETE FROM modules WHERE id = ?', [id])
   save()
 }
 
 export function createNodeFromModule(projectId: string, moduleId: string, x: number, y: number): NodeRow {
-  const project = ensureProjectExists(projectId)
-  const mod = queryOne<{ workspace_id: string | null; is_common: number; type: string; label: string; config: string }>(
-    'SELECT workspace_id, is_common, type, label, COALESCE(config, \'\') as config FROM modules WHERE id = ?',
-    [moduleId]
-  )
-  if (!mod) throw new Error(`Module ${moduleId} not found`)
-  if (mod.is_common !== 1 && mod.workspace_id !== project.workspace_id) {
-    throw new Error('다른 워크스페이스의 모듈은 이 프로젝트에 배치할 수 없습니다.')
-  }
-  const id = randomUUID()
-  db.run(
-    'INSERT INTO nodes (id, project_id, type, label, x, y, config, module_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
-    [id, projectId, mod.type, '', x, y, '', moduleId]
-  )
-  save()
-  return { id, projectId, type: mod.type, label: mod.label, displayLabel: '', moduleLabel: mod.label, x, y, config: mod.config, moduleId }
+  void projectId
+  void moduleId
+  void x
+  void y
+  throw new Error('모듈 참조 생성은 더 이상 지원되지 않습니다. node:create를 사용하세요.')
 }

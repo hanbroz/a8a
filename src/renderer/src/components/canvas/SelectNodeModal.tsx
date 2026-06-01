@@ -8,8 +8,7 @@ interface Props {
   isNew?: boolean
   initialInput?: string
   onRun?: () => string | Promise<string>
-  moduleLabel?: string
-  onSave: (nodeId: string, displayLabel: string, moduleLabel: string, config: string) => Promise<void>
+  onSave: (nodeId: string, label: string, config: string) => Promise<void>
   onDelete?: () => Promise<void>
   onClose: () => void
 }
@@ -244,8 +243,7 @@ export default function SelectNodeModal({
   onClose,
 }: Props): JSX.Element {
   const initial = parseConfig(node.config)
-  const [displayLabel, setDisplayLabel] = useState(node.displayLabel ?? (node.projectId ? node.label : ''))
-  const [moduleName, setModuleName] = useState(node.moduleLabel ?? node.label)
+  const [moduleName, setModuleName] = useState(node.label)
   const [selectionType, setSelectionType] = useState<'multiple' | 'single'>(initial.selectionType === 'single' ? 'single' : 'multiple')
   const [selectedRowIndices, setSelectedRowIndices] = useState<number[]>(normalizeSelection(initial.selectedRowIndices, selectionType))
   const [selectedJsonPathIds, setSelectedJsonPathIds] = useState<string[]>(normalizeSelection(initial.selectedJsonPaths ?? [], selectionType))
@@ -267,8 +265,7 @@ export default function SelectNodeModal({
 
   useEffect(() => {
     const nextInitial = parseConfig(node.config)
-    setDisplayLabel(node.displayLabel ?? (node.projectId ? node.label : ''))
-    setModuleName(node.moduleLabel ?? node.label)
+    setModuleName(node.label)
     const nextSelectionType = nextInitial.selectionType === 'single' ? 'single' : 'multiple'
     setSelectionType(nextSelectionType)
     setSelectedRowIndices(normalizeSelection(nextInitial.selectedRowIndices, nextSelectionType))
@@ -283,7 +280,7 @@ export default function SelectNodeModal({
       return initialInput && parseTableData(initialInput) ? 'table' : 'json'
     })
     setOutputOverride(null)
-  }, [node.id, node.label, node.displayLabel, node.moduleLabel, node.projectId, node.config, initialInput])
+  }, [node.id, node.label, node.config, initialInput])
 
   const inputRows = parseTableData(inputJson)
   const columns = inputRows && inputRows.length > 0 ? Object.keys(inputRows[0]) : []
@@ -446,9 +443,8 @@ export default function SelectNodeModal({
       selectionType,
       autoSelect,
     }
-    const nextDisplayLabel = displayLabel.trim()
-    const nextModuleName = moduleName.trim() || nextDisplayLabel || 'Select'
-    await onSave(node.id, nextDisplayLabel, nextModuleName, JSON.stringify(config))
+    const nextModuleName = moduleName.trim() || 'SELECT'
+    await onSave(node.id, nextModuleName, JSON.stringify(config))
     setSaving(false)
     onClose()
   }
@@ -614,29 +610,13 @@ export default function SelectNodeModal({
               <div className="dm-pane-body dm-settings-body">
                 <div className="dm-field">
                   <label className="dm-field-label">모듈 이름</label>
-                  <div className="module-name-row">
-                    <label className="module-name-cell">
-                      <span>표시이름</span>
-                      <input
-                        className="dm-input"
-                        value={displayLabel}
-                        onChange={e => setDisplayLabel(e.target.value)}
-                        placeholder={node.projectId ? (moduleName || 'Select') : '캔버스에서 설정'}
-                        disabled={!node.projectId}
-                        autoFocus={!!node.projectId}
-                      />
-                    </label>
-                    <label className="module-name-cell">
-                      <span>모듈 이름</span>
-                      <input
-                        className="dm-input"
-                        value={moduleName}
-                        onChange={e => setModuleName(e.target.value)}
-                        placeholder="Select"
-                        autoFocus={!node.projectId}
-                      />
-                    </label>
-                  </div>
+                  <input
+                    className="dm-input"
+                    value={moduleName}
+                    onChange={e => setModuleName(e.target.value)}
+                    placeholder="SELECT"
+                    autoFocus
+                  />
                 </div>
 
                 <div className="dm-field">
@@ -680,7 +660,7 @@ export default function SelectNodeModal({
                       style={{ marginRight: 6 }}
                     />
                     <span style={{ fontSize: 12, color: 'var(--text-2)' }}>
-                      {autoSelect ? '팝업 없이 자동 실행' : '실행 시 선택 팝업 표시'}
+                      묻지 않고 선택
                     </span>
                   </label>
                 </div>
@@ -736,7 +716,7 @@ export default function SelectNodeModal({
             )}
             {confirmDelete && (
               <>
-                <span className="dm-delete-warn">⚠ {node.moduleId ? '캔버스에서 노드만 제거됩니다. 모듈은 유지됩니다.' : '이 노드가 삭제됩니다.'}</span>
+                <span className="dm-delete-warn">⚠ 이 모듈이 삭제됩니다.</span>
                 <button className="btn ghost" onClick={() => setConfirmDelete(false)}>취소</button>
                 <button className="btn dm-delete-confirm-btn" onClick={async () => { await onDelete!(); onClose() }}>삭제 확인</button>
               </>

@@ -135,12 +135,9 @@ declare global {
     projectId: string
     type: 'start' | 'end' | 'data' | 'select' | 'api' | 'branch'
     label: string
-    displayLabel?: string
-    moduleLabel?: string | null
     x: number
     y: number
     config: string
-    moduleId?: string | null
   }
 
   interface EndNodeConfig {

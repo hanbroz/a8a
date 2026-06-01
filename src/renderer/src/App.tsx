@@ -8,7 +8,7 @@ import type { ReportNode, ReportApiDetail, ReportVariable } from './utils/report
 import type { ScriptConsoleEntry } from './utils/scriptRuntime'
 import { IcoPanelL, IcoPlay, IcoReset, IcoSave, IcoSun, IcoMoon, IcoPanelB, IcoChevD, IcoX, IcoDownload } from './components/Icon'
 import WorkspaceHeader from './components/sidebar/WorkspaceHeader'
-import ModuleSection from './components/sidebar/ModuleSection'
+import ModulePaletteSection from './components/sidebar/ModulePaletteSection'
 import ProjectSection from './components/sidebar/ProjectSection'
 import ProjectModal from './components/sidebar/ProjectModal'
 import WorkspaceModal from './components/sidebar/WorkspaceModal'
@@ -100,8 +100,52 @@ interface CanvasExecution {
   pendingLogEntryId?: string | null
 }
 
+type EndNodePnrValue = {
+  name: string
+  value: string
+}
+
 function usedVariableKey(kind: ReportVariable['kind'], name: string): string {
   return `${kind}:${name}`
+}
+
+function isPnrEnvName(name: string): boolean {
+  const normalized = name.trim().toLowerCase()
+  const compact = normalized.replace(/[_\-\s]/g, '')
+  return normalized === 'pnr' || compact === 'recordlocator'
+}
+
+function formatPnrDisplayValue(value: unknown): string | null {
+  if (value === null || value === undefined) return null
+  if (typeof value === 'string') {
+    const trimmed = value.trim()
+    return trimmed.length > 0 ? trimmed : null
+  }
+  if (typeof value === 'number' || typeof value === 'boolean' || typeof value === 'bigint') {
+    return String(value)
+  }
+  try {
+    return JSON.stringify(value)
+  } catch {
+    return String(value)
+  }
+}
+
+function extractPnrEnvValues(variables: ReportVariable[]): EndNodePnrValue[] {
+  const seen = new Set<string>()
+  return variables
+    .filter(variable => variable.kind === 'env' && isPnrEnvName(variable.name))
+    .map(variable => {
+      const value = formatPnrDisplayValue(variable.value)
+      return value ? { name: variable.name, value } : null
+    })
+    .filter((item): item is EndNodePnrValue => {
+      if (!item) return false
+      const dedupeKey = `${item.name.toLowerCase()}:${item.value}`
+      if (seen.has(dedupeKey)) return false
+      seen.add(dedupeKey)
+      return true
+    })
 }
 
 function recordUsedTemplateVariables(
@@ -727,6 +771,25 @@ type Workspace = {
   projects: ProjectItem[]
 }
 
+type CopiedCanvasSelection = {
+  sourceProjectId: string
+  nodes: ApiNode[]
+  edges: ApiEdge[]
+}
+
+type CanvasModuleType = Extract<ApiNode['type'], 'data' | 'select' | 'api' | 'branch'>
+
+function isCanvasModuleType(type: string): type is CanvasModuleType {
+  return type === 'data' || type === 'select' || type === 'api' || type === 'branch'
+}
+
+function defaultCanvasNodeLabel(type: string): string {
+  if (type === 'select') return 'SELECT'
+  if (type === 'api') return 'API'
+  if (type === 'branch') return 'BRANCH'
+  return 'DATA'
+}
+
 export default function App(): JSX.Element {
   const [theme, setTheme] = useState<Theme>('dark')
   const [sidebarLayout, setSidebarLayout] = useState<SidebarLayout>('full')
@@ -749,16 +812,13 @@ export default function App(): JSX.Element {
 
   const [activeNodes, setActiveNodes] = useState<ApiNode[]>([])
   const [activeEdges, setActiveEdges] = useState<ApiEdge[]>([])
-  const [copiedCanvasNode, setCopiedCanvasNode] = useState<ApiNode | null>(null)
+  const [copiedCanvasSelection, setCopiedCanvasSelection] = useState<CopiedCanvasSelection | null>(null)
   const pasteOffsetRef = useRef(0)
   const [confirmDeleteEdge, setConfirmDeleteEdge] = useState<ApiEdge | null>(null)
   const [editingNode, setEditingNode] = useState<ApiNode | null>(null)
-  const [newModuleCtx, setNewModuleCtx] = useState<{ wsId: string | null; type: string } | null>(null)
-  const [editingModule, setEditingModule] = useState<ApiModule | null>(null)
   const [nodeRunInputs, setNodeRunInputs] = useState<Record<string, string>>({})
   const [nodeRunOutputs, setNodeRunOutputs] = useState<Record<string, string>>({})
   const [nodeScriptLogs, setNodeScriptLogs] = useState<Record<string, ScriptLogBundle>>({})
-  const [allModules, setAllModules] = useState<ApiModule[]>([])
 
   const [envDropdownOpen, setEnvDropdownOpen] = useState(false)
   const [envDropdownPos, setEnvDropdownPos] = useState({ top: 0, left: 0 })
@@ -772,7 +832,6 @@ export default function App(): JSX.Element {
   const [confirmDeleteWsId, setConfirmDeleteWsId] = useState<string | null>(null)
   const [confirmDeleteProject, setConfirmDeleteProject] = useState<{ wsId: string; project: ProjectItem } | null>(null)
   const [confirmDeleteEnv, setConfirmDeleteEnv] = useState<{ wsId: string; env: Environment } | null>(null)
-  const [confirmDeleteModule, setConfirmDeleteModule] = useState<ApiModule | null>(null)
   const [confirmDeleteCanvasNode, setConfirmDeleteCanvasNode] = useState<ApiNode | null>(null)
   const [iconTooltip, setIconTooltip] = useState<{ text: string; x: number; y: number } | null>(null)
 
@@ -781,6 +840,7 @@ export default function App(): JSX.Element {
   const [execLogs, setExecLogs] = useState<LogEntry[]>([])
   const [nodeStatuses, setNodeStatuses] = useState<Record<string, NodeStatus>>({})
   const [activeBranchRoutes, setActiveBranchRoutes] = useState<Record<string, 'true' | 'false'>>({})
+  const [endNodePnrValues, setEndNodePnrValues] = useState<Record<string, EndNodePnrValue[]>>({})
   const [activeLogNodeId, setActiveLogNodeId] = useState<string | null>(null)
   const [downloadingReport, setDownloadingReport] = useState(false)
   const [savedReport, setSavedReport] = useState<{ path: string } | null>(null)
@@ -900,6 +960,7 @@ export default function App(): JSX.Element {
     setExecLogs([])
     setNodeStatuses({})
     setActiveBranchRoutes({})
+    setEndNodePnrValues({})
     if (!activeProject) { setActiveNodes([]); setActiveEdges([]); return }
     // 프로젝트 전환 경쟁 상태 방지: 로드가 끝나기 전에 다른 프로젝트로 바꾸면
     // 뒤늦게 도착한 응답이 현재 캔버스를 덮어쓰고, 엉뚱한 프로젝트의 엣지를
@@ -921,10 +982,6 @@ export default function App(): JSX.Element {
     }).catch(console.error)
     return () => { cancelled = true }
   }, [activeProject?.id])
-
-  useEffect(() => {
-    window.api.module.listAll().then(setAllModules).catch(console.error)
-  }, [])
 
   useEffect(() => {
     let mounted = true
@@ -1006,23 +1063,14 @@ export default function App(): JSX.Element {
     setActiveNodes(prev => prev.map(n => n.id === nodeId ? { ...n, config } : n))
   }
 
-  const handleDataNodeSave = async (nodeId: string, displayLabel: string, moduleLabelOrConfig: string, maybeConfig?: string): Promise<void> => {
-    const config = maybeConfig ?? moduleLabelOrConfig
-    const moduleLabel = maybeConfig ? moduleLabelOrConfig : displayLabel
+  const handleDataNodeSave = async (nodeId: string, label: string, config: string): Promise<void> => {
     const node = activeNodes.find(n => n.id === nodeId)
-    if (node?.moduleId) {
-      const nextDisplayLabel = displayLabel.trim()
-      const nextModuleLabel = moduleLabel.trim() || nextDisplayLabel || node.moduleLabel || node.label
-      await window.api.node.updateLabel(nodeId, nextDisplayLabel)
-      await handleModuleUpdate(node.moduleId, nextModuleLabel, config)
-    } else {
-      const nextLabel = displayLabel.trim() || moduleLabel.trim() || node?.label || 'Module'
-      await Promise.all([
-        window.api.node.updateLabel(nodeId, nextLabel),
-        window.api.node.updateConfig(nodeId, config)
-      ])
-      setActiveNodes(prev => prev.map(n => n.id === nodeId ? { ...n, label: nextLabel, displayLabel: nextLabel, moduleLabel: null, config } : n))
-    }
+    const nextLabel = label.trim() || node?.label || defaultCanvasNodeLabel(node?.type ?? 'data')
+    await Promise.all([
+      window.api.node.updateLabel(nodeId, nextLabel),
+      window.api.node.updateConfig(nodeId, config)
+    ])
+    setActiveNodes(prev => prev.map(n => n.id === nodeId ? { ...n, label: nextLabel, config } : n))
   }
 
   const rememberSelectSelection = useCallback(async (
@@ -1051,77 +1099,101 @@ export default function App(): JSX.Element {
     setActiveNodes(prev => prev.map(n => n.id === nodeId ? { ...n, config: nextConfig } : n))
   }, [activeNodes])
 
-  const handleCreateDataNode = useCallback((wsId: string, type = 'data'): void => {
-    setNewModuleCtx({ wsId, type })
-  }, [])
-
-  const handleCreateCommonModule = useCallback((type = 'data'): void => {
-    setNewModuleCtx({ wsId: null, type })
-  }, [])
-
-  const handleModuleDrop = useCallback(async (moduleId: string, x: number, y: number): Promise<void> => {
+  const handleModuleDrop = useCallback(async (moduleType: string, x: number, y: number): Promise<void> => {
     if (!activeProject) return
-    const mod = allModules.find(m => m.id === moduleId)
-    if (!mod) return
-    // 공통 모듈이 아닌 경우, 현재 프로젝트의 워크스페이스 소속 모듈만 허용
-    if (mod.workspaceId !== null) {
-      const projectWsId = workspaces.find(w => w.projects.some(p => p.id === activeProject.id))?.id
-      if (mod.workspaceId !== projectWsId) return
-    }
-    const node = await window.api.node.createFromModule(activeProject.id, moduleId, x, y)
+    if (!isCanvasModuleType(moduleType)) return
+    const label = defaultCanvasNodeLabel(moduleType)
+    const node = await window.api.node.create(activeProject.id, moduleType, label, x, y)
     setActiveNodes(prev => [...prev, node])
-  }, [activeProject?.id, allModules, workspaces])
+  }, [activeProject?.id])
 
-  const handleCanvasNodeCopy = useCallback((nodeId: string): void => {
-    const node = activeNodes.find(n => n.id === nodeId)
-    if (!node || node.type === 'start' || node.type === 'end') return
-    setCopiedCanvasNode({ ...node })
+  const handleCanvasNodeCopy = useCallback((nodeIds: string[]): void => {
+    const selectedIds = new Set(nodeIds)
+    const nodes = activeNodes
+      .filter(n => selectedIds.has(n.id) && n.type !== 'start' && n.type !== 'end')
+      .map(n => ({ ...n }))
+    if (nodes.length === 0 || !activeProject) return
+    const copyableIds = new Set(nodes.map(node => node.id))
+    const edges = activeEdges
+      .filter(edge => copyableIds.has(edge.sourceNodeId) && copyableIds.has(edge.targetNodeId))
+      .map(edge => ({ ...edge }))
+    setCopiedCanvasSelection({
+      sourceProjectId: activeProject.id,
+      nodes,
+      edges,
+    })
     pasteOffsetRef.current = 0
-  }, [activeNodes])
+  }, [activeEdges, activeNodes, activeProject?.id])
 
   const handleCanvasNodePaste = useCallback(async (): Promise<void> => {
-    if (!activeProject || !copiedCanvasNode) return
-    if (copiedCanvasNode.projectId !== activeProject.id) return
-    if (copiedCanvasNode.type === 'start' || copiedCanvasNode.type === 'end') return
+    if (!activeProject || !copiedCanvasSelection) return
+    const pasteCandidates = copiedCanvasSelection.nodes.filter(node => {
+      if (node.type === 'start' || node.type === 'end') return false
+      return isCanvasModuleType(node.type)
+    })
+
+    if (pasteCandidates.length === 0) return
 
     const offset = 40 + pasteOffsetRef.current * 20
-    const x = Math.round((copiedCanvasNode.x + offset) / 10) * 10
-    const y = Math.round((copiedCanvasNode.y + offset) / 10) * 10
-    const displayLabel = copiedCanvasNode.moduleId
-      ? copiedCanvasNode.displayLabel ?? ''
-      : copiedCanvasNode.displayLabel ?? copiedCanvasNode.label
-    const config = copiedCanvasNode.config ?? ''
+    const createdBySourceId = new Map<string, ApiNode>()
+    const pastedNodes: ApiNode[] = []
 
-    try {
-      const created = copiedCanvasNode.moduleId
-        ? await window.api.node.createFromModule(activeProject.id, copiedCanvasNode.moduleId, x, y)
-        : await window.api.node.create(activeProject.id, copiedCanvasNode.type, copiedCanvasNode.label, x, y)
+    for (const copiedNode of pasteCandidates) {
+      const x = Math.round((copiedNode.x + offset) / 10) * 10
+      const y = Math.round((copiedNode.y + offset) / 10) * 10
+      const label = copiedNode.label.trim() || defaultCanvasNodeLabel(copiedNode.type)
+      const config = copiedNode.config ?? ''
 
-      await Promise.all([
-        window.api.node.updateLabel(created.id, displayLabel),
-        window.api.node.updateConfig(created.id, config),
-      ])
+      try {
+        const created = await window.api.node.create(activeProject.id, copiedNode.type, label, x, y)
 
-      const pasted: ApiNode = {
-        ...created,
-        label: displayLabel.trim() || copiedCanvasNode.moduleLabel || copiedCanvasNode.label,
-        displayLabel,
-        moduleLabel: copiedCanvasNode.moduleLabel ?? created.moduleLabel ?? null,
-        x,
-        y,
-        config,
-        moduleId: copiedCanvasNode.moduleId ?? created.moduleId ?? null,
+        await window.api.node.updateConfig(created.id, config)
+
+        const pasted: ApiNode = {
+          ...created,
+          label,
+          x,
+          y,
+          config,
+        }
+
+        createdBySourceId.set(copiedNode.id, pasted)
+        pastedNodes.push(pasted)
+      } catch (err) {
+        console.error('노드 붙여넣기 실패:', err)
       }
-
-      setActiveNodes(prev => [...prev, pasted])
-      setNodeStatuses({})
-      setActiveBranchRoutes({})
-      setActiveLogNodeId(null)
-      pasteOffsetRef.current = (pasteOffsetRef.current + 1) % 12
-    } catch (err) {
-      console.error('노드 붙여넣기 실패:', err)
     }
-  }, [activeProject?.id, copiedCanvasNode])
+
+    if (pastedNodes.length === 0) return
+
+    const nextNodes = [...activeNodes, ...pastedNodes]
+    const nextEdges = [...activeEdges]
+    const pastedEdges: ApiEdge[] = []
+
+    for (const copiedEdge of copiedCanvasSelection.edges) {
+      const source = createdBySourceId.get(copiedEdge.sourceNodeId)
+      const target = createdBySourceId.get(copiedEdge.targetNodeId)
+      if (!source || !target) continue
+      if (!canConnectEdge(nextNodes, nextEdges, source.id, target.id)) continue
+
+      try {
+        const edge = await window.api.edge.create(activeProject.id, source.id, target.id, copiedEdge.sourcePort ?? null)
+        nextEdges.push(edge)
+        pastedEdges.push(edge)
+      } catch (err) {
+        console.error('연결 붙여넣기 실패:', err)
+      }
+    }
+
+    setActiveNodes(prev => [...prev, ...pastedNodes])
+    if (pastedEdges.length > 0) {
+      setActiveEdges(prev => [...prev, ...pastedEdges])
+    }
+    setNodeStatuses({})
+    setActiveBranchRoutes({})
+    setActiveLogNodeId(null)
+    pasteOffsetRef.current = (pasteOffsetRef.current + 1) % 12
+  }, [activeEdges, activeNodes, activeProject?.id, copiedCanvasSelection])
 
   const deleteCanvasNodeInstance = useCallback(async (node: ApiNode): Promise<void> => {
     if (node.type === 'start' || node.type === 'end') return
@@ -1154,64 +1226,6 @@ export default function App(): JSX.Element {
     if (!node || node.type === 'start' || node.type === 'end') return
     setConfirmDeleteCanvasNode(node)
   }, [activeNodes])
-
-  const handleModuleUpdate = useCallback(async (moduleId: string, label: string, config: string): Promise<void> => {
-    await window.api.module.update(moduleId, label, config)
-    const linkedNodes = activeNodes.filter(n => n.moduleId === moduleId)
-    if (linkedNodes.length > 0) {
-      await Promise.all(linkedNodes.map(n => window.api.node.updateConfig(n.id, config)))
-    }
-    const [mods, nodes] = await Promise.all([
-      window.api.module.listAll(),
-      activeProject ? window.api.node.list(activeProject.id) : Promise.resolve(activeNodes)
-    ])
-    setAllModules(mods)
-    setActiveNodes(nodes)
-  }, [activeProject?.id, activeNodes])
-
-  const handleSetModuleCommon = useCallback(async (id: string, isCommon: boolean, wsId: string): Promise<void> => {
-    await window.api.module.setCommon(id, isCommon, wsId)
-    const mods = await window.api.module.listAll()
-    setAllModules(mods)
-  }, [])
-
-  const handleReorderCommonModules = useCallback(async (type: string, orderedIds: string[]): Promise<void> => {
-    const previous = allModules
-    setAllModules(prev => {
-      const ordered = orderedIds
-        .map(id => prev.find(mod => mod.id === id))
-        .filter((mod): mod is ApiModule => !!mod)
-      let index = 0
-      return prev.map(mod => {
-        if (mod.workspaceId === null && mod.type === type && orderedIds.includes(mod.id)) {
-          return ordered[index++] ?? mod
-        }
-        return mod
-      })
-    })
-    try {
-      await window.api.module.reorderCommon(type, orderedIds)
-      const mods = await window.api.module.listAll()
-      setAllModules(mods)
-    } catch (err) {
-      setAllModules(previous)
-      console.error('공통 모듈 순서 변경 실패:', err)
-    }
-  }, [allModules])
-
-  const handleDeleteModule = useCallback(async (id: string): Promise<void> => {
-    await window.api.module.delete(id)
-    const [mods, nodes] = await Promise.all([
-      window.api.module.listAll(),
-      activeProject ? window.api.node.list(activeProject.id) : Promise.resolve([])
-    ])
-    setAllModules(mods)
-    setActiveNodes(nodes)
-    if (activeProject) {
-      const edges = await window.api.edge.list(activeProject.id)
-      setActiveEdges(edges)
-    }
-  }, [activeProject?.id])
 
   const deleteEdge = async (): Promise<void> => {
     if (!confirmDeleteEdge) return
@@ -1565,6 +1579,8 @@ export default function App(): JSX.Element {
 
       if (node.type === 'end') {
         let endStatus: NodeStatus = 'success'
+        const finalVariables = finalizeUsedVariables(usedVariables, envVarsForRun)
+        const pnrValues = extractPnrEnvValues(finalVariables)
         try {
           const endCfg = JSON.parse(node.config || '{}') as Partial<EndNodeConfig>
           const fmt = endCfg.reportFormat
@@ -1619,7 +1635,7 @@ export default function App(): JSX.Element {
               },
               nodes: reportNodes,
               selectedModuleIds: selectedSet,
-              variables: finalizeUsedVariables(usedVariables, envVarsForRun),
+              variables: finalVariables,
             })
             const tpl = endCfg.filenameTemplate && endCfg.filenameTemplate.trim() ? endCfg.filenameTemplate : '{env}_{ws}_{project}_{ts}'
             const filename = fillFilenameTemplate(tpl, { env: envName, ws: wsName, project: projectName, ts: executedAt })
@@ -1639,6 +1655,12 @@ export default function App(): JSX.Element {
           endStatus = 'error'
           console.error('[리포트 생성 오류]', err)
         }
+        setEndNodePnrValues(prev => {
+          const next = { ...prev }
+          if (endStatus === 'success' && pnrValues.length > 0) next[nodeId] = pnrValues
+          else delete next[nodeId]
+          return next
+        })
         setNodeStatuses(prev => ({ ...prev, [nodeId]: endStatus }))
         if (endStatus === 'error') {
           setCanvasExecution(null)
@@ -1918,6 +1940,7 @@ export default function App(): JSX.Element {
     setExecLogs([])
     setNodeStatuses({})
     setActiveBranchRoutes({})
+    setEndNodePnrValues({})
     setActiveLogNodeId(null)
     setNodeScriptLogs({})
     const execution: CanvasExecution = { nodeOutputs: {}, moduleVars: {}, branchRoutes: {}, envVars: { ...activeProjectEnvVars }, usedVariables: {}, execLogs: [], startedAt: Date.now(), plan, step: 0, pendingSelectInput: null, pendingBranchChoice: null }
@@ -1928,6 +1951,7 @@ export default function App(): JSX.Element {
     setExecLogs([])
     setNodeStatuses({})
     setActiveBranchRoutes({})
+    setEndNodePnrValues({})
     setActiveLogNodeId(null)
     setLogState('collapsed')
     setNodeRunInputs({})
@@ -2320,13 +2344,11 @@ export default function App(): JSX.Element {
               onDeleteRequest={setConfirmDeleteWsId}
               renderContent={(wsId) => {
                 const ws = workspaces.find(w => w.id === wsId)
-                const wsModules = allModules.filter(m => m.workspaceId === wsId)
                 return (
                   <>
                     <EnvSection
                       environments={ws?.environments ?? []}
                       activeEnvId={ws?.activeEnvId ?? ''}
-                      onSelect={(envId) => setActiveEnvId(wsId, envId)}
                       onAdd={() => openAddEnvModal(wsId)}
                       onEdit={(env) => openEditEnvModal(wsId, env)}
                       onDelete={(env) => setConfirmDeleteEnv({ wsId, env })}
@@ -2339,38 +2361,11 @@ export default function App(): JSX.Element {
                       onEdit={(proj) => openEditProjectModal(wsId, proj)}
                       onDelete={(proj) => setConfirmDeleteProject({ wsId, project: proj })}
                     />
-                    <ModuleSection
-                      stateKey={`module-${wsId}`}
-                      title="Module"
-                      modules={wsModules}
-                      onAdd={(type) => handleCreateDataNode(wsId, type)}
-                      onEdit={setEditingModule}
-                      onSetCommon={(id, isCommon) => handleSetModuleCommon(id, isCommon, wsId)}
-                      onDelete={id => {
-                const mod = allModules.find(m => m.id === id)
-                if (mod) setConfirmDeleteModule(mod)
-              }}
-                    />
                   </>
                 )
               }}
             />
-            <ModuleSection
-              stateKey="common-module"
-              title="공통 모듈"
-              modules={allModules.filter(m => m.workspaceId === null)}
-              groupByType
-              onAdd={(type) => handleCreateCommonModule(type)}
-              onEdit={setEditingModule}
-              onReorderCommon={handleReorderCommonModules}
-              onSetCommon={(id, isCommon) => {
-                if (!isCommon && activeWsId) handleSetModuleCommon(id, false, activeWsId)
-              }}
-              onDelete={id => {
-                const mod = allModules.find(m => m.id === id)
-                if (mod) setConfirmDeleteModule(mod)
-              }}
-            />
+            <ModulePaletteSection stateKey="common-module" title="공통 모듈" />
           </div>
         )}
 
@@ -2464,12 +2459,12 @@ export default function App(): JSX.Element {
                   onNodeCopy={handleCanvasNodeCopy}
                   onNodePaste={handleCanvasNodePaste}
                   onNodeDeleteRequest={handleCanvasNodeDeleteRequest}
-                  canPasteNode={!!copiedCanvasNode && copiedCanvasNode.projectId === activeProject.id}
+                  canPasteNode={!!copiedCanvasSelection && copiedCanvasSelection.nodes.length > 0}
                   onModuleDrop={handleModuleDrop}
                   nodeStatuses={nodeStatuses}
                   branchRoutes={activeBranchRoutes}
+                  endNodePnrValues={endNodePnrValues}
                   onNodeStatusClick={onNodeStatusClick}
-                  activeProjectWsId={activeProjectWs?.id}
                 />
             </div>
           ) : (
@@ -2620,27 +2615,12 @@ export default function App(): JSX.Element {
         />
       )}
 
-      {/* ── Module Delete Confirm ── */}
-      {confirmDeleteModule && (
-        <ConfirmDialog
-          title="모듈 삭제"
-          message={`"${confirmDeleteModule.label}" 모듈을 삭제하시겠습니까?`}
-          warning="이 작업은 되돌릴 수 없으며, 캔버스에서 이 모듈을 사용 중인 모든 노드 인스턴스도 함께 삭제됩니다."
-          onConfirm={async () => {
-            const mod = confirmDeleteModule
-            setConfirmDeleteModule(null)
-            await handleDeleteModule(mod.id)
-          }}
-          onCancel={() => setConfirmDeleteModule(null)}
-        />
-      )}
-
       {/* ── Project Delete Confirm ── */}
       {confirmDeleteCanvasNode && (
         <ConfirmDialog
           title="캔버스 모듈 삭제"
           message={`"${confirmDeleteCanvasNode.label}" 모듈을 캔버스에서 삭제하시겠습니까?`}
-          warning="모듈 원본은 삭제되지 않고, 현재 캔버스에 배치된 노드와 연결선만 삭제됩니다."
+          warning="현재 캔버스에 배치된 독립 모듈과 연결선만 삭제됩니다."
           confirmLabel="삭제"
           onConfirm={async () => {
             const node = confirmDeleteCanvasNode
@@ -2699,7 +2679,6 @@ export default function App(): JSX.Element {
           onRun={() => previewUpToNode(editingNode.id)}
           onSave={handleDataNodeSave}
           onDelete={async () => {
-            // 모듈 연결 노드는 캔버스에서 인스턴스만 제거 (모듈 자체는 유지)
             await window.api.node.delete(editingNode.id)
             setActiveNodes(prev => prev.filter(n => n.id !== editingNode.id))
             setActiveEdges(prev => prev.filter(e => e.sourceNodeId !== editingNode.id && e.targetNodeId !== editingNode.id))
@@ -2765,83 +2744,6 @@ export default function App(): JSX.Element {
             setEditingNode(null)
           }}
           onClose={() => setEditingNode(null)}
-        />
-      )}
-
-      {newModuleCtx && newModuleCtx.type === 'data' && (
-        <DataNodeModal
-          key={`new-${newModuleCtx.type}-${newModuleCtx.wsId ?? 'common'}`}
-          node={{ id: '__new__', projectId: '', type: 'data', label: 'Data', x: 0, y: 0, config: '{}' }}
-          isNew
-          onSave={async (_, _displayLabel, moduleLabel, config) => {
-            if (newModuleCtx.wsId) {
-              await window.api.module.create(newModuleCtx.wsId, newModuleCtx.type, moduleLabel, config)
-            } else {
-              await window.api.module.createCommon(newModuleCtx.type, moduleLabel, config)
-            }
-            const mods = await window.api.module.listAll()
-            setAllModules(mods)
-            setNewModuleCtx(null)
-          }}
-          onClose={() => setNewModuleCtx(null)}
-        />
-      )}
-
-      {newModuleCtx && newModuleCtx.type === 'api' && (
-        <ApiNodeModal
-          key={`new-${newModuleCtx.type}-${newModuleCtx.wsId ?? 'common'}`}
-          node={{ id: '__new__', projectId: '', type: 'api', label: 'API', x: 0, y: 0, config: '{}' }}
-          isNew
-          envVars={activeProjectEnvVars}
-          onSave={async (_, _displayLabel, moduleLabel, config) => {
-            if (newModuleCtx.wsId) {
-              await window.api.module.create(newModuleCtx.wsId, newModuleCtx.type, moduleLabel, config)
-            } else {
-              await window.api.module.createCommon(newModuleCtx.type, moduleLabel, config)
-            }
-            const mods = await window.api.module.listAll()
-            setAllModules(mods)
-            setNewModuleCtx(null)
-          }}
-          onClose={() => setNewModuleCtx(null)}
-        />
-      )}
-
-      {newModuleCtx && newModuleCtx.type === 'select' && (
-        <SelectNodeModal
-          key={`new-${newModuleCtx.type}-${newModuleCtx.wsId ?? 'common'}`}
-          node={{ id: '__new__', projectId: '', type: 'select', label: 'Select', x: 0, y: 0, config: '{}' }}
-          isNew
-          onSave={async (_, _displayLabel, moduleLabel, config) => {
-            if (newModuleCtx.wsId) {
-              await window.api.module.create(newModuleCtx.wsId, newModuleCtx.type, moduleLabel, config)
-            } else {
-              await window.api.module.createCommon(newModuleCtx.type, moduleLabel, config)
-            }
-            const mods = await window.api.module.listAll()
-            setAllModules(mods)
-            setNewModuleCtx(null)
-          }}
-          onClose={() => setNewModuleCtx(null)}
-        />
-      )}
-
-      {newModuleCtx && newModuleCtx.type === 'branch' && (
-        <BranchNodeModal
-          key={`new-${newModuleCtx.type}-${newModuleCtx.wsId ?? 'common'}`}
-          node={{ id: '__new__', projectId: '', type: 'branch', label: 'Branch', x: 0, y: 0, config: '{}' }}
-          isNew
-          onSave={async (_, _displayLabel, moduleLabel, config) => {
-            if (newModuleCtx.wsId) {
-              await window.api.module.create(newModuleCtx.wsId, newModuleCtx.type, moduleLabel, config)
-            } else {
-              await window.api.module.createCommon(newModuleCtx.type, moduleLabel, config)
-            }
-            const mods = await window.api.module.listAll()
-            setAllModules(mods)
-            setNewModuleCtx(null)
-          }}
-          onClose={() => setNewModuleCtx(null)}
         />
       )}
 
@@ -2922,69 +2824,6 @@ export default function App(): JSX.Element {
             pendingPreviewSelect.resolve(null)
             setPendingPreviewSelect(null)
           }}
-        />
-      )}
-
-      {/* ── Module Edit Modals (from sidebar double-click) ── */}
-      {editingModule && editingModule.type === 'data' && (
-        <DataNodeModal
-          key={`module-${editingModule.id}`}
-          node={{ id: editingModule.id, projectId: '', type: 'data', label: editingModule.label, displayLabel: '', moduleLabel: editingModule.label, x: 0, y: 0, config: editingModule.config, moduleId: editingModule.id }}
-          onSave={async (_, _displayLabel, moduleLabel, config) => {
-            await handleModuleUpdate(editingModule.id, moduleLabel, config)
-            setEditingModule(null)
-          }}
-          onDelete={async () => {
-            await handleDeleteModule(editingModule.id)
-            setEditingModule(null)
-          }}
-          onClose={() => setEditingModule(null)}
-        />
-      )}
-      {editingModule && editingModule.type === 'select' && (
-        <SelectNodeModal
-          key={`module-${editingModule.id}`}
-          node={{ id: editingModule.id, projectId: '', type: 'select', label: editingModule.label, displayLabel: '', moduleLabel: editingModule.label, x: 0, y: 0, config: editingModule.config, moduleId: editingModule.id }}
-          onSave={async (_, _displayLabel, moduleLabel, config) => {
-            await handleModuleUpdate(editingModule.id, moduleLabel, config)
-            setEditingModule(null)
-          }}
-          onDelete={async () => {
-            await handleDeleteModule(editingModule.id)
-            setEditingModule(null)
-          }}
-          onClose={() => setEditingModule(null)}
-        />
-      )}
-      {editingModule && editingModule.type === 'branch' && (
-        <BranchNodeModal
-          key={`module-${editingModule.id}`}
-          node={{ id: editingModule.id, projectId: '', type: 'branch', label: editingModule.label, displayLabel: '', moduleLabel: editingModule.label, x: 0, y: 0, config: editingModule.config, moduleId: editingModule.id }}
-          onSave={async (_, _displayLabel, moduleLabel, config) => {
-            await handleModuleUpdate(editingModule.id, moduleLabel, config)
-            setEditingModule(null)
-          }}
-          onDelete={async () => {
-            await handleDeleteModule(editingModule.id)
-            setEditingModule(null)
-          }}
-          onClose={() => setEditingModule(null)}
-        />
-      )}
-      {editingModule && editingModule.type === 'api' && (
-        <ApiNodeModal
-          key={`module-${editingModule.id}`}
-          node={{ id: editingModule.id, projectId: '', type: 'api', label: editingModule.label, displayLabel: '', moduleLabel: editingModule.label, x: 0, y: 0, config: editingModule.config, moduleId: editingModule.id }}
-          envVars={activeProjectEnvVars}
-          onSave={async (_, _displayLabel, moduleLabel, config) => {
-            await handleModuleUpdate(editingModule.id, moduleLabel, config)
-            setEditingModule(null)
-          }}
-          onDelete={async () => {
-            await handleDeleteModule(editingModule.id)
-            setEditingModule(null)
-          }}
-          onClose={() => setEditingModule(null)}
         />
       )}
 

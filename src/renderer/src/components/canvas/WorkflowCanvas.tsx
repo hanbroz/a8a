@@ -1,6 +1,6 @@
 import { useRef, useState, useCallback, useEffect } from 'react'
 import type { CSSProperties } from 'react'
-import { IcoPlay, IcoX } from '../Icon'
+import { IcoCopy, IcoPlay, IcoX } from '../Icon'
 import { parseBranchConfig } from '../../utils/branch'
 
 const NODE_W = 160
@@ -18,6 +18,7 @@ type NodeStatus = 'running' | 'success' | 'error' | 'skip'
 type EdgeLineStyle = 'curve' | 'straight'
 type InputPortSide = 'left' | 'top'
 type OutputPortSide = 'right' | 'bottom'
+type EndNodePnrValue = { name: string; value: string }
 
 function nW(type: string): number { return (type === 'data' || type === 'select' || type === 'api' || type === 'branch') ? DATA_NODE_W : NODE_W }
 function nH(type: string): number { return (type === 'data' || type === 'select' || type === 'api' || type === 'branch') ? DATA_NODE_H : NODE_H }
@@ -31,20 +32,32 @@ interface Props {
   onEdgeReconnect: (edgeId: string, newSourceId: string, newTargetId: string, sourcePort?: string | null) => void
   onNodeOpen: (nodeId: string) => void
   onNodeRun?: (nodeId: string) => void
-  onNodeCopy?: (nodeId: string) => void
+  onNodeCopy?: (nodeIds: string[]) => void
   onNodePaste?: () => void
   onNodeDeleteRequest?: (nodeId: string) => void
   canPasteNode?: boolean
-  onModuleDrop: (moduleId: string, x: number, y: number) => void
+  onModuleDrop: (moduleType: string, x: number, y: number) => void
   nodeStatuses?: Record<string, NodeStatus>
   branchRoutes?: Record<string, 'true' | 'false'>
+  endNodePnrValues?: Record<string, EndNodePnrValue[]>
   onNodeStatusClick?: (nodeId: string) => void
-  activeProjectWsId?: string
 }
 
-interface NodeDrag { nodeId: string; ox: number; oy: number }
+interface NodeDrag {
+  primaryNodeId: string
+  nodeIds: string[]
+  primaryOffset: Point
+  startPositions: Record<string, Point>
+}
 type Point = { x: number; y: number }
+type SelectionBox = { x: number; y: number; width: number; height: number }
 type PortPoint = Point & { side: InputPortSide | OutputPortSide; sourcePort?: string | null }
+
+interface SelectionDrag {
+  start: Point
+  current: Point
+  initialSelectedIds: string[]
+}
 
 interface Connecting {
   fromNodeId: string
@@ -104,6 +117,35 @@ function BranchIcon(): JSX.Element {
       <path d="M9 6h6" />
     </svg>
   )
+}
+
+function copyTextFallback(text: string): Promise<void> {
+  if (typeof document === 'undefined') {
+    return Promise.reject(new Error('Clipboard is unavailable'))
+  }
+
+  const textarea = document.createElement('textarea')
+  textarea.value = text
+  textarea.setAttribute('readonly', '')
+  textarea.style.position = 'fixed'
+  textarea.style.left = '-9999px'
+  textarea.style.opacity = '0'
+  document.body.appendChild(textarea)
+  textarea.select()
+
+  try {
+    const copied = document.execCommand('copy')
+    return copied ? Promise.resolve() : Promise.reject(new Error('Copy failed'))
+  } finally {
+    document.body.removeChild(textarea)
+  }
+}
+
+function copyText(text: string): Promise<void> {
+  if (typeof navigator !== 'undefined' && navigator.clipboard?.writeText) {
+    return navigator.clipboard.writeText(text).catch(() => copyTextFallback(text))
+  }
+  return copyTextFallback(text)
 }
 
 function bezier(x1: number, y1: number, x2: number, y2: number): string {
@@ -277,6 +319,23 @@ function positiveModulo(value: number, divisor: number): number {
   return ((value % divisor) + divisor) % divisor
 }
 
+function selectionBoxFromPoints(a: Point, b: Point): SelectionBox {
+  return {
+    x: Math.min(a.x, b.x),
+    y: Math.min(a.y, b.y),
+    width: Math.abs(a.x - b.x),
+    height: Math.abs(a.y - b.y),
+  }
+}
+
+function boxIntersectsNode(box: SelectionBox, node: Pick<ApiNode, 'type' | 'x' | 'y'>): boolean {
+  const nodeRight = node.x + nW(node.type)
+  const nodeBottom = node.y + nH(node.type)
+  const boxRight = box.x + box.width
+  const boxBottom = box.y + box.height
+  return box.x <= nodeRight && boxRight >= node.x && box.y <= nodeBottom && boxBottom >= node.y
+}
+
 function buildExecutionOrderedIds(nodes: ApiNode[], edges: ApiEdge[]): { orderedIds: string[]; reachableIds: Set<string> } {
   const nodeIds = new Set(nodes.map(node => node.id))
   const outgoing = new Map<string, ApiEdge[]>()
@@ -344,29 +403,32 @@ export default function WorkflowCanvas({
   onNodeMove, onEdgeCreate, onEdgeDelete, onEdgeReconnect,
   onNodeOpen, onNodeRun, onNodeCopy, onNodePaste, onNodeDeleteRequest, canPasteNode,
   onModuleDrop,
-  nodeStatuses, branchRoutes, onNodeStatusClick,
-  activeProjectWsId,
+  nodeStatuses, branchRoutes, endNodePnrValues, onNodeStatusClick,
 }: Props): JSX.Element {
   const canvasRef = useRef<HTMLDivElement>(null)
   const nodeDragRef = useRef<NodeDrag | null>(null)
+  const selectionDragRef = useRef<SelectionDrag | null>(null)
   const connectRef = useRef<Connecting | null>(null)
   const reconnectRef = useRef<Reconnecting | null>(null)
   const hoverTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
 
   const [positions, setPositions] = useState<Record<string, { x: number; y: number }>>({})
-  const [draggingId, setDraggingId] = useState<string | null>(null)
+  const [draggingNodeIds, setDraggingNodeIds] = useState<string[]>([])
   const [connecting, setConnecting] = useState<Connecting | null>(null)
   const [reconnecting, setReconnecting] = useState<Reconnecting | null>(null)
   const [hoveredEdgeId, setHoveredEdgeId] = useState<string | null>(null)
   const [canvasDragOver, setCanvasDragOver] = useState(false)
-  const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null)
+  const [selectedNodeIds, setSelectedNodeIds] = useState<string[]>([])
+  const [selectionBox, setSelectionBox] = useState<SelectionBox | null>(null)
   const [viewport, setViewport] = useState({ x: 0, y: 0 })
   const [zoom, setZoom] = useState(1)
+  const [copiedPnrKey, setCopiedPnrKey] = useState<string | null>(null)
   const [lineStyle, setLineStyle] = useState<EdgeLineStyle>(() =>
     localStorage.getItem('wf-edge-line-style') === 'straight' ? 'straight' : 'curve',
   )
   const [panning, setPanning] = useState(false)
   const panRef = useRef<{ startX: number; startY: number; vx0: number; vy0: number } | null>(null)
+  const copiedPnrTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
 
   const canvasRect = () => canvasRef.current?.getBoundingClientRect()
 
@@ -384,7 +446,17 @@ export default function WorkflowCanvas({
     const t = e.target as HTMLElement
     if (e.button === 0) {
       if (!t.closest('.wf-node, .wf-port, .wf-edge-endpoint, .wf-edge-delete-btn, .wf-floating-tools') && t.tagName.toLowerCase() !== 'path') {
-        setSelectedNodeId(null)
+        const world = clientToWorld(e.clientX, e.clientY)
+        if (!world) return
+        e.preventDefault()
+        const keepExisting = e.shiftKey || e.ctrlKey || e.metaKey
+        selectionDragRef.current = {
+          start: world,
+          current: world,
+          initialSelectedIds: keepExisting ? selectedNodeIds : [],
+        }
+        setSelectionBox(selectionBoxFromPoints(world, world))
+        if (!keepExisting) setSelectedNodeIds([])
       }
       return
     }
@@ -394,7 +466,7 @@ export default function WorkflowCanvas({
     e.preventDefault()
     panRef.current = { startX: e.clientX, startY: e.clientY, vx0: viewport.x, vy0: viewport.y }
     setPanning(true)
-  }, [viewport])
+  }, [clientToWorld, selectedNodeIds, viewport])
 
   const onCanvasWheel = useCallback((e: React.WheelEvent) => {
     if (!e.ctrlKey) return
@@ -426,24 +498,69 @@ export default function WorkflowCanvas({
   }, [lineStyle])
 
   useEffect(() => {
-    if (selectedNodeId && !nodes.some(node => node.id === selectedNodeId)) {
-      setSelectedNodeId(null)
+    return () => {
+      if (copiedPnrTimerRef.current) clearTimeout(copiedPnrTimerRef.current)
     }
-  }, [nodes, selectedNodeId])
+  }, [])
+
+  useEffect(() => {
+    const nodeIds = new Set(nodes.map(node => node.id))
+    setSelectedNodeIds(prev => prev.filter(id => nodeIds.has(id)))
+  }, [nodes])
+
+  const markPnrCopied = useCallback((key: string): void => {
+    if (copiedPnrTimerRef.current) clearTimeout(copiedPnrTimerRef.current)
+    setCopiedPnrKey(key)
+    copiedPnrTimerRef.current = setTimeout(() => {
+      setCopiedPnrKey(prev => prev === key ? null : prev)
+      copiedPnrTimerRef.current = null
+    }, 1200)
+  }, [])
+
+  const onPnrCopy = useCallback((e: React.MouseEvent, key: string, value: string): void => {
+    e.preventDefault()
+    e.stopPropagation()
+    void copyText(value).then(() => markPnrCopied(key))
+  }, [markPnrCopied])
 
   const onNodeDown = useCallback((e: React.MouseEvent, nodeId: string) => {
     if (e.button !== 0) return
     if ((e.target as HTMLElement).closest('.wf-port')) return
     e.preventDefault()
     canvasRef.current?.focus({ preventScroll: true })
-    setSelectedNodeId(nodeId)
-    const pos = positions[nodeId]
+    const additive = e.shiftKey || e.ctrlKey || e.metaKey
+    let nextSelectedIds: string[]
+    if (additive) {
+      nextSelectedIds = selectedNodeIds.includes(nodeId)
+        ? selectedNodeIds.filter(id => id !== nodeId)
+        : [...selectedNodeIds, nodeId]
+      setSelectedNodeIds(nextSelectedIds)
+      if (!nextSelectedIds.includes(nodeId)) return
+    } else if (selectedNodeIds.includes(nodeId)) {
+      nextSelectedIds = selectedNodeIds
+    } else {
+      nextSelectedIds = [nodeId]
+      setSelectedNodeIds(nextSelectedIds)
+    }
+
+    const pos = positions[nodeId] ?? nodes.find(node => node.id === nodeId)
     if (!pos) return
     const world = clientToWorld(e.clientX, e.clientY)
     if (!world) return
-    nodeDragRef.current = { nodeId, ox: world.x - pos.x, oy: world.y - pos.y }
-    setDraggingId(nodeId)
-  }, [clientToWorld, positions])
+    const startPositions: Record<string, Point> = {}
+    nextSelectedIds.forEach(id => {
+      const selectedPos = positions[id] ?? nodes.find(node => node.id === id)
+      if (selectedPos) startPositions[id] = { x: selectedPos.x, y: selectedPos.y }
+    })
+    const nodeIds = Object.keys(startPositions)
+    nodeDragRef.current = {
+      primaryNodeId: nodeId,
+      nodeIds,
+      primaryOffset: { x: world.x - pos.x, y: world.y - pos.y },
+      startPositions,
+    }
+    setDraggingNodeIds(nodeIds)
+  }, [clientToWorld, nodes, positions, selectedNodeIds])
 
   const onOutputPortDown = useCallback((e: React.MouseEvent, nodeId: string, nodeType: ApiNode['type'], side: OutputPortSide, sourcePort?: string | null) => {
     if (e.button !== 0) return
@@ -526,13 +643,40 @@ export default function WorkflowCanvas({
       return
     }
 
+    if (selectionDragRef.current) {
+      const world = clientToWorld(e.clientX, e.clientY)
+      if (!world) return
+      const drag = { ...selectionDragRef.current, current: world }
+      selectionDragRef.current = drag
+      const box = selectionBoxFromPoints(drag.start, drag.current)
+      const selectedFromBox = nodes
+        .filter(node => {
+          const pos = positions[node.id] ?? node
+          return boxIntersectsNode(box, { type: node.type, x: pos.x, y: pos.y })
+        })
+        .map(node => node.id)
+      setSelectionBox(box)
+      setSelectedNodeIds(Array.from(new Set([...drag.initialSelectedIds, ...selectedFromBox])))
+      return
+    }
+
     const nd = nodeDragRef.current
     if (nd) {
       const world = clientToWorld(e.clientX, e.clientY)
       if (!world) return
-      const x = snapToGrid(world.x - nd.ox)
-      const y = snapToGrid(world.y - nd.oy)
-      setPositions(prev => ({ ...prev, [nd.nodeId]: { x, y } }))
+      const primaryStart = nd.startPositions[nd.primaryNodeId]
+      if (!primaryStart) return
+      const x = snapToGrid(world.x - nd.primaryOffset.x)
+      const y = snapToGrid(world.y - nd.primaryOffset.y)
+      const dx = x - primaryStart.x
+      const dy = y - primaryStart.y
+      setPositions(prev => {
+        const next = { ...prev }
+        Object.entries(nd.startPositions).forEach(([id, pos]) => {
+          next[id] = { x: pos.x + dx, y: pos.y + dy }
+        })
+        return next
+      })
     }
 
     if (connectRef.current) {
@@ -588,12 +732,19 @@ export default function WorkflowCanvas({
       setPanning(false)
     }
 
+    if (selectionDragRef.current) {
+      selectionDragRef.current = null
+      setSelectionBox(null)
+    }
+
     const nd = nodeDragRef.current
     if (nd) {
-      const pos = positions[nd.nodeId]
-      if (pos) onNodeMove(nd.nodeId, pos.x, pos.y)
+      nd.nodeIds.forEach(id => {
+        const pos = positions[id]
+        if (pos) onNodeMove(id, pos.x, pos.y)
+      })
       nodeDragRef.current = null
-      setDraggingId(null)
+      setDraggingNodeIds([])
     }
 
     const conn = connectRef.current
@@ -682,8 +833,15 @@ export default function WorkflowCanvas({
   }, [edges, nodes, onNodeMove, viewport, zoom])
 
   const liveNodes = nodes.map(n => ({ ...n, x: positions[n.id]?.x ?? n.x, y: positions[n.id]?.y ?? n.y }))
-  const selectedNode = selectedNodeId ? liveNodes.find(node => node.id === selectedNodeId) ?? null : null
+  const liveNodeById = new Map(liveNodes.map(node => [node.id, node]))
+  const selectedNodeIdSet = new Set(selectedNodeIds)
+  const draggingNodeIdSet = new Set(draggingNodeIds)
+  const selectedNode = selectedNodeIds.length === 1 ? liveNodeById.get(selectedNodeIds[0]) ?? null : null
   const selectedCopyableNode = selectedNode && selectedNode.type !== 'start' && selectedNode.type !== 'end' ? selectedNode : null
+  const selectedCopyableNodeIds = selectedNodeIds.filter(id => {
+    const node = liveNodeById.get(id)
+    return !!node && node.type !== 'start' && node.type !== 'end'
+  })
 
   const onCanvasKeyDown = useCallback((e: React.KeyboardEvent<HTMLDivElement>) => {
     const key = e.key.toLowerCase()
@@ -693,15 +851,15 @@ export default function WorkflowCanvas({
       return
     }
     if (!(e.ctrlKey || e.metaKey) || e.altKey) return
-    if (key === 'c' && selectedCopyableNode && onNodeCopy) {
+    if (key === 'c' && selectedCopyableNodeIds.length > 0 && onNodeCopy) {
       e.preventDefault()
-      onNodeCopy(selectedCopyableNode.id)
+      onNodeCopy(selectedCopyableNodeIds)
     }
     if (key === 'v' && canPasteNode && onNodePaste) {
       e.preventDefault()
       onNodePaste()
     }
-  }, [canPasteNode, onNodeCopy, onNodeDeleteRequest, onNodePaste, selectedCopyableNode])
+  }, [canPasteNode, onNodeCopy, onNodeDeleteRequest, onNodePaste, selectedCopyableNode, selectedCopyableNodeIds])
 
   // Snap indicators: which input/output ports to highlight
   const snapInputId = connecting?.snapTo ?? (reconnecting?.dragging === 'target' ? reconnecting.snapTo : null)
@@ -806,14 +964,11 @@ export default function WorkflowCanvas({
       onDrop={e => {
         e.preventDefault()
         setCanvasDragOver(false)
-        const moduleId = e.dataTransfer.getData('moduleId')
-        if (!moduleId || !canvasRef.current) return
-        const moduleWsId = e.dataTransfer.getData('moduleWsId')
-        // 워크스페이스 모듈(공통 아닌)은 현재 프로젝트의 워크스페이스와 일치해야 드롭 허용
-        if (moduleWsId && activeProjectWsId && moduleWsId !== activeProjectWsId) return
+        const moduleType = e.dataTransfer.getData('moduleType')
+        if (!moduleType || !canvasRef.current) return
         const world = clientToWorld(e.clientX, e.clientY)
         if (!world) return
-        onModuleDrop(moduleId, snapToGrid(world.x - 100), snapToGrid(world.y - 36))
+        onModuleDrop(moduleType, snapToGrid(world.x - 100), snapToGrid(world.y - 36))
       }}
     >
       <div className="wf-floating-tools" onMouseDown={e => e.stopPropagation()}>
@@ -821,8 +976,8 @@ export default function WorkflowCanvas({
           <button
             type="button"
             className="wf-floating-tool-btn"
-            disabled={!selectedCopyableNode}
-            onClick={() => { if (selectedCopyableNode) onNodeCopy(selectedCopyableNode.id) }}
+            disabled={selectedCopyableNodeIds.length === 0}
+            onClick={() => { if (selectedCopyableNodeIds.length > 0) onNodeCopy(selectedCopyableNodeIds) }}
             title="선택한 모듈 복사 (Ctrl+C)"
           >
             복사
@@ -974,6 +1129,18 @@ export default function WorkflowCanvas({
         })()}
       </svg>
 
+      {selectionBox && (
+        <div
+          className="wf-selection-box"
+          style={{
+            left: selectionBox.x,
+            top: selectionBox.y,
+            width: selectionBox.width,
+            height: selectionBox.height,
+          }}
+        />
+      )}
+
       {/* Edge controls: delete button + endpoint handles */}
       {!connecting && !reconnecting && edges.map(edge => {
         if (hoveredEdgeId !== edge.id) return null
@@ -1039,8 +1206,8 @@ export default function WorkflowCanvas({
           return (
             <div
               key={node.id}
-              className={`wf-node wf-node-data${selectedNodeId === node.id ? ' wf-node-selected' : ''}`}
-              data-dragging={draggingId === node.id ? 'true' : undefined}
+              className={`wf-node wf-node-data${selectedNodeIdSet.has(node.id) ? ' wf-node-selected' : ''}`}
+              data-dragging={draggingNodeIdSet.has(node.id) ? 'true' : undefined}
               style={{ left: node.x, top: node.y }}
               onMouseDown={e => onNodeDown(e, node.id)}
               onDoubleClick={() => onNodeOpen(node.id)}
@@ -1066,8 +1233,8 @@ export default function WorkflowCanvas({
           return (
             <div
               key={node.id}
-              className={`wf-node wf-node-select${selectedNodeId === node.id ? ' wf-node-selected' : ''}`}
-              data-dragging={draggingId === node.id ? 'true' : undefined}
+              className={`wf-node wf-node-select${selectedNodeIdSet.has(node.id) ? ' wf-node-selected' : ''}`}
+              data-dragging={draggingNodeIdSet.has(node.id) ? 'true' : undefined}
               style={{ left: node.x, top: node.y }}
               onMouseDown={e => onNodeDown(e, node.id)}
               onDoubleClick={() => onNodeOpen(node.id)}
@@ -1092,8 +1259,8 @@ export default function WorkflowCanvas({
           return (
             <div
               key={node.id}
-              className={`wf-node wf-node-api${selectedNodeId === node.id ? ' wf-node-selected' : ''}`}
-              data-dragging={draggingId === node.id ? 'true' : undefined}
+              className={`wf-node wf-node-api${selectedNodeIdSet.has(node.id) ? ' wf-node-selected' : ''}`}
+              data-dragging={draggingNodeIdSet.has(node.id) ? 'true' : undefined}
               style={{ left: node.x, top: node.y }}
               onMouseDown={e => onNodeDown(e, node.id)}
               onDoubleClick={() => onNodeOpen(node.id)}
@@ -1119,8 +1286,8 @@ export default function WorkflowCanvas({
           return (
             <div
               key={node.id}
-              className={`wf-node wf-node-branch${selectedNodeId === node.id ? ' wf-node-selected' : ''}`}
-              data-dragging={draggingId === node.id ? 'true' : undefined}
+              className={`wf-node wf-node-branch${selectedNodeIdSet.has(node.id) ? ' wf-node-selected' : ''}`}
+              data-dragging={draggingNodeIdSet.has(node.id) ? 'true' : undefined}
               style={{ left: node.x, top: node.y }}
               onMouseDown={e => onNodeDown(e, node.id)}
               onDoubleClick={() => onNodeOpen(node.id)}
@@ -1137,11 +1304,13 @@ export default function WorkflowCanvas({
           )
         }
 
+        const endPnrList = node.type === 'end' ? endNodePnrValues?.[node.id] ?? [] : []
+
         return (
           <div
             key={node.id}
-            className={`wf-node wf-node-${node.type}${selectedNodeId === node.id ? ' wf-node-selected' : ''}`}
-            data-dragging={draggingId === node.id ? 'true' : undefined}
+            className={`wf-node wf-node-${node.type}${endPnrList.length > 0 ? ' wf-node-end-has-pnr' : ''}${selectedNodeIdSet.has(node.id) ? ' wf-node-selected' : ''}`}
+            data-dragging={draggingNodeIdSet.has(node.id) ? 'true' : undefined}
             style={{ left: node.x, top: node.y }}
             onMouseDown={e => onNodeDown(e, node.id)}
             onDoubleClick={() => onNodeOpen(node.id)}
@@ -1150,7 +1319,38 @@ export default function WorkflowCanvas({
             <div className="wf-node-icon">
               {node.type === 'start' ? <IcoPlay size={13} /> : <StopIcon />}
             </div>
-            <span className="wf-node-label">{node.label}</span>
+            <div className="wf-node-terminal-content">
+              <span className="wf-node-label">{node.label}</span>
+              {endPnrList.length > 0 && (
+                <div
+                  className="wf-node-end-pnr-list"
+                  onMouseDown={e => e.stopPropagation()}
+                  title={endPnrList.map(item => `${item.name}: ${item.value}`).join('\n')}
+                >
+                  {endPnrList.map(item => {
+                    const pnrKey = `${node.id}:${item.name}:${item.value}`
+                    const copied = copiedPnrKey === pnrKey
+                    return (
+                      <span key={`${item.name}:${item.value}`} className="wf-node-end-pnr-chip">
+                        <span className="wf-node-end-pnr-name">PNR</span>
+                        <span className="wf-node-end-pnr-value">{item.value}</span>
+                        <button
+                          type="button"
+                          className={`wf-node-end-pnr-copy${copied ? ' copied' : ''}`}
+                          onMouseDown={e => e.stopPropagation()}
+                          onDoubleClick={e => e.stopPropagation()}
+                          onClick={e => onPnrCopy(e, pnrKey, item.value)}
+                          title={copied ? '복사됨' : 'PNR 복사'}
+                          aria-label={`${item.name} 값 복사`}
+                        >
+                          <IcoCopy size={11} />
+                        </button>
+                      </span>
+                    )
+                  })}
+                </div>
+              )}
+            </div>
             {statusBullet}
             {renderOutputPorts(node)}
           </div>

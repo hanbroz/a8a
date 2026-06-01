@@ -20,13 +20,12 @@ export type Environment = {
 interface Props {
   environments: Environment[]
   activeEnvId: string
-  onSelect: (id: string) => void
   onAdd: () => void
   onEdit: (env: Environment) => void
   onDelete: (env: Environment) => void
 }
 
-export default function EnvSection({ environments, activeEnvId, onSelect, onAdd, onEdit, onDelete }: Props): JSX.Element {
+export default function EnvSection({ environments, activeEnvId, onAdd, onEdit, onDelete }: Props): JSX.Element {
   const [open, toggleOpen] = useSidebarOpen('environment')
 
   const baseEnv = environments.find(e => e.isBase)
@@ -59,7 +58,7 @@ export default function EnvSection({ environments, activeEnvId, onSelect, onAdd,
           {baseEnv && (
             <div
               className={`env-item env-item-base${activeEnvId === baseEnv.id ? ' env-item-active' : ''}`}
-              onClick={() => onSelect(baseEnv.id)}
+              onClick={() => onEdit(baseEnv)}
             >
               <span className="env-item-badge">B</span>
               <span className="env-item-name">BASE</span>
@@ -76,7 +75,7 @@ export default function EnvSection({ environments, activeEnvId, onSelect, onAdd,
             <div
               key={env.id}
               className={`env-item${activeEnvId === env.id ? ' env-item-active' : ''}`}
-              onClick={() => onSelect(env.id)}
+              onClick={() => onEdit(env)}
             >
               <span
                 className="env-item-badge"
