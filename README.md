@@ -350,9 +350,58 @@ npm run build:linux
 
 ## 배포 방식
 
-`main` 또는 `master` 브랜치에 push하면 GitHub Actions가 Windows 설치 파일을 만들고 GitHub Release를 생성하도록 구성되어 있습니다.
+현재 GitHub Actions Release workflow는 계정 결제 또는 지출 한도 문제로 실패할 수 있습니다. 따라서 새 버전을 배포할 때는 로컬에서 Windows 빌드를 만들고 GitHub Release를 직접 생성하는 방식을 표준으로 사용합니다.
 
-자동 배포 흐름은 다음과 같습니다.
+새 버전 배포 절차는 매번 동일합니다.
+
+1. 새 기능과 문서 변경을 먼저 commit/push 합니다.
+2. 아래 수동 배포 명령을 실행합니다.
+3. 명령이 실행 시점의 시간을 `yyyy.MM.dd.HH.mm` 형식으로 계산합니다.
+4. 앱 내부 표시 버전을 해당 날짜 버전으로 기록합니다.
+5. Windows 설치 파일과 포터블 실행 파일을 빌드합니다.
+6. 버전 변경 파일을 commit/push 합니다.
+7. `vyyyy.MM.dd.HH.mm` 태그로 GitHub Release를 생성합니다.
+8. 설치 파일, blockmap 파일, 포터블 실행 파일을 Release asset으로 업로드합니다.
+
+```powershell
+npm run release:manual
+```
+
+특정 버전 번호로 배포해야 하는 경우에는 다음처럼 실행합니다.
+
+```powershell
+npm run release:manual -- -Version 2026.06.02.12.54
+```
+
+기본 저장소는 `hanbroz/a8a`입니다. 다른 저장소로 배포해야 할 때는 `-Repo` 값을 지정합니다.
+
+```powershell
+npm run release:manual -- -Repo owner/repo
+```
+
+수동 배포 명령은 다음 작업을 자동으로 수행합니다.
+
+1. `npm run version:stamp -- <version>`으로 앱 버전을 기록합니다.
+2. `npm run build:win`으로 설치형과 포터블 버전을 빌드합니다.
+3. `src/main/appVersion.ts` 버전 변경만 commit 합니다.
+4. 현재 브랜치를 원격 저장소에 push 합니다.
+5. `gh release create`로 최신 Release를 만들고 asset을 업로드합니다.
+
+Release에 올라가는 파일은 다음과 같습니다.
+
+```text
+dist/a8a-Setup-yyyy.MM.dd.HH.mm.exe
+dist/a8a-Setup-yyyy.MM.dd.HH.mm.exe.blockmap
+dist/a8a-Portable-yyyy.MM.dd.HH.mm.exe
+```
+
+개발자에게 직접 전달할 파일은 사용 방식에 따라 다릅니다.
+
+- 설치해서 사용하게 하려면 `a8a-Setup-yyyy.MM.dd.HH.mm.exe`를 전달합니다.
+- 설치 없이 실행하게 하려면 `a8a-Portable-yyyy.MM.dd.HH.mm.exe`를 전달합니다.
+- `.blockmap` 파일은 자동 업데이트용 Release asset이므로 직접 전달할 필요가 없습니다.
+
+GitHub Actions가 정상화되면 `main` 또는 `master` 브랜치에 push할 때 자동으로 Windows 설치 파일을 만들고 GitHub Release를 생성할 수 있습니다. 자동 배포 흐름은 다음과 같습니다.
 
 1. push 시점의 시간을 `yyyy.MM.dd.HH.mm` 형식으로 계산합니다.
 2. 앱 내부 표시 버전을 해당 날짜 버전으로 기록합니다.
@@ -361,26 +410,6 @@ npm run build:linux
 5. 설치 파일과 blockmap 파일을 Release asset으로 업로드합니다.
 
 GitHub Actions가 결제 또는 지출 한도 문제로 시작되지 않으면 Release가 생성되지 않습니다. 이 경우 저장소 소유자는 GitHub의 `Settings > Billing & plans`에서 결제 수단, Actions 예산, spending limit을 확인한 뒤 workflow를 다시 실행해야 합니다.
-
-수동으로 Release를 만들 때는 로컬에서 빌드한 뒤 다음 명령을 사용할 수 있습니다.
-
-```powershell
-$version = Get-Date -Format 'yyyy.MM.dd.HH.mm'
-$env:A8A_UPDATE_GITHUB_REPO = "hanbroz/a8a"
-$env:A8A_APP_VERSION = $version
-
-npm run version:stamp -- $version
-npm run build:win
-
-gh release create "v$version" `
-  "dist/a8a-Setup-$version.exe" `
-  "dist/a8a-Setup-$version.exe.blockmap" `
-  "dist/a8a-Portable-$version.exe" `
-  --repo hanbroz/a8a `
-  --latest `
-  --title "$version" `
-  --notes "a8a $version"
-```
 
 ## 프로젝트 구조
 

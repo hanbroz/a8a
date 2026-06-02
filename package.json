@@ -9,6 +9,7 @@
     "build": "electron-vite build",
     "preview": "electron-vite preview",
     "version:stamp": "node scripts/stamp-version.cjs",
+    "release:manual": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/publish-release.ps1",
     "build:win": "npm run build && electron-builder --config electron-builder.config.cjs --win",
     "build:mac": "npm run build && electron-builder --config electron-builder.config.cjs --mac",
     "build:linux": "npm run build && electron-builder --config electron-builder.config.cjs --linux"
