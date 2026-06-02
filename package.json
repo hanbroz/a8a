@@ -20,7 +20,7 @@
     "workflow"
   ],
   "author": "Eastar Jet",
-  "license": "MIT",
+  "license": "SEE LICENSE IN LICENSE.md",
   "main_process": "src/main/index.ts",
   "build": {
     "appId": "com.eastarjet.a8a",

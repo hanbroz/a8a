@@ -268,15 +268,37 @@
   padding: 0 14px;
   cursor: pointer;
   z-index: 2;
-  transition: box-shadow 0.15s, border-color 0.15s, transform 0.06s;
+  transition: box-shadow 0.15s, border-color 0.15s, filter 0.15s, transform 0.06s;
 }
 
 .wf-node:hover { box-shadow: var(--shadow-node-hover); }
 
-.wf-node-selected {
-  border-color: #58a6ff !important;
-  box-shadow: var(--shadow-node-hover), 0 0 0 2px rgba(88, 166, 255, 0.25);
+.wf-node.wf-node-selected {
+  box-shadow:
+    var(--shadow-node-hover),
+    0 8px 16px rgba(0, 0, 0, 0.65),
+    0 18px 42px rgba(0, 0, 0, 0.82),
+    0 0 0 1px rgba(var(--wf-selected-accent-rgb, 255, 255, 255), 0.36),
+    0 0 12px 2px rgba(var(--wf-selected-accent-rgb, 255, 255, 255), 0.28),
+    0 0 26px 6px rgba(var(--wf-selected-accent-rgb, 255, 255, 255), 0.16) !important;
+  filter: none;
+  z-index: 30;
 }
+
+.wf-node-start.wf-node-selected { --wf-selected-accent-rgb: 63, 185, 80; border-color: var(--state-success) !important; }
+.wf-node-end.wf-node-selected { --wf-selected-accent-rgb: 248, 81, 73; border-color: var(--state-error) !important; }
+.wf-node-data.wf-node-selected { --wf-selected-accent-rgb: 68, 147, 248; border-color: var(--accent-data) !important; }
+.wf-node-select.wf-node-selected { --wf-selected-accent-rgb: 137, 87, 229; border-color: #8957e5 !important; }
+.wf-node-api.wf-node-selected { --wf-selected-accent-rgb: 63, 185, 80; border-color: #3fb950 !important; }
+.wf-node-branch.wf-node-selected { --wf-selected-accent-rgb: 210, 153, 34; border-color: #d29922 !important; }
+
+[data-theme="light"] .wf-node.wf-node-selected {
+  box-shadow:
+    var(--shadow-node-hover),
+    0 12px 26px rgba(15, 23, 42, 0.2) !important;
+}
+
+[data-theme="light"] .wf-node-branch.wf-node-selected { border-color: #bf8700 !important; }
 
 .wf-node[data-dragging="true"] {
   cursor: grabbing;
@@ -300,6 +322,42 @@
   font-weight: 600;
   letter-spacing: -0.01em;
   white-space: nowrap;
+}
+
+.wf-node-resize-handle {
+  position: absolute;
+  right: 2px;
+  bottom: 2px;
+  width: 14px;
+  height: 14px;
+  border-radius: 4px 0 9px 0;
+  cursor: se-resize;
+  opacity: 0;
+  z-index: 9;
+  pointer-events: all;
+  transition: opacity 0.12s, background 0.12s;
+}
+
+.wf-node-resize-handle::before {
+  content: '';
+  position: absolute;
+  right: 3px;
+  bottom: 3px;
+  width: 7px;
+  height: 7px;
+  border-right: 2px solid var(--text-4);
+  border-bottom: 2px solid var(--text-4);
+}
+
+.wf-node:hover .wf-node-resize-handle,
+.wf-node-selected .wf-node-resize-handle,
+.wf-node-resize-handle.active {
+  opacity: 1;
+}
+
+.wf-node-resize-handle:hover,
+.wf-node-resize-handle.active {
+  background: rgba(88, 166, 255, 0.18);
 }
 
 /* ── Start node ──────────────────────────────────── */
@@ -442,9 +500,11 @@
   font-size: 13px;
   font-weight: 600;
   letter-spacing: -0.01em;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
+  white-space: normal;
+  overflow: visible;
+  text-overflow: clip;
+  overflow-wrap: anywhere;
+  word-break: break-word;
 }
 .wf-node-data-meta {
   display: flex;
@@ -501,9 +561,11 @@
   font-size: 13px;
   font-weight: 600;
   letter-spacing: -0.01em;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
+  white-space: normal;
+  overflow: visible;
+  text-overflow: clip;
+  overflow-wrap: anywhere;
+  word-break: break-word;
 }
 .wf-node-select-meta {
   display: flex;
@@ -552,14 +614,19 @@
   font-size: 13px;
   font-weight: 600;
   letter-spacing: -0.01em;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
+  white-space: normal;
+  overflow: visible;
+  text-overflow: clip;
+  overflow-wrap: anywhere;
+  word-break: break-word;
 }
 .wf-node-api-meta {
   display: flex;
   align-items: center;
+  flex-wrap: nowrap;
   gap: 5px;
+  min-width: 0;
+  max-width: 100%;
 }
 .wf-node-api-method {
   font-size: 10px;
@@ -571,6 +638,8 @@
   font-family: var(--font-mono);
 }
 .wf-node-api-url {
+  flex: 1 1 auto;
+  min-width: 0;
   font-size: 11px;
   font-family: var(--font-mono);
   color: var(--text-3);
@@ -608,9 +677,11 @@
   color: #e3b341;
   font-size: 13px;
   font-weight: 600;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
+  white-space: normal;
+  overflow: visible;
+  text-overflow: clip;
+  overflow-wrap: anywhere;
+  word-break: break-word;
 }
 .wf-node-branch-meta {
   margin-top: 6px;

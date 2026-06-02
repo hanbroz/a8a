@@ -55,6 +55,7 @@ export function registerIpcHandlers(): void {
   ipcMain.handle('node:create', (_, projectId: string, type: string, label: string, x: number, y: number) => db.createNode(projectId, type, label, x, y))
   ipcMain.handle('node:create-from-module', (_, projectId: string, moduleId: string, x: number, y: number) => db.createNodeFromModule(projectId, moduleId, x, y))
   ipcMain.handle('node:update-position', (_, id: string, x: number, y: number) => db.updateNodePosition(id, x, y))
+  ipcMain.handle('node:update-size', (_, id: string, width: number, height: number) => db.updateNodeSize(id, width, height))
   ipcMain.handle('node:update-label', (_, id: string, label: string) => db.updateNodeLabel(id, label))
   ipcMain.handle('node:update-config', (_, id: string, config: string) => db.updateNodeConfig(id, config))
   ipcMain.handle('node:delete', (_, id: string) => db.deleteNode(id))

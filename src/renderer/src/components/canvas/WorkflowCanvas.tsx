@@ -7,6 +7,8 @@ const NODE_W = 160
 const NODE_H = 52
 const DATA_NODE_W = 200
 const DATA_NODE_H = 72
+const MODULE_NODE_MIN_W = 160
+const MODULE_NODE_MIN_H = 72
 const SNAP_R = 20
 const MIN_ZOOM = 0.45
 const MAX_ZOOM = 1.8
@@ -18,16 +20,52 @@ type NodeStatus = 'running' | 'success' | 'error' | 'skip'
 type EdgeLineStyle = 'curve' | 'straight'
 type InputPortSide = 'left' | 'top'
 type OutputPortSide = 'right' | 'bottom'
+type NodeSize = { width: number; height: number }
 type EndNodePnrValue = { name: string; value: string }
 type ApiFlowItem = { id: string; index: number; label: string; method: string; url: string; rawUrl: string }
 
-function nW(type: string): number { return (type === 'data' || type === 'select' || type === 'api' || type === 'branch') ? DATA_NODE_W : NODE_W }
-function nH(type: string): number { return (type === 'data' || type === 'select' || type === 'api' || type === 'branch') ? DATA_NODE_H : NODE_H }
+function isCanvasModuleNodeType(type: ApiNode['type']): boolean {
+  return type === 'data' || type === 'select' || type === 'api' || type === 'branch'
+}
+
+function defaultNodeWidth(type: string): number {
+  return (type === 'data' || type === 'select' || type === 'api' || type === 'branch') ? DATA_NODE_W : NODE_W
+}
+
+function defaultNodeHeight(type: string): number {
+  return (type === 'data' || type === 'select' || type === 'api' || type === 'branch') ? DATA_NODE_H : NODE_H
+}
+
+function nW(node: Pick<ApiNode, 'type'> & Partial<NodeSize>): number {
+  return node.width ?? defaultNodeWidth(node.type)
+}
+
+function nH(node: Pick<ApiNode, 'type'> & Partial<NodeSize>): number {
+  return node.height ?? defaultNodeHeight(node.type)
+}
+
+function minNodeWidth(type: ApiNode['type']): number {
+  return isCanvasModuleNodeType(type) ? MODULE_NODE_MIN_W : NODE_W
+}
+
+function minNodeHeight(type: ApiNode['type']): number {
+  return isCanvasModuleNodeType(type) ? MODULE_NODE_MIN_H : NODE_H
+}
+
+function nodeStyle(node: ApiNode): CSSProperties {
+  return {
+    left: node.x,
+    top: node.y,
+    width: nW(node),
+    height: nH(node),
+  }
+}
 
 interface Props {
   nodes: ApiNode[]
   edges: ApiEdge[]
   onNodeMove: (id: string, x: number, y: number) => void
+  onNodeResize: (id: string, width: number, height: number) => void
   onEdgeCreate: (sourceId: string, targetId: string, sourcePort?: string | null) => void
   onEdgeDelete: (id: string) => void
   onEdgeReconnect: (edgeId: string, newSourceId: string, newTargetId: string, sourcePort?: string | null) => void
@@ -49,6 +87,12 @@ interface NodeDrag {
   nodeIds: string[]
   primaryOffset: Point
   startPositions: Record<string, Point>
+}
+interface NodeResizeDrag {
+  nodeId: string
+  startMouse: Point
+  startSize: NodeSize
+  minSize: NodeSize
 }
 type Point = { x: number; y: number }
 type SelectionBox = { x: number; y: number; width: number; height: number }
@@ -195,37 +239,37 @@ function nearestPort<T extends PortPoint>(ports: T[], target: Point): T {
   return ports.reduce((best, port) => squaredDistance(port, target) < squaredDistance(best, target) ? port : best, ports[0])
 }
 
-function inputPorts(node: Pick<ApiNode, 'type' | 'x' | 'y'>): PortPoint[] {
+function inputPorts(node: Pick<ApiNode, 'type' | 'x' | 'y'> & Partial<NodeSize>): PortPoint[] {
   if (node.type === 'end') {
     return [
-      { side: 'left', x: node.x, y: node.y + nH(node.type) / 2 },
+      { side: 'left', x: node.x, y: node.y + nH(node) / 2 },
     ]
   }
   return [
-    { side: 'left', x: node.x, y: node.y + nH(node.type) / 2 },
-    { side: 'top', x: node.x + nW(node.type) / 2, y: node.y },
+    { side: 'left', x: node.x, y: node.y + nH(node) / 2 },
+    { side: 'top', x: node.x + nW(node) / 2, y: node.y },
   ]
 }
 
-function outputPorts(node: Pick<ApiNode, 'type' | 'x' | 'y'>): PortPoint[] {
+function outputPorts(node: Pick<ApiNode, 'type' | 'x' | 'y'> & Partial<NodeSize>): PortPoint[] {
   if (node.type === 'start') {
     return [
-      { side: 'right', x: node.x + nW(node.type), y: node.y + nH(node.type) / 2 },
+      { side: 'right', x: node.x + nW(node), y: node.y + nH(node) / 2 },
     ]
   }
   if (node.type === 'branch') {
     return [
-      { side: 'right', sourcePort: 'true', x: node.x + nW(node.type), y: node.y + 22 },
-      { side: 'right', sourcePort: 'false', x: node.x + nW(node.type), y: node.y + nH(node.type) - 22 },
+      { side: 'right', sourcePort: 'true', x: node.x + nW(node), y: node.y + Math.min(22, nH(node) / 2) },
+      { side: 'right', sourcePort: 'false', x: node.x + nW(node), y: node.y + Math.max(nH(node) - 22, nH(node) / 2) },
     ]
   }
   return [
-    { side: 'right', x: node.x + nW(node.type), y: node.y + nH(node.type) / 2 },
-    { side: 'bottom', x: node.x + nW(node.type) / 2, y: node.y + nH(node.type) },
+    { side: 'right', x: node.x + nW(node), y: node.y + nH(node) / 2 },
+    { side: 'bottom', x: node.x + nW(node) / 2, y: node.y + nH(node) },
   ]
 }
 
-function outputPort(node: Pick<ApiNode, 'type' | 'x' | 'y'>, side: OutputPortSide, sourcePort?: string | null): PortPoint {
+function outputPort(node: Pick<ApiNode, 'type' | 'x' | 'y'> & Partial<NodeSize>, side: OutputPortSide, sourcePort?: string | null): PortPoint {
   return outputPorts(node).find(port => (sourcePort ? port.sourcePort === sourcePort : port.side === side)) ?? outputPorts(node)[0]
 }
 
@@ -340,9 +384,9 @@ function selectionBoxFromPoints(a: Point, b: Point): SelectionBox {
   }
 }
 
-function boxIntersectsNode(box: SelectionBox, node: Pick<ApiNode, 'type' | 'x' | 'y'>): boolean {
-  const nodeRight = node.x + nW(node.type)
-  const nodeBottom = node.y + nH(node.type)
+function boxIntersectsNode(box: SelectionBox, node: Pick<ApiNode, 'type' | 'x' | 'y'> & Partial<NodeSize>): boolean {
+  const nodeRight = node.x + nW(node)
+  const nodeBottom = node.y + nH(node)
   const boxRight = box.x + box.width
   const boxBottom = box.y + box.height
   return box.x <= nodeRight && boxRight >= node.x && box.y <= nodeBottom && boxBottom >= node.y
@@ -431,13 +475,14 @@ function buildApiFlowItems(nodes: ApiNode[], edges: ApiEdge[]): ApiFlowItem[] {
 
 export default function WorkflowCanvas({
   nodes, edges,
-  onNodeMove, onEdgeCreate, onEdgeDelete, onEdgeReconnect,
+  onNodeMove, onNodeResize, onEdgeCreate, onEdgeDelete, onEdgeReconnect,
   onNodeOpen, onNodeRun, onNodeCopy, onNodePaste, onNodeDeleteRequest, canPasteNode,
   onModuleDrop,
   nodeStatuses, branchRoutes, endNodePnrValues, onNodeStatusClick,
 }: Props): JSX.Element {
   const canvasRef = useRef<HTMLDivElement>(null)
   const nodeDragRef = useRef<NodeDrag | null>(null)
+  const nodeResizeRef = useRef<NodeResizeDrag | null>(null)
   const selectionDragRef = useRef<SelectionDrag | null>(null)
   const connectRef = useRef<Connecting | null>(null)
   const reconnectRef = useRef<Reconnecting | null>(null)
@@ -445,7 +490,9 @@ export default function WorkflowCanvas({
   const floatingToolRowRef = useRef<HTMLDivElement>(null)
 
   const [positions, setPositions] = useState<Record<string, { x: number; y: number }>>({})
+  const [sizes, setSizes] = useState<Record<string, NodeSize>>({})
   const [draggingNodeIds, setDraggingNodeIds] = useState<string[]>([])
+  const [resizingNodeId, setResizingNodeId] = useState<string | null>(null)
   const [connecting, setConnecting] = useState<Connecting | null>(null)
   const [reconnecting, setReconnecting] = useState<Reconnecting | null>(null)
   const [hoveredEdgeId, setHoveredEdgeId] = useState<string | null>(null)
@@ -528,6 +575,16 @@ export default function WorkflowCanvas({
   }, [nodes])
 
   useEffect(() => {
+    setSizes(prev => {
+      const next: Record<string, NodeSize> = {}
+      nodes.forEach(n => {
+        next[n.id] = prev[n.id] ?? { width: nW(n), height: nH(n) }
+      })
+      return next
+    })
+  }, [nodes])
+
+  useEffect(() => {
     localStorage.setItem('wf-edge-line-style', lineStyle)
   }, [lineStyle])
 
@@ -582,7 +639,7 @@ export default function WorkflowCanvas({
 
   const onNodeDown = useCallback((e: React.MouseEvent, nodeId: string) => {
     if (e.button !== 0) return
-    if ((e.target as HTMLElement).closest('.wf-port')) return
+    if ((e.target as HTMLElement).closest('.wf-port, .wf-node-resize-handle')) return
     e.preventDefault()
     canvasRef.current?.focus({ preventScroll: true })
     const additive = e.shiftKey || e.ctrlKey || e.metaKey
@@ -619,6 +676,28 @@ export default function WorkflowCanvas({
     setDraggingNodeIds(nodeIds)
   }, [clientToWorld, nodes, positions, selectedNodeIds])
 
+  const onNodeResizeDown = useCallback((e: React.MouseEvent, node: ApiNode) => {
+    if (e.button !== 0) return
+    if (!isCanvasModuleNodeType(node.type)) return
+    e.preventDefault()
+    e.stopPropagation()
+    canvasRef.current?.focus({ preventScroll: true })
+    const world = clientToWorld(e.clientX, e.clientY)
+    if (!world) return
+    const startSize = sizes[node.id] ?? { width: nW(node), height: nH(node) }
+    nodeResizeRef.current = {
+      nodeId: node.id,
+      startMouse: world,
+      startSize,
+      minSize: {
+        width: minNodeWidth(node.type),
+        height: minNodeHeight(node.type),
+      },
+    }
+    setSelectedNodeIds([node.id])
+    setResizingNodeId(node.id)
+  }, [clientToWorld, sizes])
+
   const onOutputPortDown = useCallback((e: React.MouseEvent, nodeId: string, nodeType: ApiNode['type'], side: OutputPortSide, sourcePort?: string | null) => {
     if (e.button !== 0) return
     e.stopPropagation()
@@ -627,7 +706,8 @@ export default function WorkflowCanvas({
     if (!pos) return
     const world = clientToWorld(e.clientX, e.clientY)
     if (!world) return
-    const port = outputPort({ type: nodeType, x: pos.x, y: pos.y }, side, sourcePort)
+    const size = sizes[nodeId] ?? nodes.find(node => node.id === nodeId)
+    const port = outputPort({ type: nodeType, x: pos.x, y: pos.y, width: size?.width, height: size?.height }, side, sourcePort)
     const state: Connecting = {
       fromNodeId: nodeId,
       fromX: port.x,
@@ -639,7 +719,7 @@ export default function WorkflowCanvas({
     }
     connectRef.current = state
     setConnecting(state)
-  }, [clientToWorld, positions])
+  }, [clientToWorld, nodes, positions, sizes])
 
   const onEndpointDown = useCallback((
     e: React.MouseEvent,
@@ -709,11 +789,22 @@ export default function WorkflowCanvas({
       const selectedFromBox = nodes
         .filter(node => {
           const pos = positions[node.id] ?? node
-          return boxIntersectsNode(box, { type: node.type, x: pos.x, y: pos.y })
+          const size = sizes[node.id] ?? node
+          return boxIntersectsNode(box, { type: node.type, x: pos.x, y: pos.y, width: size.width, height: size.height })
         })
         .map(node => node.id)
       setSelectionBox(box)
       setSelectedNodeIds(Array.from(new Set([...drag.initialSelectedIds, ...selectedFromBox])))
+      return
+    }
+
+    const resize = nodeResizeRef.current
+    if (resize) {
+      const world = clientToWorld(e.clientX, e.clientY)
+      if (!world) return
+      const width = Math.max(resize.minSize.width, snapToGrid(resize.startSize.width + world.x - resize.startMouse.x))
+      const height = Math.max(resize.minSize.height, snapToGrid(resize.startSize.height + world.y - resize.startMouse.y))
+      setSizes(prev => ({ ...prev, [resize.nodeId]: { width, height } }))
       return
     }
 
@@ -746,7 +837,8 @@ export default function WorkflowCanvas({
         if (n.type === 'start' || n.id === connectRef.current.fromNodeId) continue
         const pos = positions[n.id]
         if (!pos) continue
-        const nearest = nearestPort(inputPorts({ type: n.type, x: pos.x, y: pos.y }), { x: mx, y: my })
+        const size = sizes[n.id] ?? n
+        const nearest = nearestPort(inputPorts({ type: n.type, x: pos.x, y: pos.y, width: size.width, height: size.height }), { x: mx, y: my })
         if (Math.hypot(mx - nearest.x, my - nearest.y) < SNAP_R) { snapTo = n.id; break }
       }
       const next: Connecting = { ...connectRef.current, mouseX: mx, mouseY: my, snapTo }
@@ -768,12 +860,14 @@ export default function WorkflowCanvas({
         if (rc.dragging === 'target') {
           // Dragging target end → snap to input port (left side), exclude start nodes
           if (n.type === 'start') continue
-          const nearest = nearestPort(inputPorts({ type: n.type, x: pos.x, y: pos.y }), { x: mx, y: my })
+          const size = sizes[n.id] ?? n
+          const nearest = nearestPort(inputPorts({ type: n.type, x: pos.x, y: pos.y, width: size.width, height: size.height }), { x: mx, y: my })
           if (Math.hypot(mx - nearest.x, my - nearest.y) < SNAP_R) { snapTo = n.id; break }
         } else {
           // Dragging source end → snap to output port (right side), exclude end nodes
           if (n.type === 'end') continue
-          const nearest = nearestPort(outputPorts({ type: n.type, x: pos.x, y: pos.y }), { x: mx, y: my })
+          const size = sizes[n.id] ?? n
+          const nearest = nearestPort(outputPorts({ type: n.type, x: pos.x, y: pos.y, width: size.width, height: size.height }), { x: mx, y: my })
           if (Math.hypot(mx - nearest.x, my - nearest.y) < SNAP_R) { snapTo = n.id; break }
         }
       }
@@ -781,7 +875,7 @@ export default function WorkflowCanvas({
       reconnectRef.current = next
       setReconnecting(next)
     }
-  }, [clientToWorld, nodes, positions])
+  }, [clientToWorld, nodes, positions, sizes])
 
   const onMouseUp = useCallback(() => {
     if (panRef.current) {
@@ -792,6 +886,14 @@ export default function WorkflowCanvas({
     if (selectionDragRef.current) {
       selectionDragRef.current = null
       setSelectionBox(null)
+    }
+
+    const resize = nodeResizeRef.current
+    if (resize) {
+      const size = sizes[resize.nodeId]
+      if (size) onNodeResize(resize.nodeId, size.width, size.height)
+      nodeResizeRef.current = null
+      setResizingNodeId(null)
     }
 
     const nd = nodeDragRef.current
@@ -821,7 +923,8 @@ export default function WorkflowCanvas({
           const sourceNode = nodes.find(n => n.id === rc.snapTo)
           const sourcePos = rc.snapTo ? positions[rc.snapTo] : undefined
           if (sourceNode && sourcePos) {
-            nextSourcePort = nearestPort(outputPorts({ type: sourceNode.type, x: sourcePos.x, y: sourcePos.y }), { x: rc.fixedX, y: rc.fixedY }).sourcePort ?? null
+            const size = sizes[rc.snapTo] ?? sourceNode
+            nextSourcePort = nearestPort(outputPorts({ type: sourceNode.type, x: sourcePos.x, y: sourcePos.y, width: size.width, height: size.height }), { x: rc.fixedX, y: rc.fixedY }).sourcePort ?? null
           }
         }
         onEdgeReconnect(rc.edgeId, newSourceId, newTargetId, nextSourcePort)
@@ -829,7 +932,7 @@ export default function WorkflowCanvas({
       reconnectRef.current = null
       setReconnecting(null)
     }
-  }, [nodes, positions, onNodeMove, onEdgeCreate, onEdgeReconnect])
+  }, [nodes, positions, sizes, onNodeMove, onNodeResize, onEdgeCreate, onEdgeReconnect])
 
   const setEdgeHover = (id: string | null) => {
     if (hoverTimerRef.current) clearTimeout(hoverTimerRef.current)
@@ -854,8 +957,8 @@ export default function WorkflowCanvas({
     const worldTop = Math.max(0, -viewport.y / zoom) + safePadding
     const usableW = Math.max(1, visibleW - safePadding * 2)
     const usableH = Math.max(1, visibleH - safePadding * 2)
-    const maxNodeW = Math.max(...orderedNodes.map(node => nW(node.type)))
-    const maxNodeH = Math.max(...orderedNodes.map(node => nH(node.type)))
+    const maxNodeW = Math.max(...orderedNodes.map(node => nW(sizes[node.id] ?? node)))
+    const maxNodeH = Math.max(...orderedNodes.map(node => nH(sizes[node.id] ?? node)))
     const maxColsByWidth = Math.max(1, Math.floor((usableW + TILE_GAP_X) / (maxNodeW + TILE_GAP_X)))
     const targetAspect = usableW / Math.max(1, usableH)
     const idealCols = Math.ceil(Math.sqrt(orderedNodes.length * targetAspect * (maxNodeH / maxNodeW)))
@@ -877,8 +980,8 @@ export default function WorkflowCanvas({
       const col = index % cols
       const row = Math.floor(index / cols)
       nextPositions[node.id] = {
-        x: snapToGrid(startX + col * (maxNodeW + colGap) + (maxNodeW - nW(node.type)) / 2),
-        y: snapToGrid(startY + row * (maxNodeH + rowGap) + (maxNodeH - nH(node.type)) / 2),
+        x: snapToGrid(startX + col * (maxNodeW + colGap) + (maxNodeW - nW(sizes[node.id] ?? node)) / 2),
+        y: snapToGrid(startY + row * (maxNodeH + rowGap) + (maxNodeH - nH(sizes[node.id] ?? node)) / 2),
       }
     })
 
@@ -887,9 +990,19 @@ export default function WorkflowCanvas({
       const pos = nextPositions[node.id]
       onNodeMove(node.id, pos.x, pos.y)
     })
-  }, [edges, nodes, onNodeMove, viewport, zoom])
+  }, [edges, nodes, onNodeMove, sizes, viewport, zoom])
 
-  const liveNodes = nodes.map(n => ({ ...n, x: positions[n.id]?.x ?? n.x, y: positions[n.id]?.y ?? n.y }))
+  const liveNodes = nodes.map(n => {
+    const size = sizes[n.id] ?? { width: nW(n), height: nH(n) }
+    const hasEndPnr = n.type === 'end' && (endNodePnrValues?.[n.id]?.length ?? 0) > 0
+    return {
+      ...n,
+      x: positions[n.id]?.x ?? n.x,
+      y: positions[n.id]?.y ?? n.y,
+      width: hasEndPnr ? Math.max(size.width, 190) : size.width,
+      height: size.height,
+    }
+  })
   const apiFlowItems = buildApiFlowItems(liveNodes, edges)
   const liveNodeById = new Map(liveNodes.map(node => [node.id, node]))
   const selectedNodeIdSet = new Set(selectedNodeIds)
@@ -997,6 +1110,19 @@ export default function WorkflowCanvas({
           title="OUTPUT"
         />
       </>
+    )
+  }
+
+  const renderResizeHandle = (node: ApiNode): JSX.Element | null => {
+    if (!isCanvasModuleNodeType(node.type)) return null
+    return (
+      <div
+        className={`wf-node-resize-handle${resizingNodeId === node.id ? ' active' : ''}`}
+        onMouseDown={e => onNodeResizeDown(e, node)}
+        onDoubleClick={e => e.stopPropagation()}
+        title="모듈 크기 조정 (10px 단위)"
+        aria-label="모듈 크기 조정"
+      />
     )
   }
 
@@ -1317,7 +1443,7 @@ export default function WorkflowCanvas({
               key={node.id}
               className={`wf-node wf-node-data${selectedNodeIdSet.has(node.id) ? ' wf-node-selected' : ''}`}
               data-dragging={draggingNodeIdSet.has(node.id) ? 'true' : undefined}
-              style={{ left: node.x, top: node.y }}
+              style={nodeStyle(node)}
               onMouseDown={e => onNodeDown(e, node.id)}
               onDoubleClick={() => onNodeOpen(node.id)}
             >
@@ -1331,6 +1457,7 @@ export default function WorkflowCanvas({
               </div>
               {statusBullet}
               {renderOutputPorts(node)}
+              {renderResizeHandle(node)}
             </div>
           )
         }
@@ -1346,7 +1473,7 @@ export default function WorkflowCanvas({
               key={node.id}
               className={`wf-node wf-node-select${selectedNodeIdSet.has(node.id) ? ' wf-node-selected' : ''}`}
               data-dragging={draggingNodeIdSet.has(node.id) ? 'true' : undefined}
-              style={{ left: node.x, top: node.y }}
+              style={nodeStyle(node)}
               onMouseDown={e => onNodeDown(e, node.id)}
               onDoubleClick={() => onNodeOpen(node.id)}
             >
@@ -1360,6 +1487,7 @@ export default function WorkflowCanvas({
               </div>
               {statusBullet}
               {renderOutputPorts(node)}
+              {renderResizeHandle(node)}
             </div>
           )
         }
@@ -1373,7 +1501,7 @@ export default function WorkflowCanvas({
               key={node.id}
               className={`wf-node wf-node-api${selectedNodeIdSet.has(node.id) ? ' wf-node-selected' : ''}`}
               data-dragging={draggingNodeIdSet.has(node.id) ? 'true' : undefined}
-              style={{ left: node.x, top: node.y }}
+              style={nodeStyle(node)}
               onMouseDown={e => onNodeDown(e, node.id)}
               onDoubleClick={() => onNodeOpen(node.id)}
             >
@@ -1388,6 +1516,7 @@ export default function WorkflowCanvas({
               </div>
               {statusBullet}
               {renderOutputPorts(node)}
+              {renderResizeHandle(node)}
             </div>
           )
         }
@@ -1400,7 +1529,7 @@ export default function WorkflowCanvas({
               key={node.id}
               className={`wf-node wf-node-branch${selectedNodeIdSet.has(node.id) ? ' wf-node-selected' : ''}`}
               data-dragging={draggingNodeIdSet.has(node.id) ? 'true' : undefined}
-              style={{ left: node.x, top: node.y }}
+              style={nodeStyle(node)}
               onMouseDown={e => onNodeDown(e, node.id)}
               onDoubleClick={() => onNodeOpen(node.id)}
             >
@@ -1412,6 +1541,7 @@ export default function WorkflowCanvas({
               </div>
               {statusBullet}
               {renderOutputPorts(node)}
+              {renderResizeHandle(node)}
             </div>
           )
         }
@@ -1423,7 +1553,7 @@ export default function WorkflowCanvas({
             key={node.id}
             className={`wf-node wf-node-${node.type}${endPnrList.length > 0 ? ' wf-node-end-has-pnr' : ''}${selectedNodeIdSet.has(node.id) ? ' wf-node-selected' : ''}`}
             data-dragging={draggingNodeIdSet.has(node.id) ? 'true' : undefined}
-            style={{ left: node.x, top: node.y }}
+            style={nodeStyle(node)}
             onMouseDown={e => onNodeDown(e, node.id)}
             onDoubleClick={() => onNodeOpen(node.id)}
           >

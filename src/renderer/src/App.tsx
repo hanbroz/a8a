@@ -1088,6 +1088,11 @@ export default function App(): JSX.Element {
     setActiveNodes(prev => prev.map(n => n.id === id ? { ...n, x, y } : n))
   }, [])
 
+  const handleNodeResize = useCallback(async (id: string, width: number, height: number): Promise<void> => {
+    await window.api.node.updateSize(id, width, height)
+    setActiveNodes(prev => prev.map(n => n.id === id ? { ...n, width, height } : n))
+  }, [])
+
   const handleEdgeCreate = useCallback(async (sourceId: string, targetId: string, sourcePort?: string | null): Promise<void> => {
     if (!activeProject) return
     try {
@@ -1203,13 +1208,18 @@ export default function App(): JSX.Element {
       try {
         const created = await window.api.node.create(activeProject.id, copiedNode.type, label, x, y)
 
-        await window.api.node.updateConfig(created.id, config)
+        await Promise.all([
+          window.api.node.updateConfig(created.id, config),
+          window.api.node.updateSize(created.id, copiedNode.width, copiedNode.height),
+        ])
 
         const pasted: ApiNode = {
           ...created,
           label,
           x,
           y,
+          width: copiedNode.width,
+          height: copiedNode.height,
           config,
         }
 
@@ -2748,6 +2758,7 @@ export default function App(): JSX.Element {
                   nodes={activeNodes}
                   edges={activeEdges}
                   onNodeMove={handleNodeMove}
+                  onNodeResize={handleNodeResize}
                   onEdgeCreate={handleEdgeCreate}
                   onEdgeDelete={id => setConfirmDeleteEdge(activeEdges.find(e => e.id === id) ?? null)}
                   onEdgeReconnect={handleEdgeReconnect}

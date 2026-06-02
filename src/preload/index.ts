@@ -44,6 +44,7 @@ const api = {
     create: (projectId: string, type: string, label: string, x: number, y: number): Promise<ApiNode> => ipcRenderer.invoke('node:create', projectId, type, label, x, y),
     createFromModule: (projectId: string, moduleId: string, x: number, y: number): Promise<ApiNode> => ipcRenderer.invoke('node:create-from-module', projectId, moduleId, x, y),
     updatePosition: (id: string, x: number, y: number): Promise<void> => ipcRenderer.invoke('node:update-position', id, x, y),
+    updateSize: (id: string, width: number, height: number): Promise<void> => ipcRenderer.invoke('node:update-size', id, width, height),
     updateLabel: (id: string, label: string): Promise<void> => ipcRenderer.invoke('node:update-label', id, label),
     updateConfig: (id: string, config: string): Promise<void> => ipcRenderer.invoke('node:update-config', id, config),
     delete: (id: string): Promise<void> => ipcRenderer.invoke('node:delete', id)

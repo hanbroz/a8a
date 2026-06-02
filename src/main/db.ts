@@ -159,7 +159,9 @@ function createSchema(): void {
       type       TEXT NOT NULL,
       label      TEXT NOT NULL,
       x          REAL DEFAULT 0,
-      y          REAL DEFAULT 0
+      y          REAL DEFAULT 0,
+      width      REAL,
+      height     REAL
     );
     CREATE TABLE IF NOT EXISTS edges (
       id             TEXT PRIMARY KEY,
@@ -171,6 +173,12 @@ function createSchema(): void {
   `)
   try {
     db.run("ALTER TABLE nodes ADD COLUMN config TEXT DEFAULT ''")
+  } catch { /* column already exists */ }
+  try {
+    db.run("ALTER TABLE nodes ADD COLUMN width REAL")
+  } catch { /* column already exists */ }
+  try {
+    db.run("ALTER TABLE nodes ADD COLUMN height REAL")
   } catch { /* column already exists */ }
   try {
     db.run("ALTER TABLE environments ADD COLUMN color TEXT DEFAULT '#4493f8'")
@@ -372,8 +380,8 @@ export function createProject(workspaceId: string, name: string, description: st
       'INSERT INTO projects (id, workspace_id, name, description, sort) VALUES (?, ?, ?, ?, ?)',
       [id, workspaceId, name, description, nextProjectSort(workspaceId)]
     )
-    db.run('INSERT INTO nodes (id, project_id, type, label, x, y) VALUES (?, ?, ?, ?, ?, ?)', [randomUUID(), id, 'start', 'Start', 80, 160])
-    db.run('INSERT INTO nodes (id, project_id, type, label, x, y) VALUES (?, ?, ?, ?, ?, ?)', [randomUUID(), id, 'end', 'End', 520, 160])
+    db.run('INSERT INTO nodes (id, project_id, type, label, x, y, width, height) VALUES (?, ?, ?, ?, ?, ?, ?, ?)', [randomUUID(), id, 'start', 'Start', 80, 160, defaultNodeWidth('start'), defaultNodeHeight('start')])
+    db.run('INSERT INTO nodes (id, project_id, type, label, x, y, width, height) VALUES (?, ?, ?, ?, ?, ?, ?, ?)', [randomUUID(), id, 'end', 'End', 520, 160, defaultNodeWidth('end'), defaultNodeHeight('end')])
   })
   save()
   return { id, name, description }
@@ -419,7 +427,17 @@ export type NodeRow = {
   label: string
   x: number
   y: number
+  width: number
+  height: number
   config: string
+}
+
+function defaultNodeWidth(type: string): number {
+  return type === 'data' || type === 'select' || type === 'api' || type === 'branch' ? 200 : 160
+}
+
+function defaultNodeHeight(type: string): number {
+  return type === 'data' || type === 'select' || type === 'api' || type === 'branch' ? 72 : 52
 }
 
 function mergeNodeModuleConfig(moduleConfig: string | null, nodeConfig: string | null): string {
@@ -482,17 +500,17 @@ function migrateLegacyModuleNodesToStandalone(): void {
 function ensureDefaultNodes(projectId: string): void {
   ensureProjectExists(projectId)
   withTransaction(() => {
-    db.run('INSERT INTO nodes (id, project_id, type, label, x, y) VALUES (?, ?, ?, ?, ?, ?)', [randomUUID(), projectId, 'start', 'Start', 80, 160])
-    db.run('INSERT INTO nodes (id, project_id, type, label, x, y) VALUES (?, ?, ?, ?, ?, ?)', [randomUUID(), projectId, 'end', 'End', 520, 160])
+    db.run('INSERT INTO nodes (id, project_id, type, label, x, y, width, height) VALUES (?, ?, ?, ?, ?, ?, ?, ?)', [randomUUID(), projectId, 'start', 'Start', 80, 160, defaultNodeWidth('start'), defaultNodeHeight('start')])
+    db.run('INSERT INTO nodes (id, project_id, type, label, x, y, width, height) VALUES (?, ?, ?, ?, ?, ?, ?, ?)', [randomUUID(), projectId, 'end', 'End', 520, 160, defaultNodeWidth('end'), defaultNodeHeight('end')])
   })
   save()
 }
 
 export function listNodes(projectId: string): NodeRow[] {
   const rows = queryAll<{
-    id: string; project_id: string; type: string; label: string; x: number; y: number; config: string
+    id: string; project_id: string; type: string; label: string; x: number; y: number; width: number | null; height: number | null; config: string
   }>(
-    `SELECT id, project_id, type, label, x, y, COALESCE(config, '') as config
+    `SELECT id, project_id, type, label, x, y, width, height, COALESCE(config, '') as config
      FROM nodes
      WHERE project_id = ?`,
     [projectId]
@@ -508,6 +526,8 @@ export function listNodes(projectId: string): NodeRow[] {
     label: r.label,
     x: r.x,
     y: r.y,
+    width: r.width ?? defaultNodeWidth(r.type),
+    height: r.height ?? defaultNodeHeight(r.type),
     config: r.config
   }))
 }
@@ -515,13 +535,20 @@ export function listNodes(projectId: string): NodeRow[] {
 export function createNode(projectId: string, type: string, label: string, x: number, y: number): NodeRow {
   ensureProjectExists(projectId)
   const id = randomUUID()
-  db.run('INSERT INTO nodes (id, project_id, type, label, x, y, config) VALUES (?, ?, ?, ?, ?, ?, ?)', [id, projectId, type, label, x, y, ''])
+  const width = defaultNodeWidth(type)
+  const height = defaultNodeHeight(type)
+  db.run('INSERT INTO nodes (id, project_id, type, label, x, y, width, height, config) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)', [id, projectId, type, label, x, y, width, height, ''])
   save()
-  return { id, projectId, type, label, x, y, config: '' }
+  return { id, projectId, type, label, x, y, width, height, config: '' }
 }
 
 export function updateNodePosition(id: string, x: number, y: number): void {
   db.run('UPDATE nodes SET x = ?, y = ? WHERE id = ?', [x, y, id])
+  save()
+}
+
+export function updateNodeSize(id: string, width: number, height: number): void {
+  db.run('UPDATE nodes SET width = ?, height = ? WHERE id = ?', [width, height, id])
   save()
 }
 

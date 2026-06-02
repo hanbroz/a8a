@@ -139,6 +139,8 @@ declare global {
     label: string
     x: number
     y: number
+    width: number
+    height: number
     config: string
   }
 
@@ -217,6 +219,7 @@ declare global {
       create: (projectId: string, type: string, label: string, x: number, y: number) => Promise<ApiNode>
       createFromModule: (projectId: string, moduleId: string, x: number, y: number) => Promise<ApiNode>
       updatePosition: (id: string, x: number, y: number) => Promise<void>
+      updateSize: (id: string, width: number, height: number) => Promise<void>
       updateLabel: (id: string, label: string) => Promise<void>
       updateConfig: (id: string, config: string) => Promise<void>
       delete: (id: string) => Promise<void>
