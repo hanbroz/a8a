@@ -1514,22 +1514,15 @@ export default function App(): JSX.Element {
 
     if (selectedBranchRoute !== undefined && step > 0) {
       const prevNodeId = plan[step - 1]
-      const prevNode = activeNodes.find(n => n.id === prevNodeId)
-      const branchCfg = parseBranchConfig(prevNode?.config ?? '{}')
       const route = selectedBranchRoute
-      const output = {
-        route,
-        label: route === 'true' ? branchCfg.trueLabel ?? 'TRUE' : branchCfg.falseLabel ?? 'FALSE',
-        value: route === 'true',
-        passThrough: exec.pendingBranchChoice?.input ?? null,
-      }
+      const passThroughOutput = exec.pendingBranchChoice?.input ?? null
       branchRoutes[prevNodeId] = route
       setActiveBranchRoutes(prev => ({ ...prev, [prevNodeId]: route }))
-      nodeOutputs[prevNodeId] = output
-      setNodeRunOutputs(prev => ({ ...prev, [prevNodeId]: JSON.stringify(output, null, 2) }))
+      nodeOutputs[prevNodeId] = passThroughOutput
+      setNodeRunOutputs(prev => ({ ...prev, [prevNodeId]: JSON.stringify(passThroughOutput, null, 2) }))
       if (exec.pendingLogEntryId) {
         const entry = localLogs.find(e => e.id === exec.pendingLogEntryId)
-        updateLog(exec.pendingLogEntryId, { status: 'success', output, duration: Date.now() - (entry?.startedAt ?? Date.now()) })
+        updateLog(exec.pendingLogEntryId, { status: 'success', output: passThroughOutput, duration: Date.now() - (entry?.startedAt ?? Date.now()) })
         setNodeStatuses(prev => ({ ...prev, [prevNodeId]: 'success' }))
       }
     }
@@ -1753,15 +1746,9 @@ export default function App(): JSX.Element {
           const result = evaluateBranch(branchCfg, rawInput)
           branchRoutes[nodeId] = result.route
           setActiveBranchRoutes(prev => ({ ...prev, [nodeId]: result.route }))
-          const output = {
-            route: result.route,
-            label: result.route === 'true' ? branchCfg.trueLabel ?? 'TRUE' : branchCfg.falseLabel ?? 'FALSE',
-            value: result.value,
-            passThrough: rawInput,
-          }
-          nodeOutputs[nodeId] = branchCfg.mode === 'manual' ? output : rawInput
-          setNodeRunOutputs(prev => ({ ...prev, [nodeId]: JSON.stringify(output, null, 2) }))
-          updateLog(entryId, { status: 'success', output, duration: Date.now() - startedAt })
+          nodeOutputs[nodeId] = rawInput
+          setNodeRunOutputs(prev => ({ ...prev, [nodeId]: JSON.stringify(rawInput, null, 2) }))
+          updateLog(entryId, { status: 'success', output: rawInput, duration: Date.now() - startedAt })
           setNodeStatuses(prev => ({ ...prev, [nodeId]: 'success' }))
         } catch (err) {
           nodeOutputs[nodeId] = null
