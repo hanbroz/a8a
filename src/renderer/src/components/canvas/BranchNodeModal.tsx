@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { IcoMaximize, IcoRestore, IcoTrash, IcoX } from '../Icon'
 import JsonMonacoEditor from './JsonMonacoEditor'
+import JsonInspectorButton from './JsonInspector'
 import { useModalMaximize } from './useModalMaximize'
 import { evaluateBranch, parseBranchConfig } from '../../utils/branch'
 import { getInputPathSuggestions, parseTemplate, resolveInputExpression } from '../../utils/interpolate'
@@ -340,6 +341,11 @@ export default function BranchNodeModal({ node, isNew, initialInput, onRun, onSa
             <div className="branch-input-pane" style={{ width: inputW }}>
               <div className="branch-pane-hd">
                 <span className="dm-pane-label dm-pane-label-input">INPUT</span>
+                <JsonInspectorButton
+                  title={`${moduleName || 'BRANCH'} INPUT`}
+                  value={inputJson}
+                  disabled={!inputJson.trim()}
+                />
                 {onRun && (
                   <button
                     className="btn ghost icon dm-format-btn dm-run-btn"
@@ -516,7 +522,13 @@ export default function BranchNodeModal({ node, isNew, initialInput, onRun, onSa
               )}
 
               <div className={`branch-preview branch-preview-${evalResult.route}`}>
-                <div className="branch-preview-title">미리보기</div>
+                <div className="branch-preview-hd">
+                  <div className="branch-preview-title">미리보기</div>
+                  <JsonInspectorButton
+                    title={`${moduleName || 'BRANCH'} OUTPUT`}
+                    value={evalResult.value}
+                  />
+                </div>
                 <div className="branch-preview-route">
                   선택 경로: <strong>{evalResult.route === 'true' ? trueLabel || 'TRUE' : falseLabel || 'FALSE'}</strong>
                 </div>

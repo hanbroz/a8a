@@ -25,6 +25,7 @@ import BranchNodeModal from './components/canvas/BranchNodeModal'
 import BranchChoicePopup from './components/canvas/BranchChoicePopup'
 import SelectionPopup from './components/canvas/SelectionPopup'
 import JsonMonacoEditor from './components/canvas/JsonMonacoEditor'
+import JsonInspectorButton from './components/canvas/JsonInspector'
 import type { SelectionPopupSelection } from './components/canvas/SelectionPopup'
 import { evaluateBranch, parseBranchConfig } from './utils/branch'
 import type { Environment } from './components/env/EnvSection'
@@ -64,6 +65,27 @@ type LogEntry = {
   startedAt: number; duration?: number
   apiDetail?: ApiLogDetail
   scriptLogs?: ScriptLogBundle
+}
+
+class ApiHttpError extends Error {
+  output: unknown
+
+  constructor(status: number, statusText: string, responseText: string) {
+    super(`HTTP ${status}${statusText ? ` ${statusText}` : ''}`)
+    this.name = 'ApiHttpError'
+    this.output = parseHttpResponseOutput(responseText)
+  }
+}
+
+function parseHttpResponseOutput(responseText: string): unknown {
+  const trimmed = responseText.trim()
+  if (!trimmed) return null
+  try { return JSON.parse(trimmed) as unknown } catch { return responseText }
+}
+
+function stringifyNodeOutput(value: unknown): string {
+  if (typeof value === 'string') return value
+  return JSON.stringify(value, null, 2)
 }
 
 const NODE_TYPE_COLORS: Record<string, { color: string; bg: string; label: string }> = {
@@ -287,14 +309,21 @@ function LogJsonViewer({
   placeholder?: string
 }): JSX.Element {
   const formatted = formatLogJsonValue(value)
+  const lowerPath = path.toLowerCase()
+  const title = lowerPath.includes('input') ? 'INPUT' : lowerPath.includes('output') || lowerPath.includes('response') ? 'OUTPUT' : 'JSON'
   return (
-    <div className="log-json-viewer" style={{ height: getLogJsonViewerHeight(formatted) }}>
-      <JsonMonacoEditor
-        value={formatted}
-        readOnly
-        path={path}
-        placeholder={placeholder}
-      />
+    <div className="log-json-viewer-shell" style={{ height: getLogJsonViewerHeight(formatted) }}>
+      <div className="log-json-viewer-actions">
+        <JsonInspectorButton title={title} value={formatted} disabled={!formatted.trim()} />
+      </div>
+      <div className="log-json-viewer">
+        <JsonMonacoEditor
+          value={formatted}
+          readOnly
+          path={path}
+          placeholder={placeholder}
+        />
+      </div>
     </div>
   )
 }
@@ -451,30 +480,57 @@ type SelectPopupResult = {
 }
 
 type JsonPathPart = string | number
+type SelectSelectionType = NonNullable<SelectConfig['selectionType']>
+
+function hasSelectPreRequestScript(script?: string): boolean {
+  return typeof script === 'string' && script.trim().length > 0
+}
+
+function resolveSelectSelectionType(selectionType: unknown, preScript: string): SelectSelectionType {
+  if (hasSelectPreRequestScript(preScript)) return 'script'
+  return selectionType === 'single' ? 'single' : 'multiple'
+}
+
+function manualSelectionPopupType(selectionType: SelectConfig['selectionType']): 'multiple' | 'single' {
+  return selectionType === 'single' ? 'single' : 'multiple'
+}
+
+function buildSelectScriptOutput(inputVars: Record<string, unknown>): unknown {
+  const entries = Object.entries(inputVars)
+  if (entries.length === 0) return []
+  if (entries.length === 1) return entries[0][1]
+  return { ...inputVars }
+}
 
 function parseSelectConfig(raw: string): SelectConfig {
   try {
     const parsed = JSON.parse(raw || '{}') as Partial<SelectConfig>
+    const preScript = typeof parsed.preScript === 'string' ? parsed.preScript : ''
+    const postScript = typeof parsed.postScript === 'string' ? parsed.postScript : ''
     return {
       ...parsed,
       selectedRowIndices: Array.isArray(parsed.selectedRowIndices) ? parsed.selectedRowIndices : [],
       selectedJsonPaths: Array.isArray(parsed.selectedJsonPaths) ? parsed.selectedJsonPaths : [],
       selectMode: parsed.selectMode === 'json' ? 'json' : parsed.selectMode === 'table' ? 'table' : undefined,
-      selectionType: parsed.selectionType === 'single' ? 'single' : 'multiple',
+      selectionType: resolveSelectSelectionType(parsed.selectionType, preScript),
       autoSelect: parsed.autoSelect === true,
+      preScript,
+      postScript,
     }
   } catch {
-    return { selectedRowIndices: [], selectedJsonPaths: [], selectionType: 'multiple', autoSelect: false }
+    return { selectedRowIndices: [], selectedJsonPaths: [], selectionType: 'multiple', autoSelect: false, preScript: '', postScript: '' }
   }
 }
 
 function selectedRowIndicesForConfig(config: SelectConfig): number[] {
   const indices = config.selectedRowIndices ?? []
+  if (config.selectionType === 'script') return []
   return config.selectionType === 'single' ? indices.slice(0, 1) : indices
 }
 
 function selectedJsonPathsForConfig(config: SelectConfig): string[] {
   const paths = config.selectedJsonPaths ?? []
+  if (config.selectionType === 'script') return []
   return config.selectionType === 'single' ? paths.slice(0, 1) : paths
 }
 
@@ -1301,19 +1357,59 @@ export default function App(): JSX.Element {
         return output
       }
       if (node.type === 'select') {
-        moduleVarsMap[nodeId] = { ...upstreamModuleVars }
         const cfg = parseSelectConfig(node.config)
+        let preInputVars: Record<string, unknown> = {}
+        if (cfg.preScript && cfg.preScript.trim()) {
+          try {
+            const r = await runPreRequest(cfg.preScript, { input: upstream, envVars })
+            setScriptLogsForNode(nodeId, 'pre', r.logs)
+            preInputVars = r.inputVars
+            for (const [k, v] of Object.entries(r.envUpdates)) envVars[k] = v
+          } catch (err) {
+            if (isScriptRuntimeError(err)) setScriptLogsForNode(nodeId, 'pre', err.logs)
+            throw err
+          }
+        }
+        moduleVarsMap[nodeId] = { ...upstreamModuleVars, ...preInputVars }
+        const applySelectPost = async (selectedOutput: unknown): Promise<unknown> => {
+          let finalOutput = selectedOutput
+          let postOutputVars: Record<string, unknown> = {}
+          if (cfg.postScript && cfg.postScript.trim()) {
+            try {
+              const r = await runPostResponse(cfg.postScript, {
+                input: upstream,
+                output: selectedOutput,
+                envVars,
+              })
+              setScriptLogsForNode(nodeId, 'post', r.logs)
+              postOutputVars = r.outputVars
+              if (r.hasOutputOverride) finalOutput = r.outputOverride
+              for (const [k, v] of Object.entries(r.envUpdates)) envVars[k] = v
+            } catch (err) {
+              if (isScriptRuntimeError(err)) setScriptLogsForNode(nodeId, 'post', err.logs)
+              throw err
+            }
+          }
+          moduleVarsMap[nodeId] = { ...upstreamModuleVars, ...preInputVars, ...postOutputVars }
+          return finalOutput
+        }
+        if (cfg.selectionType === 'script') {
+          const output = await applySelectPost(buildSelectScriptOutput(preInputVars))
+          visiting.delete(nodeId)
+          return output
+        }
         const selectedJsonPaths = selectedJsonPathsForConfig(cfg)
         const selectedRowIndices = selectedRowIndicesForConfig(cfg)
         if (cfg.autoSelect && cfg.selectMode === 'json' && selectedJsonPaths.length > 0) {
-          const output = buildSelectedJsonOutput(upstream, selectedJsonPaths)
+          const output = await applySelectPost(buildSelectedJsonOutput(upstream, selectedJsonPaths))
           visiting.delete(nodeId)
           return output
         }
         if (Array.isArray(upstream) && cfg.autoSelect && selectedRowIndices.length > 0 && inputArray.length > 0) {
-          const output = selectedRowIndices
+          const selectedOutput = selectedRowIndices
             .map(index => inputArray[index])
             .filter(value => value !== undefined)
+          const output = await applySelectPost(selectedOutput)
           visiting.delete(nodeId)
           return output
         }
@@ -1324,7 +1420,7 @@ export default function App(): JSX.Element {
         if (result?.selection) {
           await rememberSelectSelection(nodeId, result.selection)
         }
-        const output = result?.rows ?? []
+        const output = await applySelectPost(result?.rows ?? [])
         visiting.delete(nodeId)
         return output
       }
@@ -1376,7 +1472,7 @@ export default function App(): JSX.Element {
           fullUrl = authedRequest.url
           const requestHeaders = authedRequest.headers
           const res = await window.api.http.fetch(fullUrl, { method: cfg.method, headers: requestHeaders, body: bodyStr })
-          if (!res.ok) throw new Error(`HTTP ${res.status} ${res.statusText}: ${res.text.slice(0, 200)}`)
+          if (!res.ok) throw new ApiHttpError(res.status, res.statusText, res.text)
           try {
             const data = JSON.parse(res.text) as unknown
             if (Array.isArray(data)) allResults.push(...data)
@@ -1425,6 +1521,9 @@ export default function App(): JSX.Element {
       const result = await runNode(inEdge.sourceNodeId)
       return JSON.stringify(result, null, 2)
     } catch (err) {
+      if (err instanceof ApiHttpError) {
+        return stringifyNodeOutput(err.output)
+      }
       return JSON.stringify({ __previewError: String((err as Error)?.message ?? err) }, null, 2)
     }
   }, [activeNodes, activeEdges, activeProjectWs, activeProjectEnvVars, rememberSelectSelection, setScriptLogsForNode])
@@ -1500,17 +1599,74 @@ export default function App(): JSX.Element {
       if (idx >= 0) localLogs[idx] = { ...localLogs[idx], ...patch }
       setExecLogs(prev => prev.map(e => e.id === id ? { ...e, ...patch } : e))
     }
+    const persistEnvUpdatesForRun = async (updates: Record<string, string>): Promise<void> => {
+      const ws = activeProjectWs
+      if (!ws) return
+      const baseEnv = ws.environments.find(e => e.isBase)
+      const target = baseEnv
+      if (!target) return
+      const updatedVars = [...(persistedEnvVarsByEnvId[target.id] ?? target.vars)]
+      for (const [k, v] of Object.entries(updates)) {
+        const idx = updatedVars.findIndex(x => x.key === k)
+        if (idx >= 0) updatedVars[idx] = { ...updatedVars[idx], value: v, enabled: true }
+        else updatedVars.push({ id: randomId(), key: k, value: v, enabled: true })
+      }
+      persistedEnvVarsByEnvId[target.id] = updatedVars
+      const updated = { ...target, vars: updatedVars }
+      await window.api.environment.upsert(ws.id, updated)
+      setWorkspaces(prev => prev.map(w => w.id === ws.id
+        ? { ...w, environments: w.environments.map(e => e.id === target.id ? (updated as Environment) : e) }
+        : w))
+    }
     let { step, plan } = exec
 
     if (selectedRows !== undefined && step > 0) {
       const prevNodeId = plan[step - 1]
-      const selectedOutput = selectedRows
+      const prevNode = activeNodes.find(n => n.id === prevNodeId)
+      let selectedOutput: unknown = selectedRows
+      let selectedScriptLogs: ScriptLogBundle = localLogs.find(e => e.id === exec.pendingLogEntryId)?.scriptLogs ?? { pre: [], post: [] }
+      if (prevNode?.type === 'select') {
+        const cfg = parseSelectConfig(prevNode.config)
+        if (cfg.postScript && cfg.postScript.trim()) {
+          try {
+            const postResult = await runPostResponse(cfg.postScript, {
+              input: exec.pendingSelectInput,
+              output: selectedRows,
+              envVars: envVarsForRun,
+            })
+            selectedScriptLogs = { ...selectedScriptLogs, post: postResult.logs }
+            setScriptLogsForNode(prevNodeId, 'post', postResult.logs)
+            if (postResult.hasOutputOverride) selectedOutput = postResult.outputOverride
+            moduleVars[prevNodeId] = { ...(moduleVars[prevNodeId] ?? {}), ...postResult.outputVars }
+            for (const [k, v] of Object.entries(postResult.envUpdates)) envVarsForRun[k] = v
+            recordUpdatedEnvVariables(usedVariables, envVarsForRun, postResult.envUpdates)
+            if (Object.keys(postResult.envUpdates).length > 0) await persistEnvUpdatesForRun(postResult.envUpdates)
+          } catch (err) {
+            if (isScriptRuntimeError(err)) {
+              selectedScriptLogs = { ...selectedScriptLogs, post: err.logs }
+              setScriptLogsForNode(prevNodeId, 'post', err.logs)
+            }
+            const entry = exec.pendingLogEntryId ? localLogs.find(e => e.id === exec.pendingLogEntryId) : undefined
+            if (exec.pendingLogEntryId) {
+              updateLog(exec.pendingLogEntryId, {
+                status: 'error',
+                error: `Post Response 스크립트 오류: ${String((err as Error)?.message ?? err)}`,
+                duration: Date.now() - (entry?.startedAt ?? Date.now()),
+                scriptLogs: selectedScriptLogs,
+              })
+            }
+            setNodeStatuses(prev => ({ ...prev, [prevNodeId]: 'error' }))
+            setCanvasExecution(null)
+            return
+          }
+        }
+      }
       nodeOutputs[prevNodeId] = selectedOutput
       if (selection) await rememberSelectSelection(prevNodeId, selection)
       setNodeRunOutputs(prev => ({ ...prev, [prevNodeId]: JSON.stringify(selectedOutput, null, 2) }))
       if (exec.pendingLogEntryId) {
         const entry = localLogs.find(e => e.id === exec.pendingLogEntryId)
-        updateLog(exec.pendingLogEntryId, { status: 'success', output: selectedOutput, duration: Date.now() - (entry?.startedAt ?? Date.now()) })
+        updateLog(exec.pendingLogEntryId, { status: 'success', output: selectedOutput, duration: Date.now() - (entry?.startedAt ?? Date.now()), scriptLogs: selectedScriptLogs })
         setNodeStatuses(prev => ({ ...prev, [prevNodeId]: 'success' }))
       }
     }
@@ -1605,7 +1761,10 @@ export default function App(): JSX.Element {
             const reportNodes: ReportNode[] = plan.map(pid => {
               const pn = activeNodes.find(n => n.id === pid)
               const logEntry = localLogs.find(e => e.nodeId === pid)
-              const pcfg = pn && pn.type === 'api' ? (JSON.parse(pn.config || '{}') as ApiConfig) : undefined
+              let pcfg: Partial<ApiConfig & SelectConfig> | undefined
+              if (pn && (pn.type === 'api' || pn.type === 'select')) {
+                try { pcfg = JSON.parse(pn.config || '{}') as Partial<ApiConfig & SelectConfig> } catch { pcfg = undefined }
+              }
               return {
                 nodeId: pid,
                 label: pn?.label ?? pid,
@@ -1618,6 +1777,7 @@ export default function App(): JSX.Element {
                 apiDetail: logEntry?.apiDetail as ReportApiDetail | undefined,
                 preScript: pcfg?.preScript,
                 postScript: pcfg?.postScript,
+                scriptLogs: logEntry?.scriptLogs,
               }
             })
             const content = generateReport(fmt, {
@@ -1692,29 +1852,99 @@ export default function App(): JSX.Element {
 
       if (node.type === 'select') {
         setNodeRunInputs(prev => ({ ...prev, [nodeId]: JSON.stringify(rawInput, null, 2) }))
-        const selCfg = parseSelectConfig(node.config)
-        const selectedJsonPaths = selectedJsonPathsForConfig(selCfg)
-        const selectedRowIndices = selectedRowIndicesForConfig(selCfg)
-        if (selCfg.autoSelect && selCfg.selectMode === 'json' && selectedJsonPaths.length > 0) {
-          const autoJson = buildSelectedJsonOutput(rawInput, selectedJsonPaths)
-          nodeOutputs[nodeId] = autoJson
-          setNodeRunOutputs(prev => ({ ...prev, [nodeId]: JSON.stringify(autoJson, null, 2) }))
-          updateLog(entryId, { status: 'success', output: autoJson, duration: Date.now() - startedAt })
-          setNodeStatuses(prev => ({ ...prev, [nodeId]: 'success' }))
-          step++; continue
+        setNodeScriptLogs(prev => ({ ...prev, [nodeId]: { pre: [], post: [] } }))
+        let currentScriptLogs: ScriptLogBundle = { pre: [], post: [] }
+        const recordScriptLogs = (phase: keyof ScriptLogBundle, logs: ScriptConsoleEntry[]): void => {
+          currentScriptLogs = { ...currentScriptLogs, [phase]: logs }
+          setScriptLogsForNode(nodeId, phase, logs)
+          updateLog(entryId, { scriptLogs: currentScriptLogs })
         }
-        if (Array.isArray(rawInput) && selCfg.autoSelect && selectedRowIndices.length > 0 && inputArray.length > 0) {
-          const autoRow = selectedRowIndices
-            .map(index => inputArray[index])
-            .filter(value => value !== undefined)
-          nodeOutputs[nodeId] = autoRow
-          setNodeRunOutputs(prev => ({ ...prev, [nodeId]: JSON.stringify(autoRow, null, 2) }))
-          updateLog(entryId, { status: 'success', output: autoRow, duration: Date.now() - startedAt })
-          setNodeStatuses(prev => ({ ...prev, [nodeId]: 'success' }))
-          step++; continue
+        try {
+          const selCfg = parseSelectConfig(node.config)
+          let preInputVars: Record<string, unknown> = {}
+          if (selCfg.preScript && selCfg.preScript.trim()) {
+            try {
+              const preResult = await runPreRequest(selCfg.preScript, { input: rawInput, envVars: envVarsForRun })
+              recordScriptLogs('pre', preResult.logs)
+              preInputVars = preResult.inputVars
+              for (const [k, v] of Object.entries(preResult.envUpdates)) envVarsForRun[k] = v
+              recordUpdatedEnvVariables(usedVariables, envVarsForRun, preResult.envUpdates)
+              if (Object.keys(preResult.envUpdates).length > 0) await persistEnvUpdatesForRun(preResult.envUpdates)
+            } catch (err) {
+              if (isScriptRuntimeError(err)) recordScriptLogs('pre', err.logs)
+              throw new Error(`Pre Request 스크립트 오류: ${String((err as Error)?.message ?? err)}`)
+            }
+          }
+          moduleVars[nodeId] = { ...upstreamModuleVars, ...preInputVars }
+
+          const applySelectPost = async (selectedOutput: unknown): Promise<unknown> => {
+            let finalOutput = selectedOutput
+            let postOutputVars: Record<string, unknown> = {}
+            if (selCfg.postScript && selCfg.postScript.trim()) {
+              try {
+                const postResult = await runPostResponse(selCfg.postScript, {
+                  input: rawInput,
+                  output: selectedOutput,
+                  envVars: envVarsForRun,
+                })
+                recordScriptLogs('post', postResult.logs)
+                postOutputVars = postResult.outputVars
+                if (postResult.hasOutputOverride) finalOutput = postResult.outputOverride
+                for (const [k, v] of Object.entries(postResult.envUpdates)) envVarsForRun[k] = v
+                recordUpdatedEnvVariables(usedVariables, envVarsForRun, postResult.envUpdates)
+                if (Object.keys(postResult.envUpdates).length > 0) await persistEnvUpdatesForRun(postResult.envUpdates)
+              } catch (err) {
+                if (isScriptRuntimeError(err)) recordScriptLogs('post', err.logs)
+                throw new Error(`Post Response 스크립트 오류: ${String((err as Error)?.message ?? err)}`)
+              }
+            }
+            moduleVars[nodeId] = { ...upstreamModuleVars, ...preInputVars, ...postOutputVars }
+            return finalOutput
+          }
+
+          if (selCfg.selectionType === 'script') {
+            const finalOutput = await applySelectPost(buildSelectScriptOutput(preInputVars))
+            nodeOutputs[nodeId] = finalOutput
+            setNodeRunOutputs(prev => ({ ...prev, [nodeId]: JSON.stringify(finalOutput, null, 2) }))
+            updateLog(entryId, { status: 'success', output: finalOutput, duration: Date.now() - startedAt, scriptLogs: currentScriptLogs })
+            setNodeStatuses(prev => ({ ...prev, [nodeId]: 'success' }))
+            step++; continue
+          }
+
+          const selectedJsonPaths = selectedJsonPathsForConfig(selCfg)
+          const selectedRowIndices = selectedRowIndicesForConfig(selCfg)
+          if (selCfg.autoSelect && selCfg.selectMode === 'json' && selectedJsonPaths.length > 0) {
+            const autoJson = buildSelectedJsonOutput(rawInput, selectedJsonPaths)
+            const finalOutput = await applySelectPost(autoJson)
+            nodeOutputs[nodeId] = finalOutput
+            setNodeRunOutputs(prev => ({ ...prev, [nodeId]: JSON.stringify(finalOutput, null, 2) }))
+            updateLog(entryId, { status: 'success', output: finalOutput, duration: Date.now() - startedAt, scriptLogs: currentScriptLogs })
+            setNodeStatuses(prev => ({ ...prev, [nodeId]: 'success' }))
+            step++; continue
+          }
+          if (Array.isArray(rawInput) && selCfg.autoSelect && selectedRowIndices.length > 0 && inputArray.length > 0) {
+            const autoRow = selectedRowIndices
+              .map(index => inputArray[index])
+              .filter(value => value !== undefined)
+            const finalOutput = await applySelectPost(autoRow)
+            nodeOutputs[nodeId] = finalOutput
+            setNodeRunOutputs(prev => ({ ...prev, [nodeId]: JSON.stringify(finalOutput, null, 2) }))
+            updateLog(entryId, { status: 'success', output: finalOutput, duration: Date.now() - startedAt, scriptLogs: currentScriptLogs })
+            setNodeStatuses(prev => ({ ...prev, [nodeId]: 'success' }))
+            step++; continue
+          }
+          updateLog(entryId, { scriptLogs: currentScriptLogs })
+          setCanvasExecution({ nodeOutputs, moduleVars, branchRoutes, envVars: envVarsForRun, usedVariables, execLogs: localLogs, startedAt: exec.startedAt, plan, step: step + 1, pendingSelectInput: rawInput ?? [], pendingBranchChoice: null, pendingLogEntryId: entryId })
+          return
+        } catch (err) {
+          nodeOutputs[nodeId] = null
+          const errStr = String(err)
+          setNodeRunOutputs(prev => ({ ...prev, [nodeId]: errStr }))
+          updateLog(entryId, { status: 'error', error: errStr, duration: Date.now() - startedAt, scriptLogs: currentScriptLogs })
+          setNodeStatuses(prev => ({ ...prev, [nodeId]: 'error' }))
+          setCanvasExecution(null)
+          return
         }
-        setCanvasExecution({ nodeOutputs, moduleVars, branchRoutes, envVars: envVarsForRun, usedVariables, execLogs: localLogs, startedAt: exec.startedAt, plan, step: step + 1, pendingSelectInput: rawInput ?? [], pendingBranchChoice: null, pendingLogEntryId: entryId })
-        return
       }
 
       if (node.type === 'branch') {
@@ -1869,7 +2099,7 @@ export default function App(): JSX.Element {
             lastApiDetail = { ...lastApiDetail, statusCode: res.status, statusText: res.statusText, responseText: res.text }
 
             if (!res.ok) {
-              throw new Error(`HTTP ${res.status} ${res.statusText}: ${res.text.slice(0, 300)}`)
+              throw new ApiHttpError(res.status, res.statusText, res.text)
             }
             try {
               const data = JSON.parse(res.text) as unknown
@@ -1909,10 +2139,12 @@ export default function App(): JSX.Element {
           updateLog(entryId, { status: 'success', output: finalOutput, duration: Date.now() - startedAt, apiDetail: lastApiDetail, scriptLogs: currentScriptLogs })
           setNodeStatuses(prev => ({ ...prev, [nodeId]: 'success' }))
         } catch (err) {
-          nodeOutputs[nodeId] = null
-          const errStr = String(err)
-          setNodeRunOutputs(prev => ({ ...prev, [nodeId]: errStr }))
-          updateLog(entryId, { status: 'error', error: errStr, duration: Date.now() - startedAt, apiDetail: lastApiDetail, scriptLogs: currentScriptLogs })
+          const isHttpError = err instanceof ApiHttpError
+          const errorOutput = isHttpError ? err.output : null
+          const errStr = isHttpError ? err.message : String(err)
+          nodeOutputs[nodeId] = errorOutput
+          setNodeRunOutputs(prev => ({ ...prev, [nodeId]: isHttpError ? stringifyNodeOutput(errorOutput) : errStr }))
+          updateLog(entryId, { status: 'error', output: errorOutput, error: errStr, duration: Date.now() - startedAt, apiDetail: lastApiDetail, scriptLogs: currentScriptLogs })
           setNodeStatuses(prev => ({ ...prev, [nodeId]: 'error' }))
           setCanvasExecution(null)
           return
@@ -1927,7 +2159,7 @@ export default function App(): JSX.Element {
   }, [activeNodes, activeEdges, activeProjectWs, activeProjectEnvVars, activeProject?.name, rememberSelectSelection, setScriptLogsForNode])
 
   const handleCanvasRun = useCallback(() => {
-    if (!activeProject) return
+    if (!activeProject || canvasExecution) return
     const plan = buildExecutionPlan(activeNodes, activeEdges)
     if (plan.length === 0) return
     setExecLogs([])
@@ -1938,7 +2170,7 @@ export default function App(): JSX.Element {
     setNodeScriptLogs({})
     const execution: CanvasExecution = { nodeOutputs: {}, moduleVars: {}, branchRoutes: {}, envVars: { ...activeProjectEnvVars }, usedVariables: {}, execLogs: [], startedAt: Date.now(), plan, step: 0, pendingSelectInput: null, pendingBranchChoice: null }
     advanceExecution(execution)
-  }, [activeNodes, activeEdges, activeProject, activeProjectEnvVars, advanceExecution])
+  }, [activeNodes, activeEdges, activeProject, activeProjectEnvVars, advanceExecution, canvasExecution])
 
   const handleCanvasReset = useCallback(() => {
     setExecLogs([])
@@ -1951,6 +2183,53 @@ export default function App(): JSX.Element {
     setNodeRunOutputs({})
     setNodeScriptLogs({})
   }, [])
+
+  useEffect(() => {
+    const onKeyDown = (e: KeyboardEvent): void => {
+      if (!(e.ctrlKey || e.metaKey) || e.key !== 'Enter') return
+
+      const target = e.target as HTMLElement | null
+      const tagName = target?.tagName.toLowerCase()
+      if (target?.isContentEditable || tagName === 'input' || tagName === 'textarea' || tagName === 'select') return
+
+      const hasOpenModal = editingNode
+        || modalEnv !== undefined
+        || modalProject
+        || modalWorkspace
+        || confirmDeleteWsId
+        || confirmDeleteProject
+        || confirmDeleteEnv
+        || confirmDeleteCanvasNode
+        || confirmDeleteEdge
+        || savedReport
+        || pendingPreviewSelect
+        || envDropdownOpen
+
+      if (!activeProject || canvasExecution || hasOpenModal) return
+
+      e.preventDefault()
+      handleCanvasRun()
+    }
+
+    window.addEventListener('keydown', onKeyDown)
+    return () => window.removeEventListener('keydown', onKeyDown)
+  }, [
+    activeProject,
+    canvasExecution,
+    confirmDeleteCanvasNode,
+    confirmDeleteEdge,
+    confirmDeleteEnv,
+    confirmDeleteProject,
+    confirmDeleteWsId,
+    editingNode,
+    envDropdownOpen,
+    handleCanvasRun,
+    modalEnv,
+    modalProject,
+    modalWorkspace,
+    pendingPreviewSelect,
+    savedReport,
+  ])
 
   const handleDownloadExecutionReport = useCallback(async (): Promise<void> => {
     if (!activeProject || execLogs.length === 0) return
@@ -1967,9 +2246,9 @@ export default function App(): JSX.Element {
       const wsName = activeProjectWs?.name ?? ''
       const reportNodes: ReportNode[] = execLogs.map(log => {
         const node = activeNodes.find(n => n.id === log.nodeId)
-        let cfg: Partial<ApiConfig> | undefined
-        if (node?.type === 'api') {
-          try { cfg = JSON.parse(node.config || '{}') as ApiConfig } catch { cfg = undefined }
+        let cfg: Partial<ApiConfig & SelectConfig> | undefined
+        if (node?.type === 'api' || node?.type === 'select') {
+          try { cfg = JSON.parse(node.config || '{}') as Partial<ApiConfig & SelectConfig> } catch { cfg = undefined }
         }
         return {
           nodeId: log.nodeId,
@@ -2452,9 +2731,10 @@ export default function App(): JSX.Element {
                 초기화
               </button>
             ) : (
-              <button className="btn primary" onClick={handleCanvasRun}>
+              <button className="btn primary topbar-run-btn" onClick={handleCanvasRun} title="실행 (Ctrl+Enter)">
                 <IcoPlay size={13} />
                 실행
+                <kbd className="topbar-run-shortcut">Ctrl+Enter</kbd>
               </button>
             )}
           </div>
@@ -2693,6 +2973,10 @@ export default function App(): JSX.Element {
           key={editingNode.id}
           node={editingNode}
           initialInput={nodeRunInputs[editingNode.id]}
+          initialOutput={nodeRunOutputs[editingNode.id]}
+          initialPreConsoleLogs={nodeScriptLogs[editingNode.id]?.pre}
+          initialPostConsoleLogs={nodeScriptLogs[editingNode.id]?.post}
+          envVars={activeProjectEnvVars}
           onRun={() => previewUpToNode(editingNode.id)}
           onSave={handleDataNodeSave}
           onDelete={async () => {
@@ -2775,7 +3059,7 @@ export default function App(): JSX.Element {
             initialSelectedRowIndices={pendingConfig.selectedRowIndices}
             initialSelectedJsonPaths={pendingConfig.selectedJsonPaths}
             initialMode={pendingConfig.selectMode}
-            selectionType={pendingConfig.selectionType ?? 'multiple'}
+            selectionType={manualSelectionPopupType(pendingConfig.selectionType)}
             onConfirm={(selectedRows, selection) => {
               const executionToResume = canvasExecution
               flushSync(() => {
@@ -2832,7 +3116,7 @@ export default function App(): JSX.Element {
           initialSelectedRowIndices={pendingPreviewSelect.config.selectedRowIndices}
           initialSelectedJsonPaths={pendingPreviewSelect.config.selectedJsonPaths}
           initialMode={pendingPreviewSelect.config.selectMode}
-          selectionType={pendingPreviewSelect.config.selectionType ?? 'multiple'}
+          selectionType={manualSelectionPopupType(pendingPreviewSelect.config.selectionType)}
           onConfirm={(rows, selection) => {
             pendingPreviewSelect.resolve({ rows, selection })
             setPendingPreviewSelect(null)

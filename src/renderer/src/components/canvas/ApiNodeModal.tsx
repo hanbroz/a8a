@@ -1,6 +1,8 @@
 import { useState, useRef, useCallback, useEffect, useMemo, lazy, Suspense } from 'react'
 import { IcoMaximize, IcoPlus, IcoRestore, IcoTrash, IcoX } from '../Icon'
 import JsonMonacoEditor from './JsonMonacoEditor'
+import JsonInspectorButton from './JsonInspector'
+import ScriptHelpButton from './ScriptHelpButton'
 import { useModalMaximize } from './useModalMaximize'
 import { randomId } from '../../utils/id'
 import { applyInputMappings, getInputPathSuggestions, parseTemplate, resolveInputExpression, resolveTemplate } from '../../utils/interpolate'
@@ -13,12 +15,12 @@ import type { BeforeMount, Monaco } from '@monaco-editor/react'
 // Monaco is loaded only when this modal is rendered. The side-effect import
 // (`monacoSetup`) wires up bundled workers and must complete before Editor
 // mounts. `await` inside lazy() keeps the loading order stable.
-const MonacoEditor = lazy(async () => {
+export const MonacoEditor = lazy(async () => {
   await import('../../utils/monacoSetup')
   return import('@monaco-editor/react')
 })
 
-function MonacoFallback(): JSX.Element {
+export function MonacoFallback(): JSX.Element {
   return <div className="dm-monaco-loading">에디터 로드 중...</div>
 }
 
@@ -149,7 +151,7 @@ function registerApiScriptAssistant(monaco: Monaco): void {
   })
 }
 
-const beforeApiScriptEditorMount: BeforeMount = (monaco) => {
+export const beforeApiScriptEditorMount: BeforeMount = (monaco) => {
   registerApiScriptAssistant(monaco)
 }
 
@@ -187,7 +189,7 @@ const MIN_H = 420
 const RESIZE_DIRS: ResizeDir[] = ['n', 'ne', 'e', 'se', 's', 'sw', 'w', 'nw']
 const HTTP_METHODS = ['GET', 'POST', 'PUT', 'PATCH', 'DELETE'] as const
 
-const MONACO_OPTIONS = {
+export const MONACO_OPTIONS = {
   minimap: { enabled: false },
   fontSize: 12,
   fontFamily: 'JetBrains Mono, Cascadia Code, Consolas, monospace',
@@ -727,7 +729,7 @@ function SendIcon(): JSX.Element {
   )
 }
 
-function ScriptConsoleView({
+export function ScriptConsoleView({
   logs,
   emptyText,
 }: {
@@ -1359,6 +1361,11 @@ export default function ApiNodeModal({
                   <div className="dm-pane-hd-actions">
                     {inputError && <span className="dm-json-err-badge">Invalid JSON</span>}
                     <span className="dm-pane-type">JSON</span>
+                    <JsonInspectorButton
+                      title={`${moduleName || 'API'} INPUT`}
+                      value={inputJson}
+                      disabled={!inputJson.trim()}
+                    />
                     {onRun && (
                       <button
                         className="btn ghost icon dm-format-btn dm-run-btn"
@@ -1403,6 +1410,7 @@ export default function ApiNodeModal({
                 <div className="dm-pane-hd">
                   <span className="dm-pane-label dm-pane-label-pre">PRE REQUEST</span>
                   <div className="dm-pane-hd-actions">
+                    <ScriptHelpButton phase="pre" />
                     <div className="api-script-pane-tabs">
                       <button
                         className={`api-script-pane-tab${prePaneTab === 'script' ? ' api-script-pane-tab-active' : ''}`}
@@ -1730,6 +1738,11 @@ export default function ApiNodeModal({
                       </span>
                     )}
                     <span className="dm-pane-type">JSON</span>
+                    <JsonInspectorButton
+                      title={`${moduleName || 'API'} OUTPUT`}
+                      value={outputRaw}
+                      disabled={!outputRaw.trim()}
+                    />
                     <button className="btn ghost icon dm-format-btn" onClick={handleFormatOutput} title="JSON 정렬">
                       <FormatIcon />
                     </button>
@@ -1752,6 +1765,7 @@ export default function ApiNodeModal({
                 <div className="dm-pane-hd">
                   <span className="dm-pane-label dm-pane-label-post">POST RESPONSE</span>
                   <div className="dm-pane-hd-actions">
+                    <ScriptHelpButton phase="post" />
                     <div className="api-script-pane-tabs">
                       <button
                         className={`api-script-pane-tab${postPaneTab === 'script' ? ' api-script-pane-tab-active' : ''}`}

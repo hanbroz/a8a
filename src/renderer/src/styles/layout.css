@@ -394,6 +394,25 @@
   justify-content: center;
 }
 
+.topbar-run-btn {
+  gap: 7px;
+}
+
+.topbar-run-shortcut {
+  height: 18px;
+  display: inline-flex;
+  align-items: center;
+  padding: 0 5px;
+  border: 1px solid rgba(255, 255, 255, 0.22);
+  border-radius: 4px;
+  background: rgba(255, 255, 255, 0.12);
+  color: rgba(255, 255, 255, 0.88);
+  font-family: var(--font-mono);
+  font-size: 10px;
+  font-weight: 800;
+  line-height: 1;
+}
+
 .project-title {
   font-weight: 600;
   font-size: 13.5px;
@@ -822,12 +841,29 @@
   overflow-y: auto;
 }
 
-.log-json-viewer {
+.log-json-viewer-shell {
+  position: relative;
   min-height: 120px;
   max-height: 360px;
   overflow: hidden;
   border: 1px solid var(--border-1);
   border-radius: 5px;
+  background: var(--bg-2);
+}
+
+.log-json-viewer-actions {
+  position: absolute;
+  top: 6px;
+  right: 6px;
+  z-index: 3;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.log-json-viewer {
+  height: 100%;
+  overflow: hidden;
   background: var(--bg-2);
 }
 

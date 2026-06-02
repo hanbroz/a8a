@@ -2,6 +2,7 @@ import { useState, useRef, useCallback, useEffect } from 'react'
 import ExcelJS from 'exceljs'
 import { IcoMaximize, IcoRestore, IcoTrash, IcoX } from '../Icon'
 import JsonMonacoEditor from './JsonMonacoEditor'
+import JsonInspectorButton from './JsonInspector'
 import { useModalMaximize } from './useModalMaximize'
 
 interface Props {
@@ -331,6 +332,11 @@ export default function DataNodeModal({ node, isNew, initialInput, onRun, onSave
                 <div className="dm-pane-hd-actions">
                   {inputError && <span className="dm-json-err-badge">Invalid JSON</span>}
                   <span className="dm-pane-type">JSON</span>
+                  <JsonInspectorButton
+                    title={`${moduleName || 'DATA'} INPUT`}
+                    value={inputJson}
+                    disabled={!inputJson.trim()}
+                  />
                   {onRun && (
                     <button
                       className="btn ghost icon dm-format-btn dm-run-btn"
@@ -431,6 +437,11 @@ export default function DataNodeModal({ node, isNew, initialInput, onRun, onSave
                 <div className="dm-pane-hd-actions">
                   {outputError && <span className="dm-json-err-badge">Invalid JSON</span>}
                   <span className="dm-pane-type">JSON</span>
+                  <JsonInspectorButton
+                    title={`${moduleName || 'DATA'} OUTPUT`}
+                    value={outputJson}
+                    disabled={!outputJson.trim()}
+                  />
                   <button
                     className="btn ghost icon dm-format-btn"
                     onClick={handleFormatOutput}

@@ -273,12 +273,15 @@ function describeDataOutput(cfg: DataConfig): string {
 function parseSelectConfig(config: string): SelectConfig {
   try {
     const parsed = JSON.parse(config) as Partial<SelectConfig>
+    const preScript = typeof parsed.preScript === 'string' ? parsed.preScript : ''
     return {
       selectedRowIndices: Array.isArray(parsed.selectedRowIndices) ? parsed.selectedRowIndices : [],
       selectedJsonPaths: Array.isArray(parsed.selectedJsonPaths) ? parsed.selectedJsonPaths : [],
       selectMode: parsed.selectMode === 'json' ? 'json' : parsed.selectMode === 'table' ? 'table' : undefined,
-      selectionType: parsed.selectionType === 'single' ? 'single' : 'multiple',
+      selectionType: preScript.trim() ? 'script' : parsed.selectionType === 'single' ? 'single' : 'multiple',
       autoSelect: parsed.autoSelect === true,
+      preScript,
+      postScript: typeof parsed.postScript === 'string' ? parsed.postScript : '',
     }
   } catch {
     return { selectedRowIndices: [], selectedJsonPaths: [], selectionType: 'multiple' }
@@ -1335,7 +1338,9 @@ export default function WorkflowCanvas({
         if (node.type === 'select') {
           const cfg = parseSelectConfig(node.config)
           const rowCount = (cfg.selectedRowIndices ?? []).length
-          const countLabel = rowCount > 0 ? `${rowCount}행 선택됨` : '미설정'
+          const countLabel = cfg.selectionType === 'script'
+            ? '스크립트'
+            : rowCount > 0 ? `${rowCount}행 선택됨` : '미설정'
           return (
             <div
               key={node.id}

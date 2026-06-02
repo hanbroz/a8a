@@ -77,8 +77,10 @@ declare global {
     selectedRowIndices: number[]
     selectedJsonPaths?: string[]
     selectMode?: 'table' | 'json'
-    selectionType?: 'multiple' | 'single'
+    selectionType?: 'multiple' | 'single' | 'script'
     autoSelect?: boolean
+    preScript?: string
+    postScript?: string
     lastInput?: Record<string, unknown>[]
   }
 

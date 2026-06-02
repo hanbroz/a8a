@@ -147,3 +147,11 @@ export const IcoCopy = (p: IconProps): JSX.Element => (
     <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" />
   </Icon>
 )
+
+export const IcoHelpCircle = (p: IconProps): JSX.Element => (
+  <Icon {...p}>
+    <circle cx="12" cy="12" r="9" />
+    <path d="M9.2 9a3 3 0 0 1 5.6 1.5c0 2-2.8 2.3-2.8 4" />
+    <path d="M12 18h.01" />
+  </Icon>
+)
