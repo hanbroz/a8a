@@ -26,7 +26,8 @@ const api = {
     list: (workspaceId: string): Promise<unknown[]> => ipcRenderer.invoke('proj:list', workspaceId),
     create: (workspaceId: string, name: string, description: string): Promise<unknown> => ipcRenderer.invoke('proj:create', workspaceId, name, description),
     update: (id: string, name: string, description: string): Promise<void> => ipcRenderer.invoke('proj:update', id, name, description),
-    delete: (id: string): Promise<void> => ipcRenderer.invoke('proj:delete', id)
+    delete: (id: string): Promise<void> => ipcRenderer.invoke('proj:delete', id),
+    reorder: (workspaceId: string, orderedIds: string[]): Promise<void> => ipcRenderer.invoke('proj:reorder', workspaceId, orderedIds)
   },
   module: {
     list: (workspaceId: string): Promise<ApiModule[]> => ipcRenderer.invoke('mod:list', workspaceId),

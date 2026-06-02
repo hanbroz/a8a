@@ -1,3 +1,4 @@
+import { useState, type DragEvent } from 'react'
 import { IcoChevD, IcoPlus, IcoPencil, IcoTrash } from '../Icon'
 import { useSidebarOpen } from '../../hooks/useSidebarOpen'
 import type { ProjectItem } from './ProjectModal'
@@ -9,10 +10,38 @@ interface Props {
   onAdd: () => void
   onEdit: (project: ProjectItem) => void
   onDelete: (project: ProjectItem) => void
+  onReorder: (orderedIds: string[]) => void
 }
 
-export default function ProjectSection({ projects, activeProjectId, onSelect, onAdd, onEdit, onDelete }: Props): JSX.Element {
+export default function ProjectSection({ projects, activeProjectId, onSelect, onAdd, onEdit, onDelete, onReorder }: Props): JSX.Element {
   const [open, toggleOpen] = useSidebarOpen('project')
+  const [draggingId, setDraggingId] = useState<string | null>(null)
+  const [dropTargetId, setDropTargetId] = useState<string | null>(null)
+
+  const endReorderDrag = (): void => {
+    setDraggingId(null)
+    setDropTargetId(null)
+  }
+
+  const dropOnProject = (targetId: string, e: DragEvent<HTMLDivElement>): void => {
+    if (!draggingId || draggingId === targetId) {
+      endReorderDrag()
+      return
+    }
+    e.preventDefault()
+    e.stopPropagation()
+    const ids = projects.map(project => project.id)
+    const from = ids.indexOf(draggingId)
+    const to = ids.indexOf(targetId)
+    if (from < 0 || to < 0) {
+      endReorderDrag()
+      return
+    }
+    const next = ids.filter(id => id !== draggingId)
+    next.splice(to, 0, draggingId)
+    onReorder(next)
+    endReorderDrag()
+  }
 
   return (
     <div className="sidebar-section">
@@ -44,7 +73,22 @@ export default function ProjectSection({ projects, activeProjectId, onSelect, on
             projects.map(proj => (
               <div
                 key={proj.id}
-                className={`env-item${activeProjectId === proj.id ? ' env-item-active proj-item-active' : ''}`}
+                className={`env-item proj-item${activeProjectId === proj.id ? ' env-item-active proj-item-active' : ''}${draggingId === proj.id ? ' proj-item-dragging' : ''}${dropTargetId === proj.id && draggingId !== proj.id ? ' proj-item-drop-target' : ''}`}
+                draggable={projects.length > 1}
+                onDragStart={e => {
+                  e.stopPropagation()
+                  e.dataTransfer.setData('projectReorderId', proj.id)
+                  e.dataTransfer.effectAllowed = 'move'
+                  setDraggingId(proj.id)
+                }}
+                onDragOver={e => {
+                  if (!draggingId || draggingId === proj.id) return
+                  e.preventDefault()
+                  e.dataTransfer.dropEffect = 'move'
+                  setDropTargetId(proj.id)
+                }}
+                onDrop={e => dropOnProject(proj.id, e)}
+                onDragEnd={endReorderDrag}
                 onClick={() => onSelect(proj.id)}
                 title={proj.description || undefined}
               >

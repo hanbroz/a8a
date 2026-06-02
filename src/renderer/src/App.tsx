@@ -2183,6 +2183,29 @@ export default function App(): JSX.Element {
     setConfirmDeleteProject(null)
   }
 
+  const handleProjectReorder = useCallback(async (wsId: string, orderedIds: string[]): Promise<void> => {
+    const workspace = workspaces.find(w => w.id === wsId)
+    if (!workspace) return
+    const byId = new Map(workspace.projects.map(project => [project.id, project]))
+    const orderedProjects = orderedIds
+      .map(id => byId.get(id))
+      .filter((project): project is ProjectItem => !!project)
+    if (orderedProjects.length !== workspace.projects.length) return
+
+    setWorkspaces(prev => prev.map(w => (
+      w.id === wsId ? { ...w, projects: orderedProjects } : w
+    )))
+
+    try {
+      await window.api.project.reorder(wsId, orderedIds)
+    } catch (err) {
+      console.error('프로젝트 순서 변경 실패:', err)
+      setWorkspaces(prev => prev.map(w => (
+        w.id === wsId ? { ...w, projects: workspace.projects } : w
+      )))
+    }
+  }, [workspaces])
+
   const manualUpdateNoticeVisible = !!updateState
     && manualUpdateRequested
     && (updateState.status === 'checking' || updateState.status === 'not-available' || updateState.status === 'error' || updateState.status === 'disabled')
@@ -2360,6 +2383,7 @@ export default function App(): JSX.Element {
                       onAdd={() => openAddProjectModal(wsId)}
                       onEdit={(proj) => openEditProjectModal(wsId, proj)}
                       onDelete={(proj) => setConfirmDeleteProject({ wsId, project: proj })}
+                      onReorder={(orderedIds) => { void handleProjectReorder(wsId, orderedIds) }}
                     />
                   </>
                 )

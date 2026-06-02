@@ -356,11 +356,22 @@ export function listProjects(workspaceId: string): ProjectRow[] {
   )
 }
 
+function nextProjectSort(workspaceId: string): number {
+  const row = queryOne<{ max_sort: number | null }>(
+    'SELECT MAX(sort) as max_sort FROM projects WHERE workspace_id = ?',
+    [workspaceId]
+  )
+  return (row?.max_sort ?? -1) + 1
+}
+
 export function createProject(workspaceId: string, name: string, description: string): ProjectRow {
   ensureWorkspaceExists(workspaceId)
   const id = randomUUID()
   withTransaction(() => {
-    db.run('INSERT INTO projects (id, workspace_id, name, description) VALUES (?, ?, ?, ?)', [id, workspaceId, name, description])
+    db.run(
+      'INSERT INTO projects (id, workspace_id, name, description, sort) VALUES (?, ?, ?, ?, ?)',
+      [id, workspaceId, name, description, nextProjectSort(workspaceId)]
+    )
     db.run('INSERT INTO nodes (id, project_id, type, label, x, y) VALUES (?, ?, ?, ?, ?, ?)', [randomUUID(), id, 'start', 'Start', 80, 160])
     db.run('INSERT INTO nodes (id, project_id, type, label, x, y) VALUES (?, ?, ?, ?, ?, ?)', [randomUUID(), id, 'end', 'End', 520, 160])
   })
@@ -383,6 +394,24 @@ export function deleteProject(id: string): void {
 }
 
 // ── Node ──────────────────────────────────────────
+export function reorderProjects(workspaceId: string, orderedIds: string[]): void {
+  ensureWorkspaceExists(workspaceId)
+  const current = queryAll<{ id: string }>(
+    'SELECT id FROM projects WHERE workspace_id = ? ORDER BY sort, rowid',
+    [workspaceId]
+  ).map(project => project.id)
+  const currentSet = new Set(current)
+  if (orderedIds.length !== current.length || orderedIds.some(id => !currentSet.has(id))) {
+    throw new Error('같은 워크스페이스의 프로젝트 안에서만 순서를 변경할 수 있습니다.')
+  }
+  withTransaction(() => {
+    orderedIds.forEach((id, index) => {
+      db.run('UPDATE projects SET sort = ? WHERE id = ?', [index, id])
+    })
+  })
+  save()
+}
+
 export type NodeRow = {
   id: string
   projectId: string

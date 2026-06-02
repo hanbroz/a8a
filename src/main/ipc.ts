@@ -38,6 +38,7 @@ export function registerIpcHandlers(): void {
   ipcMain.handle('proj:create', (_, workspaceId: string, name: string, description: string) => db.createProject(workspaceId, name, description))
   ipcMain.handle('proj:update', (_, id: string, name: string, description: string) => db.updateProject(id, name, description))
   ipcMain.handle('proj:delete', (_, id: string) => db.deleteProject(id))
+  ipcMain.handle('proj:reorder', (_, workspaceId: string, orderedIds: string[]) => db.reorderProjects(workspaceId, orderedIds))
 
   // ── Module ──
   ipcMain.handle('mod:list', (_, workspaceId: string) => db.listModules(workspaceId))

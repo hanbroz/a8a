@@ -198,6 +198,7 @@ declare global {
       create: (workspaceId: string, name: string, description: string) => Promise<ApiProject>
       update: (id: string, name: string, description: string) => Promise<void>
       delete: (id: string) => Promise<void>
+      reorder: (workspaceId: string, orderedIds: string[]) => Promise<void>
     }
     module: {
       list: (workspaceId: string) => Promise<ApiModule[]>

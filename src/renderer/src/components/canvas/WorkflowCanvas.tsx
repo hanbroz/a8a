@@ -19,6 +19,7 @@ type EdgeLineStyle = 'curve' | 'straight'
 type InputPortSide = 'left' | 'top'
 type OutputPortSide = 'right' | 'bottom'
 type EndNodePnrValue = { name: string; value: string }
+type ApiFlowItem = { id: string; index: number; label: string; method: string; url: string; rawUrl: string }
 
 function nW(type: string): number { return (type === 'data' || type === 'select' || type === 'api' || type === 'branch') ? DATA_NODE_W : NODE_W }
 function nH(type: string): number { return (type === 'data' || type === 'select' || type === 'api' || type === 'branch') ? DATA_NODE_H : NODE_H }
@@ -288,6 +289,14 @@ function parseApiConfig(config: string): ApiConfig {
   try { return JSON.parse(config) as ApiConfig } catch { return { method: 'GET', url: '', headers: [], params: [], body: '', bodyType: 'json' } }
 }
 
+function displayApiUrl(url: string): string {
+  const trimmed = url.trim()
+  if (!trimmed) return '미설정'
+  const withoutLeadingEnv = trimmed.replace(/^\{\{\s*[^{}[\]]+?\s*\}\}/, '').trim()
+  if (!withoutLeadingEnv && withoutLeadingEnv !== trimmed) return '/'
+  return withoutLeadingEnv || trimmed
+}
+
 function ApiIcon(): JSX.Element {
   return (
     <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
@@ -397,6 +406,25 @@ function buildAutoArrangeOrder(nodes: ApiNode[], edges: ApiEdge[]): ApiNode[] {
   return orderedIds.map(id => nodeById.get(id)).filter((node): node is ApiNode => !!node)
 }
 
+function buildApiFlowItems(nodes: ApiNode[], edges: ApiEdge[]): ApiFlowItem[] {
+  const nodeById = new Map(nodes.map(node => [node.id, node]))
+  const { orderedIds, reachableIds } = buildExecutionOrderedIds(nodes, edges)
+  return orderedIds
+    .map(id => nodeById.get(id))
+    .filter((node): node is ApiNode => !!node && node.type === 'api' && reachableIds.has(node.id))
+    .map((node, index) => {
+      const cfg = parseApiConfig(node.config)
+      return {
+        id: node.id,
+        index: index + 1,
+        label: node.label || 'API',
+        method: cfg.method || 'GET',
+        url: displayApiUrl(cfg.url),
+        rawUrl: cfg.url,
+      }
+    })
+}
+
 
 export default function WorkflowCanvas({
   nodes, edges,
@@ -411,6 +439,7 @@ export default function WorkflowCanvas({
   const connectRef = useRef<Connecting | null>(null)
   const reconnectRef = useRef<Reconnecting | null>(null)
   const hoverTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const floatingToolRowRef = useRef<HTMLDivElement>(null)
 
   const [positions, setPositions] = useState<Record<string, { x: number; y: number }>>({})
   const [draggingNodeIds, setDraggingNodeIds] = useState<string[]>([])
@@ -426,6 +455,8 @@ export default function WorkflowCanvas({
   const [lineStyle, setLineStyle] = useState<EdgeLineStyle>(() =>
     localStorage.getItem('wf-edge-line-style') === 'straight' ? 'straight' : 'curve',
   )
+  const [apiListOpen, setApiListOpen] = useState(false)
+  const [floatingToolsWidth, setFloatingToolsWidth] = useState<number | null>(null)
   const [panning, setPanning] = useState(false)
   const panRef = useRef<{ startX: number; startY: number; vx0: number; vy0: number } | null>(null)
   const copiedPnrTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
@@ -496,6 +527,29 @@ export default function WorkflowCanvas({
   useEffect(() => {
     localStorage.setItem('wf-edge-line-style', lineStyle)
   }, [lineStyle])
+
+  useEffect(() => {
+    const row = floatingToolRowRef.current
+    if (!row) return
+
+    const updateWidth = (): void => {
+      setFloatingToolsWidth(Math.ceil(row.scrollWidth))
+    }
+
+    updateWidth()
+    window.addEventListener('resize', updateWidth)
+
+    if (typeof ResizeObserver === 'undefined') {
+      return () => window.removeEventListener('resize', updateWidth)
+    }
+
+    const observer = new ResizeObserver(updateWidth)
+    observer.observe(row)
+    return () => {
+      observer.disconnect()
+      window.removeEventListener('resize', updateWidth)
+    }
+  }, [])
 
   useEffect(() => {
     return () => {
@@ -833,6 +887,7 @@ export default function WorkflowCanvas({
   }, [edges, nodes, onNodeMove, viewport, zoom])
 
   const liveNodes = nodes.map(n => ({ ...n, x: positions[n.id]?.x ?? n.x, y: positions[n.id]?.y ?? n.y }))
+  const apiFlowItems = buildApiFlowItems(liveNodes, edges)
   const liveNodeById = new Map(liveNodes.map(node => [node.id, node]))
   const selectedNodeIdSet = new Set(selectedNodeIds)
   const draggingNodeIdSet = new Set(draggingNodeIds)
@@ -971,7 +1026,12 @@ export default function WorkflowCanvas({
         onModuleDrop(moduleType, snapToGrid(world.x - 100), snapToGrid(world.y - 36))
       }}
     >
-      <div className="wf-floating-tools" onMouseDown={e => e.stopPropagation()}>
+      <div
+        className="wf-floating-tools"
+        style={{ width: floatingToolsWidth ?? undefined }}
+        onMouseDown={e => e.stopPropagation()}
+      >
+        <div className="wf-floating-tool-row" ref={floatingToolRowRef}>
         {onNodeCopy && (
           <button
             type="button"
@@ -997,6 +1057,14 @@ export default function WorkflowCanvas({
         <button type="button" className="wf-floating-tool-btn" onClick={autoArrangeNodes} title="연결 순서 기준 자동정렬">
           자동정렬
         </button>
+        <button
+          type="button"
+          className={`wf-floating-tool-btn${apiListOpen ? ' active' : ''}`}
+          onClick={() => setApiListOpen(open => !open)}
+          title="연결선 실행 순서에 따른 API 목록"
+        >
+          API 목록
+        </button>
         <div className="wf-line-style-toggle" role="group" aria-label="연결선 형태">
           <button
             type="button"
@@ -1016,6 +1084,44 @@ export default function WorkflowCanvas({
           </button>
         </div>
         <span className="wf-zoom-indicator">{Math.round(zoom * 100)}%</span>
+        </div>
+        {apiListOpen && (
+          <div className="wf-api-flow-list">
+            {apiFlowItems.length === 0 ? (
+              <div className="wf-api-flow-empty">연결된 API가 없습니다.</div>
+            ) : (
+              <>
+                <div className="wf-api-flow-header">
+                  <span>#</span>
+                  <span>모듈</span>
+                  <span>Method</span>
+                  <span>URL</span>
+                </div>
+                {apiFlowItems.map(item => {
+                  const methodColor = apiMethodColor(item.method)
+                  const selected = selectedNodeIdSet.has(item.id)
+                  return (
+                    <button
+                      key={item.id}
+                      type="button"
+                      className={`wf-api-flow-item${selected ? ' active' : ''}`}
+                      title={`${item.label} ${item.method} ${item.rawUrl}`}
+                      onClick={() => {
+                        setSelectedNodeIds([item.id])
+                        canvasRef.current?.focus({ preventScroll: true })
+                      }}
+                    >
+                      <span className="wf-api-flow-index">{item.index}</span>
+                      <span className="wf-api-flow-name">{item.label}</span>
+                      <span className="wf-api-flow-method" style={{ color: methodColor, background: `${methodColor}22` }}>{item.method}</span>
+                      <span className="wf-api-flow-url">{item.url}</span>
+                    </button>
+                  )
+                })}
+              </>
+            )}
+          </div>
+        )}
       </div>
       <div
         className="wf-viewport"
@@ -1256,6 +1362,7 @@ export default function WorkflowCanvas({
         if (node.type === 'api') {
           const cfg = parseApiConfig(node.config)
           const mc = apiMethodColor(cfg.method)
+          const displayUrl = displayApiUrl(cfg.url)
           return (
             <div
               key={node.id}
@@ -1271,7 +1378,7 @@ export default function WorkflowCanvas({
                 <span className="wf-node-label wf-node-label-api">{node.label}</span>
                 <div className="wf-node-api-meta">
                   <span className="wf-node-api-method" style={{ color: mc, background: `${mc}22` }}>{cfg.method}</span>
-                  <span className="wf-node-api-url">{cfg.url || '미설정'}</span>
+                  <span className="wf-node-api-url" title={cfg.url || undefined}>{displayUrl}</span>
                 </div>
               </div>
               {statusBullet}

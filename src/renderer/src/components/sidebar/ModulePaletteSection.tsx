@@ -100,14 +100,13 @@ export default function ModulePaletteSection({
                 e.dataTransfer.setData('moduleType', item.type)
                 e.dataTransfer.effectAllowed = 'copy'
               }}
-              title="캔버스에 드래그하여 독립 모듈을 생성합니다."
+              title="캔버스에 드래그하여 모듈을 생성합니다."
             >
               <div className="module-item-icon" style={{ background: item.bg, color: item.color }}>
                 <TypeIcon type={item.type} />
               </div>
               <div className="module-item-info">
                 <span className="module-item-name">{item.label}</span>
-                <span className="module-item-meta" style={{ color: item.color, opacity: 0.8 }}>독립 모듈</span>
               </div>
             </div>
           ))}
