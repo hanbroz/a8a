@@ -128,9 +128,17 @@ function registerApiScriptAssistant(monaco: Monaco): void {
             label: 'setOutput',
             kind: fn,
             detail: 'A8A Post Response API',
-            documentation: '하위 모듈에서 사용할 OUTPUT 변수를 설정합니다.',
-            insertText: "setOutput('${1:name}', ${2:value})",
+            documentation: '현재 API 모듈의 OUTPUT을 지정한 값으로 교체합니다.',
+            insertText: 'setOutput(${1:value})',
             insertTextRules: snippet,
+            range,
+          },
+          {
+            label: 'Output',
+            kind: variable,
+            detail: 'A8A Post Response API',
+            documentation: 'OUTPUT 객체를 구성합니다. add(name, value)로 값을 추가한 뒤 setOutput(output)으로 적용합니다.',
+            insertText: 'new Output()',
             range,
           },
         )
@@ -288,6 +296,12 @@ function parseResponseValue(raw: string): unknown {
   } catch {
     return raw
   }
+}
+
+function stringifyRuntimeValue(value: unknown): string {
+  if (typeof value === 'string') return value
+  if (value === undefined) return 'undefined'
+  return JSON.stringify(value, null, 2)
 }
 
 // ?? Autocomplete helpers ???????????????????????????
@@ -1197,6 +1211,9 @@ export default function ApiNodeModal({
       const ms = Date.now() - t0
       setTestStatus({ code: res.status, text: res.statusText, ms })
       const responseValue = parseResponseValue(res.text)
+      const runtimeOutput = Array.isArray(responseValue)
+        ? responseValue.length === 1 ? responseValue[0] : responseValue
+        : responseValue
       if (typeof responseValue === 'string') {
         setTestResponse(res.text)
         setOutputViewMode(canShowJsonTree(res.text) ? 'tree' : 'raw')
@@ -1218,11 +1235,17 @@ export default function ApiNodeModal({
         scriptPhase = 'post'
         const postResult = await runPostResponse(postScript, {
           input: scriptInput,
-          output: responseValue,
+          output: runtimeOutput,
           envVars: requestEnvVars,
         })
         setPostConsoleLogs(postResult.logs)
         Object.assign(requestEnvVars, postResult.envUpdates)
+        if (postResult.hasOutputOverride) {
+          const nextOutput = stringifyRuntimeValue(postResult.outputOverride)
+          setTestResponse(nextOutput)
+          setOutputViewMode(canShowJsonTree(nextOutput) ? 'tree' : 'raw')
+          setOutputError(false)
+        }
         scriptPhase = null
       }
     } catch (err) {

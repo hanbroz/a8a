@@ -45,8 +45,28 @@ export interface PostScriptContext {
 
 export interface PostScriptResult {
   outputVars: Record<string, AnyValue>
+  outputOverride?: AnyValue
+  hasOutputOverride: boolean
   envUpdates: Record<string, string>
   logs: ScriptConsoleEntry[]
+}
+
+class OutputObject {
+  private values: Record<string, AnyValue> = {}
+
+  add(name: string, value: AnyValue): OutputObject {
+    if (typeof name !== 'string' || !name) throw new Error('Output.add: 이름은 비어있지 않은 문자열이어야 합니다.')
+    this.values[name] = value
+    return this
+  }
+
+  set(name: string, value: AnyValue): OutputObject {
+    return this.add(name, value)
+  }
+
+  toJSON(): Record<string, AnyValue> {
+    return { ...this.values }
+  }
 }
 
 function toEnvString(value: AnyValue): string {
@@ -84,6 +104,11 @@ function createScriptConsole(logs: ScriptConsoleEntry[]): Console {
   })
 
   return scriptConsole
+}
+
+function normalizeOutputOverride(value: AnyValue): AnyValue {
+  if (value instanceof OutputObject) return value.toJSON()
+  return value
 }
 
 export function isScriptRuntimeError(error: unknown): error is ScriptRuntimeError {
@@ -137,15 +162,32 @@ export async function runPreRequest(code: string, ctx: PreScriptContext): Promis
 
 export async function runPostResponse(code: string, ctx: PostScriptContext): Promise<PostScriptResult> {
   const outputVars: Record<string, AnyValue> = {}
+  let outputOverride: AnyValue
+  let hasOutputOverride = false
   const envUpdates: Record<string, string> = {}
   const logs: ScriptConsoleEntry[] = []
   const scriptConsole = createScriptConsole(logs)
 
   const getInput = (): AnyValue => ctx.input
   const getOutput = (): AnyValue => ctx.output
-  const setOutput = (name: string, value: AnyValue): void => {
-    if (typeof name !== 'string' || !name) throw new Error('setOutput: 변수명은 비어있지 않은 문자열이어야 합니다.')
-    outputVars[name] = value
+  const setOutput = (...args: AnyValue[]): void => {
+    if (args.length === 1) {
+      outputOverride = normalizeOutputOverride(args[0])
+      hasOutputOverride = true
+      return
+    }
+    if (args.length === 2) {
+      const [name, value] = args
+      if (typeof name !== 'string' || !name) throw new Error('setOutput: 이름은 비어있지 않은 문자열이어야 합니다.')
+      outputVars[name] = value
+      const current = outputOverride && typeof outputOverride === 'object' && !Array.isArray(outputOverride)
+        ? outputOverride as Record<string, AnyValue>
+        : {}
+      outputOverride = { ...current, [name]: value }
+      hasOutputOverride = true
+      return
+    }
+    throw new Error('setOutput: setOutput(value) 또는 setOutput(name, value) 형식으로 호출해야 합니다.')
   }
   const setEnv = (name: string, value: AnyValue): void => {
     if (typeof name !== 'string' || !name) throw new Error('setEnv: 변수명은 비어있지 않은 문자열이어야 합니다.')
@@ -156,16 +198,16 @@ export async function runPostResponse(code: string, ctx: PostScriptContext): Pro
   const setInput = blockedSetter('Post Response', 'setInput')
 
   const fn = new AsyncFunction(
-    'getInput', 'getOutput', 'setEnv', 'setInput', 'setOutput', 'console', 'env',
+    'getInput', 'getOutput', 'setEnv', 'setInput', 'setOutput', 'Output', 'console', 'env',
     code,
   )
   try {
-    await fn(getInput, getOutput, setEnv, setInput, setOutput, scriptConsole, ctx.envVars)
+    await fn(getInput, getOutput, setEnv, setInput, setOutput, OutputObject, scriptConsole, ctx.envVars)
   } catch (err) {
     throw new ScriptRuntimeError(String((err as Error)?.message ?? err), logs)
   }
 
-  return { outputVars, envUpdates, logs }
+  return { outputVars, outputOverride, hasOutputOverride, envUpdates, logs }
 }
 
 export function templateValue(value: AnyValue): string {

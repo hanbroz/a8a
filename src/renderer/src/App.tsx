@@ -1385,15 +1385,18 @@ export default function App(): JSX.Element {
         }
 
         let postOutputVars: Record<string, unknown> = {}
+        let finalOutput: unknown = allResults
         if (cfg.postScript && cfg.postScript.trim()) {
           try {
+            const responseOutput = allResults.length === 1 ? allResults[0] : allResults
             const r = await runPostResponse(cfg.postScript, {
               input: upstream,
-              output: allResults.length === 1 ? allResults[0] : allResults,
+              output: responseOutput,
               envVars,
             })
             setScriptLogsForNode(nodeId, 'post', r.logs)
             postOutputVars = r.outputVars
+            if (r.hasOutputOverride) finalOutput = r.outputOverride
             for (const [k, v] of Object.entries(r.envUpdates)) envVars[k] = v
           } catch (err) {
             if (isScriptRuntimeError(err)) setScriptLogsForNode(nodeId, 'post', err.logs)
@@ -1402,7 +1405,7 @@ export default function App(): JSX.Element {
         }
         moduleVarsMap[nodeId] = { ...upstreamModuleVars, ...postOutputVars }
         visiting.delete(nodeId)
-        return allResults
+        return finalOutput
       }
       visiting.delete(nodeId)
       return upstream
@@ -1879,15 +1882,18 @@ export default function App(): JSX.Element {
 
           // ── Post Response script ───────────────────────
           let postOutputVars: Record<string, unknown> = {}
+          let finalOutput: unknown = allResults
           if (cfg.postScript && cfg.postScript.trim()) {
             try {
+              const responseOutput = allResults.length === 1 ? allResults[0] : allResults
               const r = await runPostResponse(cfg.postScript, {
                 input: rawInput,
-                output: allResults.length === 1 ? allResults[0] : allResults,
+                output: responseOutput,
                 envVars: envVarsForExec,
               })
               recordScriptLogs('post', r.logs)
               postOutputVars = r.outputVars
+              if (r.hasOutputOverride) finalOutput = r.outputOverride
               for (const [k, v] of Object.entries(r.envUpdates)) envVarsForExec[k] = v
               recordUpdatedEnvVariables(usedVariables, envVarsForExec, r.envUpdates)
               if (Object.keys(r.envUpdates).length > 0) await persistEnvUpdates(r.envUpdates)
@@ -1897,10 +1903,10 @@ export default function App(): JSX.Element {
             }
           }
 
-          nodeOutputs[nodeId] = allResults
+          nodeOutputs[nodeId] = finalOutput
           moduleVars[nodeId] = { ...upstreamModuleVars, ...postOutputVars }
-          setNodeRunOutputs(prev => ({ ...prev, [nodeId]: JSON.stringify(allResults, null, 2) }))
-          updateLog(entryId, { status: 'success', output: allResults, duration: Date.now() - startedAt, apiDetail: lastApiDetail, scriptLogs: currentScriptLogs })
+          setNodeRunOutputs(prev => ({ ...prev, [nodeId]: JSON.stringify(finalOutput, null, 2) }))
+          updateLog(entryId, { status: 'success', output: finalOutput, duration: Date.now() - startedAt, apiDetail: lastApiDetail, scriptLogs: currentScriptLogs })
           setNodeStatuses(prev => ({ ...prev, [nodeId]: 'success' }))
         } catch (err) {
           nodeOutputs[nodeId] = null
