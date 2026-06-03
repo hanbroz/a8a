@@ -1,5 +1,7 @@
 # a8a
 
+[한국어](README.md) | [English](README.en.md)
+
 a8a는 API 호출 흐름을 캔버스에서 시각적으로 만들고 실행하는 Electron 기반 워크플로우 자동화 도구입니다.
 
 워크스페이스, 환경, 프로젝트를 관리하고 Data, Select, API, Branch, End 노드를 연결해 API 처리 파이프라인을 구성할 수 있습니다. 실행 결과는 노드별 INPUT/OUTPUT과 로그로 확인하고, End 노드에서 HTML 또는 Markdown 리포트로 저장할 수 있습니다.
@@ -462,7 +464,7 @@ npm run dev
 npm run build
 ```
 
-기능, 설정, 사용법, 배포 방식이 변경되면 같은 변경 작업 안에서 `README.md`도 함께 업데이트합니다.
+기능, 설정, 사용법, 배포 방식이 변경되면 같은 변경 작업 안에서 `README.md`와 `README.en.md`를 함께 업데이트합니다.
 
 Windows에서는 편의 스크립트도 사용할 수 있습니다.
 
