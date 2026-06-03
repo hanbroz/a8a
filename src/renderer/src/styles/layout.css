@@ -301,18 +301,21 @@
 }
 
 .sidebar-proj-icon {
-  width: 32px;
+  width: 36px;
   height: 32px;
   border-radius: 8px;
   border: none;
   background: var(--bg-3);
   color: var(--text-2);
-  font-size: 13px;
-  font-weight: 700;
+  font-size: 10.5px;
+  font-weight: 800;
+  letter-spacing: 0.01em;
   cursor: pointer;
   display: flex;
   align-items: center;
   justify-content: center;
+  padding: 0 4px;
+  white-space: nowrap;
   transition: background 0.12s, color 0.12s;
 }
 
@@ -411,23 +414,69 @@
   justify-content: center;
 }
 
-.topbar-run-btn {
-  gap: 7px;
+.topbar-transfer {
+  position: relative;
+  flex-shrink: 0;
 }
 
-.topbar-run-shortcut {
-  height: 18px;
-  display: inline-flex;
-  align-items: center;
-  padding: 0 5px;
-  border: 1px solid rgba(255, 255, 255, 0.22);
-  border-radius: 4px;
-  background: rgba(255, 255, 255, 0.12);
-  color: rgba(255, 255, 255, 0.88);
-  font-family: var(--font-mono);
+.topbar-transfer-btn {
+  min-width: 142px;
+  justify-content: center;
+}
+
+.topbar-transfer-menu {
+  position: absolute;
+  top: calc(100% + 6px);
+  right: 0;
+  min-width: 236px;
+  background: var(--bg-2);
+  border: 1px solid var(--border-2);
+  border-radius: 8px;
+  box-shadow: var(--shadow-panel);
+  padding: 6px;
+  z-index: 220;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.topbar-transfer-group-label {
+  padding: 5px 7px 3px;
+  color: var(--text-4);
   font-size: 10px;
   font-weight: 800;
-  line-height: 1;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.topbar-transfer-option {
+  width: 100%;
+  height: 30px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 0 8px;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text-1);
+  cursor: pointer;
+  text-align: left;
+}
+
+.topbar-transfer-option:hover {
+  background: var(--bg-hover);
+}
+
+.topbar-transfer-option:disabled {
+  cursor: not-allowed;
+  opacity: 0.45;
+}
+
+.topbar-transfer-separator {
+  height: 1px;
+  margin: 4px 3px;
+  background: var(--border-1);
 }
 
 .project-title {

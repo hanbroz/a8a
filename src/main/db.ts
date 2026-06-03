@@ -100,7 +100,95 @@ function edgeWouldCreateCycle(projectId: string, sourceNodeId: string, targetNod
 }
 
 function allowsMultipleIncoming(type: string): boolean {
-  return type === 'api' || type === 'branch'
+  return type === 'api' || type === 'branch' || type === 'end'
+}
+
+function normalizeEdgeSourcePort(sourceType: string, sourcePort?: string | null): string | null {
+  if (sourceType !== 'branch') return null
+  return sourcePort === 'false' ? 'false' : 'true'
+}
+
+const VALID_NODE_TYPES = new Set(['start', 'end', 'data', 'select', 'api', 'branch'])
+
+type GraphNodeForValidation = Pick<NodeRow, 'id' | 'type'>
+type GraphEdgeForValidation = Pick<EdgeRow, 'id' | 'sourceNodeId' | 'targetNodeId' | 'sourcePort'>
+
+function graphEdgesCreateCycle(edges: GraphEdgeForValidation[], sourceNodeId: string, targetNodeId: string): boolean {
+  const stack = [targetNodeId]
+  const visited = new Set<string>()
+  while (stack.length > 0) {
+    const current = stack.pop()!
+    if (current === sourceNodeId) return true
+    if (visited.has(current)) continue
+    visited.add(current)
+    edges
+      .filter(edge => edge.sourceNodeId === current)
+      .forEach(edge => stack.push(edge.targetNodeId))
+  }
+  return false
+}
+
+function validateProjectGraph(projectId: string, nodes: GraphNodeForValidation[], edges: GraphEdgeForValidation[]): EdgeRow[] {
+  const nodeById = new Map<string, GraphNodeForValidation>()
+  nodes.forEach(node => {
+    if (!node.id.trim()) throw new Error('캔버스 스냅샷에 ID가 없는 노드가 있습니다.')
+    if (nodeById.has(node.id)) throw new Error('캔버스 스냅샷에 중복된 노드가 있습니다.')
+    if (!VALID_NODE_TYPES.has(node.type)) throw new Error(`지원하지 않는 모듈 타입입니다: ${node.type}`)
+    nodeById.set(node.id, node)
+  })
+  if (nodeById.size === 0) {
+    throw new Error('캔버스 스냅샷의 노드 정보가 올바르지 않습니다.')
+  }
+
+  const edgeIds = new Set<string>()
+  const edgeKeys = new Set<string>()
+  const inboundCounts = new Map<string, number>()
+  const startOutboundCounts = new Map<string, number>()
+  const normalizedEdges: EdgeRow[] = []
+
+  edges.forEach(edge => {
+    if (!edge.id.trim()) throw new Error('캔버스 스냅샷에 ID가 없는 연결선이 있습니다.')
+    if (edgeIds.has(edge.id)) throw new Error('캔버스 스냅샷에 중복된 연결선이 있습니다.')
+    edgeIds.add(edge.id)
+
+    if (edge.sourceNodeId === edge.targetNodeId) throw new Error('같은 노드끼리는 연결할 수 없습니다.')
+    const source = nodeById.get(edge.sourceNodeId)
+    const target = nodeById.get(edge.targetNodeId)
+    if (!source || !target) throw new Error('캔버스 스냅샷의 연결선 정보가 올바르지 않습니다.')
+    if (source.type === 'end') throw new Error('End 노드에서는 연결을 시작할 수 없습니다.')
+    if (target.type === 'start') throw new Error('Start 노드로는 연결할 수 없습니다.')
+
+    const normalizedSourcePort = normalizeEdgeSourcePort(source.type, edge.sourcePort)
+    const edgeKey = `${edge.sourceNodeId}\u0000${edge.targetNodeId}\u0000${normalizedSourcePort ?? ''}`
+    if (edgeKeys.has(edgeKey)) throw new Error('캔버스 스냅샷에 중복된 연결이 있습니다.')
+    edgeKeys.add(edgeKey)
+
+    const inboundCount = (inboundCounts.get(edge.targetNodeId) ?? 0) + 1
+    inboundCounts.set(edge.targetNodeId, inboundCount)
+    if (!allowsMultipleIncoming(target.type) && inboundCount > 1) {
+      throw new Error('한 노드에는 하나의 입력 연결만 허용됩니다.')
+    }
+
+    if (source.type === 'start') {
+      const outboundCount = (startOutboundCounts.get(edge.sourceNodeId) ?? 0) + 1
+      startOutboundCounts.set(edge.sourceNodeId, outboundCount)
+      if (outboundCount > 1) throw new Error('Start 노드에는 하나의 출력 연결만 허용됩니다.')
+    }
+
+    if (graphEdgesCreateCycle(normalizedEdges, edge.sourceNodeId, edge.targetNodeId)) {
+      throw new Error('순환 연결은 만들 수 없습니다.')
+    }
+
+    normalizedEdges.push({
+      id: edge.id,
+      projectId,
+      sourceNodeId: edge.sourceNodeId,
+      targetNodeId: edge.targetNodeId,
+      sourcePort: normalizedSourcePort,
+    })
+  })
+
+  return normalizedEdges
 }
 
 // ── Init ──────────────────────────────────────────
@@ -401,7 +489,114 @@ export function deleteProject(id: string): void {
   save()
 }
 
-// ── Node ──────────────────────────────────────────
+export function duplicateProject(id: string, name: string): ProjectRow {
+  const trimmedName = name.trim()
+  if (!trimmedName) throw new Error('프로젝트 이름을 입력하세요.')
+
+  const projects = queryAll<{ id: string; workspace_id: string; name: string; description: string; sort: number | null }>(
+    'SELECT id, workspace_id, name, COALESCE(description, \'\') as description, sort FROM projects WHERE workspace_id = (SELECT workspace_id FROM projects WHERE id = ?) ORDER BY sort, rowid',
+    [id]
+  )
+  const sourceIndex = projects.findIndex(project => project.id === id)
+  const sourceProject = projects[sourceIndex]
+  if (!sourceProject) throw new Error(`Project ${id} not found`)
+
+  const cloneId = randomUUID()
+  const insertIndex = sourceIndex + 1
+  const sourceNodes = queryAll<{
+    id: string
+    type: string
+    label: string
+    x: number
+    y: number
+    width: number | null
+    height: number | null
+    config: string
+  }>(
+    `SELECT id, type, label, x, y, width, height, COALESCE(config, '') as config
+     FROM nodes
+     WHERE project_id = ?
+     ORDER BY rowid`,
+    [id]
+  )
+  const sourceEdges = queryAll<{ source_node_id: string; target_node_id: string; source_port: string | null }>(
+    'SELECT source_node_id, target_node_id, source_port FROM edges WHERE project_id = ? ORDER BY rowid',
+    [id]
+  )
+  const nodeIdMap = new Map<string, string>()
+  const cloneNodes: NodeRow[] = sourceNodes.map(node => {
+    const newNodeId = randomUUID()
+    nodeIdMap.set(node.id, newNodeId)
+    return {
+      id: newNodeId,
+      projectId: cloneId,
+      type: node.type as NodeRow['type'],
+      label: node.label,
+      x: node.x,
+      y: node.y,
+      width: node.width ?? defaultNodeWidth(node.type),
+      height: node.height ?? defaultNodeHeight(node.type),
+      config: node.config,
+    }
+  })
+  const cloneEdges = validateProjectGraph(
+    cloneId,
+    cloneNodes,
+    sourceEdges.flatMap(edge => {
+      const sourceNodeId = nodeIdMap.get(edge.source_node_id)
+      const targetNodeId = nodeIdMap.get(edge.target_node_id)
+      return sourceNodeId && targetNodeId
+        ? [{
+            id: randomUUID(),
+            projectId: cloneId,
+            sourceNodeId,
+            targetNodeId,
+            sourcePort: edge.source_port ?? null,
+          }]
+        : []
+    })
+  )
+
+  withTransaction(() => {
+    projects.forEach((project, index) => {
+      const nextSort = index >= insertIndex ? index + 1 : index
+      db.run('UPDATE projects SET sort = ? WHERE id = ?', [nextSort, project.id])
+    })
+    db.run(
+      'INSERT INTO projects (id, workspace_id, name, description, sort) VALUES (?, ?, ?, ?, ?)',
+      [cloneId, sourceProject.workspace_id, trimmedName, sourceProject.description, insertIndex]
+    )
+
+    cloneNodes.forEach(node => {
+      db.run(
+        'INSERT INTO nodes (id, project_id, type, label, x, y, width, height, config) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
+        [
+          node.id,
+          cloneId,
+          node.type,
+          node.label,
+          node.x,
+          node.y,
+          node.width,
+          node.height,
+          node.config,
+        ]
+      )
+    })
+
+    cloneEdges.forEach(edge => {
+      db.run(
+        'INSERT INTO edges (id, project_id, source_node_id, target_node_id, source_port) VALUES (?, ?, ?, ?, ?)',
+        [edge.id, cloneId, edge.sourceNodeId, edge.targetNodeId, edge.sourcePort]
+      )
+    })
+  })
+  save()
+
+  return { id: cloneId, name: trimmedName, description: sourceProject.description }
+}
+
+// ── 프로젝트 순서 ─────────────────────────────────────
 export function reorderProjects(workspaceId: string, orderedIds: string[]): void {
   ensureWorkspaceExists(workspaceId)
   const current = queryAll<{ id: string }>(
@@ -493,7 +688,7 @@ function migrateLegacyModuleNodesToStandalone(): void {
       )
     })
     db.run('UPDATE nodes SET module_id = NULL WHERE module_id IS NOT NULL')
-    db.run('DELETE FROM modules')
+    db.run("DELETE FROM modules WHERE NOT (workspace_id IS NULL AND is_common = 1 AND type = 'data')")
   })
 }
 
@@ -594,11 +789,12 @@ export function createEdge(projectId: string, sourceNodeId: string, targetNodeId
   }
   if (source.type === 'end') throw new Error('End 노드에서는 연결을 시작할 수 없습니다.')
   if (target.type === 'start') throw new Error('Start 노드로는 연결할 수 없습니다.')
-  const normalizedSourcePort = source.type === 'branch' ? (sourcePort === 'true' || sourcePort === 'false' ? sourcePort : 'true') : null
-  const existing = queryOne<{ id: string; project_id: string; source_node_id: string; target_node_id: string; source_port: string | null }>(
+  const normalizedSourcePort = normalizeEdgeSourcePort(source.type, sourcePort)
+  const existingEdges = queryAll<{ id: string; project_id: string; source_node_id: string; target_node_id: string; source_port: string | null }>(
     'SELECT id, project_id, source_node_id, target_node_id, source_port FROM edges WHERE project_id = ? AND source_node_id = ? AND target_node_id = ?',
     [projectId, sourceNodeId, targetNodeId]
   )
+  const existing = existingEdges.find(edge => normalizeEdgeSourcePort(source.type, edge.source_port) === normalizedSourcePort)
   if (existing) {
     return { id: existing.id, projectId: existing.project_id, sourceNodeId: existing.source_node_id, targetNodeId: existing.target_node_id, sourcePort: existing.source_port ?? null }
   }
@@ -626,8 +822,59 @@ export function deleteEdge(id: string): void {
   save()
 }
 
+export function replaceProjectCanvas(projectId: string, nodes: NodeRow[], edges: EdgeRow[]): void {
+  ensureProjectExists(projectId)
+  const normalizedNodes = nodes.map(node => ({
+    ...node,
+    projectId,
+    width: node.width ?? defaultNodeWidth(node.type),
+    height: node.height ?? defaultNodeHeight(node.type),
+    config: node.config ?? '',
+  }))
+  const normalizedEdges = validateProjectGraph(projectId, normalizedNodes, edges)
+
+  withTransaction(() => {
+    db.run('DELETE FROM edges WHERE project_id = ?', [projectId])
+    db.run('DELETE FROM nodes WHERE project_id = ?', [projectId])
+    normalizedNodes.forEach(node => {
+      db.run(
+        'INSERT INTO nodes (id, project_id, type, label, x, y, width, height, config) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
+        [
+          node.id,
+          projectId,
+          node.type,
+          node.label,
+          node.x,
+          node.y,
+          node.width,
+          node.height,
+          node.config,
+        ]
+      )
+    })
+    normalizedEdges.forEach(edge => {
+      db.run(
+        'INSERT INTO edges (id, project_id, source_node_id, target_node_id, source_port) VALUES (?, ?, ?, ?, ?)',
+        [edge.id, projectId, edge.sourceNodeId, edge.targetNodeId, edge.sourcePort]
+      )
+    })
+  })
+  save()
+}
+
 // ── Module ────────────────────────────────────────
 export type ModuleRow = { id: string; workspaceId: string | null; type: string; label: string; config: string; isCommon: boolean }
+
+function mapModuleRow(row: { id: string; workspace_id: string | null; type: string; label: string; config: string; is_common: number }): ModuleRow {
+  return {
+    id: row.id,
+    workspaceId: row.workspace_id,
+    type: row.type,
+    label: row.label,
+    config: row.config ?? '',
+    isCommon: row.is_common === 1,
+  }
+}
 
 function nextModuleSort(workspaceId: string | null, type: string, isCommon: boolean): number {
   const row = workspaceId === null || isCommon
@@ -642,14 +889,27 @@ export function listModules(workspaceId: string): ModuleRow[] {
 }
 
 export function listAllModules(): ModuleRow[] {
-  return []
+  return queryAll<{ id: string; workspace_id: string | null; type: string; label: string; config: string; is_common: number }>(
+    `SELECT id, workspace_id, type, label, COALESCE(config, '') as config, is_common
+     FROM modules
+     WHERE workspace_id IS NULL AND is_common = 1 AND type = 'data'
+     ORDER BY type, sort, rowid`
+  ).map(mapModuleRow)
 }
 
 export function createCommonModule(type: string, label: string, config: string): ModuleRow {
-  void type
-  void label
-  void config
-  throw new Error('모듈 등록은 더 이상 지원되지 않습니다. 캔버스에 타입을 드래그해 독립 노드를 생성하세요.')
+  if (type !== 'data') {
+    throw new Error('DATA 모듈만 공용 모듈로 등록할 수 있습니다.')
+  }
+  const id = randomUUID()
+  const nextLabel = label.trim() || 'DATA'
+  const sort = nextModuleSort(null, type, true)
+  db.run(
+    'INSERT INTO modules (id, workspace_id, type, label, config, is_common, sort) VALUES (?, NULL, ?, ?, ?, 1, ?)',
+    [id, type, nextLabel, config, sort]
+  )
+  save()
+  return { id, workspaceId: null, type, label: nextLabel, config, isCommon: true }
 }
 
 export function createModule(workspaceId: string, type: string, label: string, config: string): ModuleRow {
@@ -661,10 +921,15 @@ export function createModule(workspaceId: string, type: string, label: string, c
 }
 
 export function updateModule(id: string, label: string, config: string): void {
-  void id
-  void label
-  void config
-  throw new Error('모듈 수정은 더 이상 지원되지 않습니다. 캔버스 노드를 직접 수정하세요.')
+  const mod = queryOne<{ id: string; type: string; is_common: number }>(
+    'SELECT id, type, is_common FROM modules WHERE id = ?',
+    [id]
+  )
+  if (!mod || mod.type !== 'data' || mod.is_common !== 1) {
+    throw new Error('공용 DATA 모듈만 수정할 수 있습니다.')
+  }
+  db.run('UPDATE modules SET label = ?, config = ? WHERE id = ?', [label.trim() || 'DATA', config, id])
+  save()
 }
 
 export function setModuleCommon(id: string, isCommon: boolean, workspaceId: string): void {
@@ -675,6 +940,18 @@ export function setModuleCommon(id: string, isCommon: boolean, workspaceId: stri
 }
 
 export function reorderCommonModules(type: string, orderedIds: string[]): void {
+  if (type === 'data') {
+    withTransaction(() => {
+      orderedIds.forEach((id, index) => {
+        db.run(
+          "UPDATE modules SET sort = ? WHERE id = ? AND workspace_id IS NULL AND is_common = 1 AND type = 'data'",
+          [index, id]
+        )
+      })
+    })
+    save()
+    return
+  }
   void type
   void orderedIds
 }
@@ -685,9 +962,484 @@ export function deleteModule(id: string): void {
 }
 
 export function createNodeFromModule(projectId: string, moduleId: string, x: number, y: number): NodeRow {
-  void projectId
-  void moduleId
-  void x
-  void y
-  throw new Error('모듈 참조 생성은 더 이상 지원되지 않습니다. node:create를 사용하세요.')
+  ensureProjectExists(projectId)
+  const mod = queryOne<{ id: string; label: string; type: string; is_common: number }>(
+    'SELECT id, label, type, is_common FROM modules WHERE id = ?',
+    [moduleId]
+  )
+  if (!mod || mod.type !== 'data' || mod.is_common !== 1) {
+    throw new Error('공용 DATA 모듈만 캔버스에 배치할 수 있습니다.')
+  }
+  const id = randomUUID()
+  const type = 'data'
+  const label = mod.label.trim() || 'DATA'
+  const width = defaultNodeWidth(type)
+  const height = defaultNodeHeight(type)
+  const config = JSON.stringify({ sharedDataModuleId: moduleId })
+  db.run(
+    'INSERT INTO nodes (id, project_id, type, label, x, y, width, height, config) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
+    [id, projectId, type, label, x, y, width, height, config]
+  )
+  save()
+  return { id, projectId, type, label, x, y, width, height, config }
+}
+
+// ── Import / Export ───────────────────────────────
+export type TransferScope = 'workspace' | 'project'
+
+export type TransferProject = ProjectRow & {
+  nodes: NodeRow[]
+  edges: EdgeRow[]
+}
+
+export type TransferWorkspace = WsRow & {
+  environments: EnvRow[]
+  projects: TransferProject[]
+}
+
+export type TransferPayload = {
+  format: 'a8a.export'
+  version: 1
+  scope: TransferScope
+  exportedAt: string
+  modules: ModuleRow[]
+  workspace?: TransferWorkspace
+  project?: TransferProject
+}
+
+export type TransferImportResult = {
+  scope: TransferScope
+  workspaceId?: string
+  workspaceName?: string
+  projectId?: string
+  projectName?: string
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return !!value && typeof value === 'object' && !Array.isArray(value)
+}
+
+function readSharedDataModuleId(config: string): string | null {
+  try {
+    const parsed = JSON.parse(config || '{}') as Record<string, unknown>
+    return typeof parsed.sharedDataModuleId === 'string' && parsed.sharedDataModuleId.trim()
+      ? parsed.sharedDataModuleId.trim()
+      : null
+  } catch {
+    return null
+  }
+}
+
+function remapSharedDataModuleConfig(config: string, moduleIdMap: Map<string, string>): string {
+  try {
+    const parsed = JSON.parse(config || '{}') as Record<string, unknown>
+    const sharedModuleId = typeof parsed.sharedDataModuleId === 'string' ? parsed.sharedDataModuleId : ''
+    const nextSharedModuleId = moduleIdMap.get(sharedModuleId)
+    if (!nextSharedModuleId) return config ?? ''
+    parsed.sharedDataModuleId = nextSharedModuleId
+    return JSON.stringify(parsed)
+  } catch {
+    return config ?? ''
+  }
+}
+
+function uniqueImportedName(baseName: string, existingNames: Set<string>, fallback: string): string {
+  const base = baseName.trim() || fallback
+  if (!existingNames.has(base)) {
+    existingNames.add(base)
+    return base
+  }
+  let index = 1
+  while (true) {
+    const candidate = `${base} (가져오기${index === 1 ? '' : ` ${index}`})`
+    if (!existingNames.has(candidate)) {
+      existingNames.add(candidate)
+      return candidate
+    }
+    index += 1
+  }
+}
+
+function exportProjectShape(projectId: string): TransferProject {
+  const project = queryOne<{ id: string; name: string; description: string }>(
+    'SELECT id, name, COALESCE(description, \'\') as description FROM projects WHERE id = ?',
+    [projectId]
+  )
+  if (!project) throw new Error(`Project ${projectId} not found`)
+  return {
+    id: project.id,
+    name: project.name,
+    description: project.description ?? '',
+    nodes: listNodes(projectId),
+    edges: listEdges(projectId),
+  }
+}
+
+function commonDataModulesForProjects(projects: TransferProject[]): ModuleRow[] {
+  const ids = new Set<string>()
+  projects.forEach(project => {
+    project.nodes.forEach(node => {
+      const sharedId = readSharedDataModuleId(node.config)
+      if (sharedId) ids.add(sharedId)
+    })
+  })
+  if (ids.size === 0) return []
+  return listAllModules().filter(mod => ids.has(mod.id))
+}
+
+export function exportWorkspaceData(workspaceId: string): TransferPayload {
+  const workspace = queryOne<{ id: string; name: string; description: string }>(
+    'SELECT id, name, COALESCE(description, \'\') as description FROM workspaces WHERE id = ?',
+    [workspaceId]
+  )
+  if (!workspace) throw new Error(`Workspace ${workspaceId} not found`)
+  const projects = listProjects(workspaceId).map(project => exportProjectShape(project.id))
+  return {
+    format: 'a8a.export',
+    version: 1,
+    scope: 'workspace',
+    exportedAt: new Date().toISOString(),
+    modules: commonDataModulesForProjects(projects),
+    workspace: {
+      id: workspace.id,
+      name: workspace.name,
+      description: workspace.description ?? '',
+      environments: listEnvironments(workspaceId),
+      projects,
+    },
+  }
+}
+
+export function exportProjectData(projectId: string): TransferPayload {
+  const project = exportProjectShape(projectId)
+  return {
+    format: 'a8a.export',
+    version: 1,
+    scope: 'project',
+    exportedAt: new Date().toISOString(),
+    modules: commonDataModulesForProjects([project]),
+    project,
+  }
+}
+
+function assertTransferPayload(payload: unknown, scope: TransferScope): TransferPayload {
+  if (!isRecord(payload) || payload.format !== 'a8a.export' || payload.version !== 1 || payload.scope !== scope) {
+    throw new Error(scope === 'workspace'
+      ? '워크스페이스 내보내기 파일이 아닙니다.'
+      : '프로젝트 내보내기 파일이 아닙니다.')
+  }
+  if (scope === 'workspace' && !isRecord(payload.workspace)) {
+    throw new Error('워크스페이스 데이터가 없습니다.')
+  }
+  if (scope === 'project' && !isRecord(payload.project)) {
+    throw new Error('프로젝트 데이터가 없습니다.')
+  }
+  return payload as TransferPayload
+}
+
+function importString(value: unknown, fallback = ''): string {
+  return typeof value === 'string' ? value : fallback
+}
+
+function importNumber(value: unknown, fallback: number): number {
+  return typeof value === 'number' && Number.isFinite(value) ? value : fallback
+}
+
+function importBoolean(value: unknown, fallback = false): boolean {
+  return typeof value === 'boolean' ? value : fallback
+}
+
+function requireImportString(value: unknown, fieldName: string, allowEmpty = false): string {
+  if (typeof value !== 'string') throw new Error(`${fieldName} 값이 올바르지 않습니다.`)
+  if (!allowEmpty && !value.trim()) throw new Error(`${fieldName} 값이 비어 있습니다.`)
+  return value
+}
+
+function requireImportNumber(value: unknown, fieldName: string): number {
+  if (typeof value !== 'number' || !Number.isFinite(value)) {
+    throw new Error(`${fieldName} 값이 올바르지 않습니다.`)
+  }
+  return value
+}
+
+function importOptionalString(value: unknown, fieldName: string): string {
+  if (value == null) return ''
+  if (typeof value !== 'string') throw new Error(`${fieldName} 값이 올바르지 않습니다.`)
+  return value
+}
+
+function importOptionalSourcePort(value: unknown, fieldName: string): string | null {
+  if (value == null) return null
+  if (value === 'true' || value === 'false') return value
+  throw new Error(`${fieldName} 값이 올바르지 않습니다.`)
+}
+
+function importEnvRows(value: unknown): EnvRow[] {
+  if (!Array.isArray(value)) return []
+  return value.filter(isRecord).map((env, index) => ({
+    id: importString(env.id, `env-${index}`),
+    name: importString(env.name, index === 0 ? 'BASE' : 'Environment'),
+    isBase: importBoolean(env.isBase, index === 0),
+    color: importString(env.color, '#4493f8'),
+    initial: importString(env.initial, ''),
+    vars: Array.isArray(env.vars)
+      ? env.vars.filter(isRecord).map((v, varIndex) => ({
+          id: importString(v.id, `var-${index}-${varIndex}`),
+          key: importString(v.key, ''),
+          value: importString(v.value, ''),
+          enabled: importBoolean(v.enabled, true),
+        })).filter(v => v.key.trim())
+      : [],
+  }))
+}
+
+function importNodeRows(value: unknown): NodeRow[] {
+  if (!Array.isArray(value)) throw new Error('프로젝트 노드 목록이 올바르지 않습니다.')
+  if (value.length === 0) throw new Error('프로젝트에는 노드가 필요합니다.')
+  const usedNodeIds = new Set<string>()
+  return value.map((node, index) => {
+    if (!isRecord(node)) throw new Error(`프로젝트 노드 ${index + 1} 정보가 올바르지 않습니다.`)
+    const id = requireImportString(node.id, `프로젝트 노드 ${index + 1} ID`)
+    if (usedNodeIds.has(id)) throw new Error(`중복된 노드 ID가 있습니다: ${id}`)
+    usedNodeIds.add(id)
+    const type = requireImportString(node.type, `프로젝트 노드 ${index + 1} 타입`)
+    if (!VALID_NODE_TYPES.has(type)) throw new Error(`지원하지 않는 모듈 타입입니다: ${type}`)
+    return {
+      id,
+      projectId: importOptionalString(node.projectId, `프로젝트 노드 ${index + 1} 프로젝트 ID`),
+      type,
+      label: requireImportString(node.label, `프로젝트 노드 ${index + 1} 이름`),
+      x: requireImportNumber(node.x, `프로젝트 노드 ${index + 1} X 좌표`),
+      y: requireImportNumber(node.y, `프로젝트 노드 ${index + 1} Y 좌표`),
+      width: requireImportNumber(node.width, `프로젝트 노드 ${index + 1} 가로 크기`),
+      height: requireImportNumber(node.height, `프로젝트 노드 ${index + 1} 세로 크기`),
+      config: requireImportString(node.config, `프로젝트 노드 ${index + 1} 설정`, true),
+    }
+  })
+}
+
+function importEdgeRows(value: unknown): EdgeRow[] {
+  if (!Array.isArray(value)) throw new Error('프로젝트 연결선 목록이 올바르지 않습니다.')
+  const usedEdgeIds = new Set<string>()
+  return value.map((edge, index) => {
+    if (!isRecord(edge)) throw new Error(`프로젝트 연결선 ${index + 1} 정보가 올바르지 않습니다.`)
+    const id = requireImportString(edge.id, `프로젝트 연결선 ${index + 1} ID`)
+    if (usedEdgeIds.has(id)) throw new Error(`중복된 연결선 ID가 있습니다: ${id}`)
+    usedEdgeIds.add(id)
+    return {
+      id,
+      projectId: importOptionalString(edge.projectId, `프로젝트 연결선 ${index + 1} 프로젝트 ID`),
+      sourceNodeId: requireImportString(edge.sourceNodeId, `프로젝트 연결선 ${index + 1} 시작 노드 ID`),
+      targetNodeId: requireImportString(edge.targetNodeId, `프로젝트 연결선 ${index + 1} 대상 노드 ID`),
+      sourcePort: importOptionalSourcePort(edge.sourcePort, `프로젝트 연결선 ${index + 1} 시작 포트`),
+    }
+  })
+}
+
+function importProjectShape(value: unknown): TransferProject {
+  if (!isRecord(value)) throw new Error('프로젝트 데이터가 올바르지 않습니다.')
+  return {
+    id: requireImportString(value.id, '프로젝트 ID'),
+    name: requireImportString(value.name, '프로젝트 이름'),
+    description: importOptionalString(value.description, '프로젝트 설명'),
+    nodes: importNodeRows(value.nodes),
+    edges: importEdgeRows(value.edges),
+  }
+}
+
+function importModuleRows(value: unknown): ModuleRow[] {
+  if (!Array.isArray(value)) return []
+  return value.filter(isRecord).map((mod, index) => ({
+    id: importString(mod.id, `module-${index}`),
+    workspaceId: null,
+    type: importString(mod.type, 'data'),
+    label: importString(mod.label, 'DATA'),
+    config: importString(mod.config, ''),
+    isCommon: importBoolean(mod.isCommon, true),
+  })).filter(mod => mod.id.trim() && mod.type === 'data' && mod.isCommon)
+}
+
+function insertImportedCommonModules(modules: ModuleRow[]): Map<string, string> {
+  const moduleIdMap = new Map<string, string>()
+  let sort = nextModuleSort(null, 'data', true)
+  modules.forEach(mod => {
+    if (moduleIdMap.has(mod.id)) return
+    const id = randomUUID()
+    moduleIdMap.set(mod.id, id)
+    db.run(
+      'INSERT INTO modules (id, workspace_id, type, label, config, is_common, sort) VALUES (?, NULL, ?, ?, ?, 1, ?)',
+      [id, 'data', mod.label.trim() || 'DATA', mod.config ?? '', sort]
+    )
+    sort += 1
+  })
+  return moduleIdMap
+}
+
+function insertDefaultProjectNodes(projectId: string): void {
+  db.run('INSERT INTO nodes (id, project_id, type, label, x, y, width, height, config) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)', [randomUUID(), projectId, 'start', 'Start', 80, 160, defaultNodeWidth('start'), defaultNodeHeight('start'), ''])
+  db.run('INSERT INTO nodes (id, project_id, type, label, x, y, width, height, config) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)', [randomUUID(), projectId, 'end', 'End', 520, 160, defaultNodeWidth('end'), defaultNodeHeight('end'), ''])
+}
+
+function insertImportedProject(
+  workspaceId: string,
+  project: TransferProject,
+  sort: number,
+  moduleIdMap: Map<string, string>,
+  usedProjectNames: Set<string>,
+): ProjectRow {
+  const projectId = randomUUID()
+  const projectName = uniqueImportedName(project.name, usedProjectNames, '가져온 프로젝트')
+  db.run(
+    'INSERT INTO projects (id, workspace_id, name, description, sort) VALUES (?, ?, ?, ?, ?)',
+    [projectId, workspaceId, projectName, project.description ?? '', sort]
+  )
+
+  const nodeIdMap = new Map<string, string>()
+  const importedNodes: NodeRow[] = []
+  let importedEdges: EdgeRow[] = []
+  if (project.nodes.length === 0) {
+    insertDefaultProjectNodes(projectId)
+  } else {
+    project.nodes.forEach(node => {
+      const nodeId = randomUUID()
+      nodeIdMap.set(node.id, nodeId)
+      const sharedDataModuleId = readSharedDataModuleId(node.config ?? '')
+      if (sharedDataModuleId && !moduleIdMap.has(sharedDataModuleId)) {
+        throw new Error(`공용 DATA 모듈 참조를 찾을 수 없습니다: ${sharedDataModuleId}`)
+      }
+      const config = remapSharedDataModuleConfig(node.config ?? '', moduleIdMap)
+      importedNodes.push({
+        id: nodeId,
+        projectId,
+        type: node.type,
+        label: node.label,
+        x: node.x,
+        y: node.y,
+        width: node.width ?? defaultNodeWidth(node.type),
+        height: node.height ?? defaultNodeHeight(node.type),
+        config,
+      })
+    })
+
+    importedEdges = validateProjectGraph(
+      projectId,
+      importedNodes,
+      project.edges.flatMap(edge => {
+        const sourceNodeId = nodeIdMap.get(edge.sourceNodeId)
+        const targetNodeId = nodeIdMap.get(edge.targetNodeId)
+        if (!sourceNodeId || !targetNodeId) {
+          throw new Error(`연결선의 노드 참조를 찾을 수 없습니다: ${edge.sourceNodeId} -> ${edge.targetNodeId}`)
+        }
+        return [{
+          id: randomUUID(),
+          projectId,
+          sourceNodeId,
+          targetNodeId,
+          sourcePort: edge.sourcePort ?? null,
+        }]
+      })
+    )
+
+    importedNodes.forEach(node => {
+      db.run(
+        'INSERT INTO nodes (id, project_id, type, label, x, y, width, height, config) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
+        [node.id, projectId, node.type, node.label, node.x, node.y, node.width, node.height, node.config]
+      )
+    })
+  }
+
+  importedEdges.forEach(edge => {
+    db.run(
+      'INSERT INTO edges (id, project_id, source_node_id, target_node_id, source_port) VALUES (?, ?, ?, ?, ?)',
+      [edge.id, projectId, edge.sourceNodeId, edge.targetNodeId, edge.sourcePort]
+    )
+  })
+
+  return { id: projectId, name: projectName, description: project.description ?? '' }
+}
+
+export function importWorkspaceData(payload: unknown): TransferImportResult {
+  const data = assertTransferPayload(payload, 'workspace')
+  const workspace = data.workspace!
+  const workspaceId = randomUUID()
+  const existingWorkspaceNames = new Set(listWorkspaces().map(ws => ws.name))
+  const workspaceName = uniqueImportedName(requireImportString(workspace.name, '워크스페이스 이름'), existingWorkspaceNames, '가져온 워크스페이스')
+  const workspaceDescription = importOptionalString(workspace.description, '워크스페이스 설명')
+  if (!Array.isArray(workspace.projects)) {
+    throw new Error('워크스페이스 프로젝트 목록이 올바르지 않습니다.')
+  }
+  let firstProjectId: string | undefined
+  let firstProjectName: string | undefined
+
+  withTransaction(() => {
+    db.run('INSERT INTO workspaces (id, name, description, sort) VALUES (?, ?, ?, ?)', [
+      workspaceId,
+      workspaceName,
+      workspaceDescription,
+      (queryOne<{ max_sort: number | null }>('SELECT MAX(sort) as max_sort FROM workspaces')?.max_sort ?? -1) + 1,
+    ])
+
+    const envs = importEnvRows(workspace.environments)
+    if (envs.length === 0) {
+      db.run('INSERT INTO environments (id, workspace_id, name, is_base, color, initial, sort) VALUES (?, ?, ?, 1, ?, ?, 0)', [randomUUID(), workspaceId, 'BASE', '#4493f8', ''])
+    } else {
+      envs.forEach((env, envIndex) => {
+        const envId = randomUUID()
+        db.run(
+          'INSERT INTO environments (id, workspace_id, name, is_base, color, initial, sort) VALUES (?, ?, ?, ?, ?, ?, ?)',
+          [envId, workspaceId, env.isBase ? 'BASE' : env.name, env.isBase ? 1 : 0, env.color, env.initial, envIndex]
+        )
+        env.vars.forEach((v, varIndex) => {
+          db.run(
+            'INSERT INTO env_vars (id, environment_id, key, value, enabled, sort) VALUES (?, ?, ?, ?, ?, ?)',
+            [randomUUID(), envId, v.key, v.value, v.enabled ? 1 : 0, varIndex]
+          )
+        })
+      })
+    }
+
+    const moduleIdMap = insertImportedCommonModules(importModuleRows(data.modules))
+    const usedProjectNames = new Set<string>()
+    const projects = workspace.projects.map(project => importProjectShape(project))
+    projects.forEach((project, index) => {
+      const inserted = insertImportedProject(workspaceId, project, index, moduleIdMap, usedProjectNames)
+      if (!firstProjectId) {
+        firstProjectId = inserted.id
+        firstProjectName = inserted.name
+      }
+    })
+  })
+  save()
+
+  return {
+    scope: 'workspace',
+    workspaceId,
+    workspaceName,
+    projectId: firstProjectId,
+    projectName: firstProjectName,
+  }
+}
+
+export function importProjectData(workspaceId: string, payload: unknown): TransferImportResult {
+  ensureWorkspaceExists(workspaceId)
+  const data = assertTransferPayload(payload, 'project')
+  const project = importProjectShape(data.project)
+  let importedProjectId: string | undefined
+  let importedProjectName: string | undefined
+
+  withTransaction(() => {
+    const moduleIdMap = insertImportedCommonModules(importModuleRows(data.modules))
+    const usedProjectNames = new Set(listProjects(workspaceId).map(p => p.name))
+    const inserted = insertImportedProject(workspaceId, project, nextProjectSort(workspaceId), moduleIdMap, usedProjectNames)
+    importedProjectId = inserted.id
+    importedProjectName = inserted.name
+  })
+  save()
+
+  return {
+    scope: 'project',
+    workspaceId,
+    projectId: importedProjectId,
+    projectName: importedProjectName,
+  }
 }

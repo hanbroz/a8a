@@ -1,5 +1,5 @@
 import { useState, type DragEvent } from 'react'
-import { IcoChevD, IcoPlus, IcoPencil, IcoTrash } from '../Icon'
+import { IcoChevD, IcoCopy, IcoPlus, IcoPencil, IcoTrash } from '../Icon'
 import { useSidebarOpen } from '../../hooks/useSidebarOpen'
 import type { ProjectItem } from './ProjectModal'
 
@@ -9,11 +9,12 @@ interface Props {
   onSelect: (id: string) => void
   onAdd: () => void
   onEdit: (project: ProjectItem) => void
+  onDuplicate: (project: ProjectItem) => void
   onDelete: (project: ProjectItem) => void
   onReorder: (orderedIds: string[]) => void
 }
 
-export default function ProjectSection({ projects, activeProjectId, onSelect, onAdd, onEdit, onDelete, onReorder }: Props): JSX.Element {
+export default function ProjectSection({ projects, activeProjectId, onSelect, onAdd, onEdit, onDuplicate, onDelete, onReorder }: Props): JSX.Element {
   const [open, toggleOpen] = useSidebarOpen('project')
   const [draggingId, setDraggingId] = useState<string | null>(null)
   const [dropTargetId, setDropTargetId] = useState<string | null>(null)
@@ -94,6 +95,13 @@ export default function ProjectSection({ projects, activeProjectId, onSelect, on
               >
                 <span className="env-item-dot" />
                 <span className="env-item-name">{proj.name}</span>
+                <button
+                  className="btn ghost icon env-item-edit"
+                  onClick={e => { e.stopPropagation(); onDuplicate(proj) }}
+                  title="복제"
+                >
+                  <IcoCopy size={12} />
+                </button>
                 <button
                   className="btn ghost icon env-item-edit"
                   onClick={e => { e.stopPropagation(); onEdit(proj) }}

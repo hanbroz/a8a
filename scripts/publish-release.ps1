@@ -40,6 +40,9 @@ $tag = "v$Version"
 $setupExe = "dist/a8a-Setup-$Version.exe"
 $setupBlockmap = "dist/a8a-Setup-$Version.exe.blockmap"
 $portableExe = "dist/a8a-Portable-$Version.exe"
+$setupChecksum = "$setupExe.sha256"
+$setupBlockmapChecksum = "$setupBlockmap.sha256"
+$portableChecksum = "$portableExe.sha256"
 
 Invoke-Step "Stamp version: $Version" {
   $env:A8A_UPDATE_GITHUB_REPO = $Repo
@@ -58,6 +61,20 @@ Invoke-Step "Build Windows installer and portable package" {
 foreach ($asset in @($setupExe, $setupBlockmap, $portableExe)) {
   if (-not (Test-Path $asset)) {
     throw "Release asset not found: $asset"
+  }
+}
+
+Invoke-Step "Create Windows checksums" {
+  foreach ($asset in @($setupExe, $setupBlockmap, $portableExe)) {
+    $hash = (Get-FileHash -Algorithm SHA256 $asset).Hash.ToLowerInvariant()
+    $name = Split-Path -Leaf $asset
+    "$hash  $name" | Out-File -FilePath "$asset.sha256" -Encoding ascii
+  }
+}
+
+foreach ($asset in @($setupChecksum, $setupBlockmapChecksum, $portableChecksum)) {
+  if (-not (Test-Path $asset)) {
+    throw "Release checksum asset not found: $asset"
   }
 }
 
@@ -115,6 +132,9 @@ Invoke-Step "Create GitHub Release: $tag" {
     $setupExe `
     $setupBlockmap `
     $portableExe `
+    $setupChecksum `
+    $setupBlockmapChecksum `
+    $portableChecksum `
     --repo $Repo `
     --target $head `
     --latest `

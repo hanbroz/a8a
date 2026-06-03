@@ -10,11 +10,30 @@ permissions:
   contents: write
 
 jobs:
-  windows-release:
+  version:
+    runs-on: ubuntu-latest
+    outputs:
+      app_version: ${{ steps.version.outputs.app_version }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Read app version
+        id: version
+        run: |
+          version=$(node -e "const fs=require('fs'); const text=fs.readFileSync('src/main/appVersion.ts','utf8'); const match=text.match(/APP_VERSION\s*=\s*['\"]([^'\"]+)['\"]/); if(!match){throw new Error('APP_VERSION not found')} console.log(match[1])")
+          if ! printf '%s' "$version" | grep -Eq '^[0-9]{4}\.[0-9]{2}\.[0-9]{2}\.[0-9]{2}\.[0-9]{2}$'; then
+            echo "Invalid APP_VERSION: $version" >&2
+            exit 1
+          fi
+          echo "app_version=$version" >> "$GITHUB_OUTPUT"
+
+  windows-build:
+    needs: version
     runs-on: windows-latest
     env:
+      A8A_APP_VERSION: ${{ needs.version.outputs.app_version }}
       A8A_UPDATE_GITHUB_REPO: ${{ github.repository }}
-      TZ: Asia/Seoul
 
     steps:
       - name: Checkout
@@ -29,22 +48,107 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
-      - name: Stamp date version
-        shell: pwsh
-        run: |
-          $version = Get-Date -Format 'yyyy.MM.dd.HH.mm'
-          "A8A_APP_VERSION=$version" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
-          npm run version:stamp -- $version
+      - name: Stamp app version
+        run: npm run version:stamp -- $env:A8A_APP_VERSION
 
       - name: Build Windows installer
         run: npm run build:win
 
+      - name: Create Windows checksums
+        shell: pwsh
+        run: |
+          $version = "${{ needs.version.outputs.app_version }}"
+          $assets = @(
+            "dist/a8a-Setup-$version.exe",
+            "dist/a8a-Setup-$version.exe.blockmap",
+            "dist/a8a-Portable-$version.exe"
+          )
+          foreach ($asset in $assets) {
+            $hash = (Get-FileHash -Algorithm SHA256 $asset).Hash.ToLowerInvariant()
+            $name = Split-Path -Leaf $asset
+            "$hash  $name" | Out-File -FilePath "$asset.sha256" -Encoding ascii
+          }
+
+      - name: Upload Windows release assets
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-release-assets
+          path: |
+            dist/a8a-Setup-${{ needs.version.outputs.app_version }}.exe
+            dist/a8a-Setup-${{ needs.version.outputs.app_version }}.exe.blockmap
+            dist/a8a-Portable-${{ needs.version.outputs.app_version }}.exe
+            dist/a8a-Setup-${{ needs.version.outputs.app_version }}.exe.sha256
+            dist/a8a-Setup-${{ needs.version.outputs.app_version }}.exe.blockmap.sha256
+            dist/a8a-Portable-${{ needs.version.outputs.app_version }}.exe.sha256
+          if-no-files-found: error
+
+  macos-build:
+    needs: version
+    runs-on: macos-latest
+    env:
+      A8A_APP_VERSION: ${{ needs.version.outputs.app_version }}
+      A8A_UPDATE_GITHUB_REPO: ${{ github.repository }}
+      CSC_IDENTITY_AUTO_DISCOVERY: false
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Stamp app version
+        run: npm run version:stamp -- "$A8A_APP_VERSION"
+
+      - name: Build macOS packages
+        run: npm run build:mac
+
+      - name: Create macOS checksums
+        run: |
+          for asset in dist/a8a-Mac-*-"$A8A_APP_VERSION".dmg dist/a8a-Mac-*-"$A8A_APP_VERSION".zip; do
+            shasum -a 256 "$asset" > "$asset.sha256"
+          done
+
+      - name: Upload macOS release assets
+        uses: actions/upload-artifact@v4
+        with:
+          name: macos-release-assets
+          path: |
+            dist/a8a-Mac-*-${{ needs.version.outputs.app_version }}.dmg
+            dist/a8a-Mac-*-${{ needs.version.outputs.app_version }}.dmg.blockmap
+            dist/a8a-Mac-*-${{ needs.version.outputs.app_version }}.zip
+            dist/a8a-Mac-*-${{ needs.version.outputs.app_version }}.dmg.sha256
+            dist/a8a-Mac-*-${{ needs.version.outputs.app_version }}.zip.sha256
+          if-no-files-found: error
+
+  publish-release:
+    needs:
+      - version
+      - windows-build
+      - macos-build
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ github.token }}
+
+    steps:
+      - name: Download release assets
+        uses: actions/download-artifact@v4
+        with:
+          path: release-assets
+
       - name: Publish GitHub release
         shell: pwsh
-        env:
-          GH_TOKEN: ${{ github.token }}
         run: |
-          $tag = "v$env:A8A_APP_VERSION"
-          $installer = "dist/a8a-Setup-$env:A8A_APP_VERSION.exe"
-          $blockmap = "$installer.blockmap"
-          gh release create $tag $installer $blockmap --latest --title $env:A8A_APP_VERSION --notes "a8a $env:A8A_APP_VERSION"
+          $version = "${{ needs.version.outputs.app_version }}"
+          $tag = "v$version"
+          $assets = Get-ChildItem -Path release-assets -Recurse -File | Select-Object -ExpandProperty FullName
+          if (-not $assets) {
+            throw "No release assets found."
+          }
+          gh release create $tag @assets --latest --title $version --notes "a8a $version"

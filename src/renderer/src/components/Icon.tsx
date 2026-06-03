@@ -133,11 +133,33 @@ export const IcoReset = (p: IconProps): JSX.Element => (
   </Icon>
 )
 
+export const IcoUndo = (p: IconProps): JSX.Element => (
+  <Icon {...p}>
+    <path d="M9 7H4v5" />
+    <path d="M4 12a8 8 0 1 0 2.35-5.65L4 8.7" />
+  </Icon>
+)
+
+export const IcoRedo = (p: IconProps): JSX.Element => (
+  <Icon {...p}>
+    <path d="M15 7h5v5" />
+    <path d="M20 12a8 8 0 1 1-2.35-5.65L20 8.7" />
+  </Icon>
+)
+
 export const IcoDownload = (p: IconProps): JSX.Element => (
   <Icon {...p}>
     <path d="M12 3v12" />
     <path d="m7 10 5 5 5-5" />
     <path d="M5 21h14" />
+  </Icon>
+)
+
+export const IcoUpload = (p: IconProps): JSX.Element => (
+  <Icon {...p}>
+    <path d="M12 21V9" />
+    <path d="m7 14 5-5 5 5" />
+    <path d="M5 3h14" />
   </Icon>
 )
 

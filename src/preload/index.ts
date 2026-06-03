@@ -29,7 +29,9 @@ const api = {
     create: (workspaceId: string, name: string, description: string): Promise<unknown> => ipcRenderer.invoke('proj:create', workspaceId, name, description),
     update: (id: string, name: string, description: string): Promise<void> => ipcRenderer.invoke('proj:update', id, name, description),
     delete: (id: string): Promise<void> => ipcRenderer.invoke('proj:delete', id),
-    reorder: (workspaceId: string, orderedIds: string[]): Promise<void> => ipcRenderer.invoke('proj:reorder', workspaceId, orderedIds)
+    duplicate: (id: string, name: string): Promise<unknown> => ipcRenderer.invoke('proj:duplicate', id, name),
+    reorder: (workspaceId: string, orderedIds: string[]): Promise<void> => ipcRenderer.invoke('proj:reorder', workspaceId, orderedIds),
+    replaceCanvas: (id: string, nodes: ApiNode[], edges: ApiEdge[]): Promise<void> => ipcRenderer.invoke('proj:replace-canvas', id, nodes, edges)
   },
   module: {
     list: (workspaceId: string): Promise<ApiModule[]> => ipcRenderer.invoke('mod:list', workspaceId),
@@ -55,6 +57,12 @@ const api = {
     list: (projectId: string): Promise<{ id: string; projectId: string; sourceNodeId: string; targetNodeId: string }[]> => ipcRenderer.invoke('edge:list', projectId),
     create: (projectId: string, sourceNodeId: string, targetNodeId: string, sourcePort?: string | null): Promise<ApiEdge> => ipcRenderer.invoke('edge:create', projectId, sourceNodeId, targetNodeId, sourcePort),
     delete: (id: string): Promise<void> => ipcRenderer.invoke('edge:delete', id)
+  },
+  transfer: {
+    exportWorkspace: (workspaceId: string): Promise<A8aTransferFileResult> => ipcRenderer.invoke('transfer:export-workspace', workspaceId),
+    exportProject: (projectId: string): Promise<A8aTransferFileResult> => ipcRenderer.invoke('transfer:export-project', projectId),
+    importWorkspace: (): Promise<A8aTransferImportResult> => ipcRenderer.invoke('transfer:import-workspace'),
+    importProject: (workspaceId: string): Promise<A8aTransferImportResult> => ipcRenderer.invoke('transfer:import-project', workspaceId)
   },
   http: {
     fetch: (url: string, options: { method: string; headers: Record<string, string>; body?: string }): Promise<{ status: number; statusText: string; text: string; ok: boolean }> =>

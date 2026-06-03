@@ -1,6 +1,7 @@
 import { lazy, Suspense, useEffect, useMemo, useRef } from 'react'
 import type { BeforeMount, Monaco, OnMount } from '@monaco-editor/react'
 import type { editor } from 'monaco-editor'
+import { useMonacoTheme } from '../../utils/useMonacoTheme'
 
 type JsonTemplateSuggestions = {
   envVarNames?: string[]
@@ -157,6 +158,7 @@ export default function JsonMonacoEditor({
   const uri = useMemo(() => `a8a://json/${path}`, [path])
   const hasValue = value.trim().length > 0
   const language = templateSuggestions ? A8A_JSON_TEMPLATE_LANGUAGE : 'json'
+  const monacoTheme = useMonacoTheme()
 
   useEffect(() => {
     if (!templateSuggestions) {
@@ -182,7 +184,7 @@ export default function JsonMonacoEditor({
           height="100%"
           language={language}
           path={uri}
-          theme="vs-dark"
+          theme={monacoTheme}
           value={value}
           beforeMount={beforeMount}
           onMount={handleMount}

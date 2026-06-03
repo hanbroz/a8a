@@ -68,9 +68,11 @@ function TypeIcon({ type }: { type: CanvasModuleType }): JSX.Element {
 export default function ModulePaletteSection({
   stateKey = 'module-palette',
   title = '공통 모듈',
+  commonDataModules = [],
 }: {
   stateKey?: string
   title?: string
+  commonDataModules?: ApiModule[]
 }): JSX.Element {
   const [open, toggleOpen] = useSidebarOpen(stateKey)
 
@@ -92,22 +94,49 @@ export default function ModulePaletteSection({
       {open && (
         <div className="sidebar-section-body">
           {MODULE_TYPES.map(item => (
-            <div
-              key={item.type}
-              className="module-item module-palette-item"
-              draggable
-              onDragStart={e => {
-                e.dataTransfer.setData('moduleType', item.type)
-                e.dataTransfer.effectAllowed = 'copy'
-              }}
-              title="캔버스에 드래그하여 모듈을 생성합니다."
-            >
-              <div className="module-item-icon" style={{ background: item.bg, color: item.color }}>
-                <TypeIcon type={item.type} />
+            <div key={item.type}>
+              <div
+                className="module-item module-palette-item"
+                draggable
+                onDragStart={e => {
+                  e.dataTransfer.setData('moduleType', item.type)
+                  e.dataTransfer.effectAllowed = 'copy'
+                }}
+                title="캔버스에 드래그하여 독립 모듈을 생성합니다."
+              >
+                <div className="module-item-icon" style={{ background: item.bg, color: item.color }}>
+                  <TypeIcon type={item.type} />
+                </div>
+                <div className="module-item-info">
+                  <span className="module-item-name">{item.label}</span>
+                </div>
               </div>
-              <div className="module-item-info">
-                <span className="module-item-name">{item.label}</span>
-              </div>
+              {item.type === 'data' && commonDataModules.length > 0 && (
+                <div className="module-type-group-body">
+                  {commonDataModules.map(mod => (
+                    <div
+                      key={mod.id}
+                      className="module-item module-item-nested module-palette-item"
+                      draggable
+                      onDragStart={e => {
+                        e.dataTransfer.setData('moduleType', 'data')
+                        e.dataTransfer.setData('moduleId', mod.id)
+                        e.dataTransfer.setData('moduleWsId', '')
+                        e.dataTransfer.effectAllowed = 'copy'
+                      }}
+                      title="캔버스에 드래그하여 공용 DATA를 참조하는 모듈을 생성합니다."
+                    >
+                      <div className="module-item-icon" style={{ background: item.bg, color: item.color }}>
+                        <TypeIcon type="data" />
+                      </div>
+                      <div className="module-item-info">
+                        <span className="module-item-name">{mod.label}</span>
+                        <span className="module-item-meta" style={{ color: item.color, opacity: 0.8 }}>공용 DATA</span>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
             </div>
           ))}
         </div>

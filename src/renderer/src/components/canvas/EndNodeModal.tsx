@@ -1,6 +1,7 @@
 import { useState, useRef, useCallback, useEffect, useMemo } from 'react'
 import { IcoMaximize, IcoRestore, IcoX } from '../Icon'
 import { useModalMaximize } from './useModalMaximize'
+import { resolveEndReportSelectedModuleIds } from '../../utils/endReportSelection'
 
 interface Props {
   node: ApiNode
@@ -29,6 +30,7 @@ function parseConfig(raw: string): ParsedEndConfig {
       savePath: typeof p.savePath === 'string' ? p.savePath : '',
       filenameTemplate: typeof p.filenameTemplate === 'string' && p.filenameTemplate ? p.filenameTemplate : DEFAULT_TEMPLATE,
       selectedModuleIds: Array.isArray(p.selectedModuleIds) ? p.selectedModuleIds : [],
+      reportCandidateModuleIds: Array.isArray(p.reportCandidateModuleIds) ? p.reportCandidateModuleIds.map(String).filter(Boolean) : undefined,
       displayEnvKeys: Array.isArray(p.displayEnvKeys) ? p.displayEnvKeys.map(String).filter(Boolean) : [],
       selectedModuleIdsExplicit,
     }
@@ -46,8 +48,7 @@ export default function EndNodeModal({ node, moduleNodes, envVarKeys, onSave, on
   const [displayEnvKeys, setDisplayEnvKeys] = useState<Set<string>>(() => new Set(initial.displayEnvKeys ?? []))
   const [selectedIds, setSelectedIds] = useState<Set<string>>(() => {
     const allIds = moduleNodes.map(n => n.id)
-    if (!initial.selectedModuleIdsExplicit) return new Set(allIds)
-    return new Set(initial.selectedModuleIds.filter(id => allIds.includes(id)))
+    return resolveEndReportSelectedModuleIds(initial, allIds)
   })
   const [saving, setSaving] = useState(false)
 
@@ -147,6 +148,7 @@ export default function EndNodeModal({ node, moduleNodes, envVarKeys, onSave, on
       savePath: savePath.trim(),
       filenameTemplate: filenameTemplate.trim() || DEFAULT_TEMPLATE,
       selectedModuleIds: Array.from(selectedIds),
+      reportCandidateModuleIds: moduleNodes.map(n => n.id),
       displayEnvKeys: Array.from(displayEnvKeys).filter(key => envVarKeys.includes(key)),
     }
     await onSave(node.id, label.trim() || 'End', JSON.stringify(cfg))

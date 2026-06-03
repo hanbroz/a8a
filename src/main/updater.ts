@@ -1,10 +1,11 @@
-import { app, BrowserWindow, ipcMain } from 'electron'
+import { app, BrowserWindow, ipcMain, shell } from 'electron'
 import { createWriteStream } from 'fs'
-import { mkdir } from 'fs/promises'
+import { mkdir, unlink } from 'fs/promises'
 import { tmpdir } from 'os'
 import { basename, join } from 'path'
 import { spawn } from 'child_process'
 import { once } from 'events'
+import { createHash } from 'crypto'
 import { APP_VERSION, UPDATE_REPOSITORY } from './appVersion'
 
 type UpdateStatus =
@@ -44,6 +45,8 @@ interface AvailableUpdate {
   version: string
   downloadUrl: string
   assetName: string
+  checksumUrl: string
+  checksumAssetName: string
   releaseUrl: string
   size: number
 }
@@ -93,14 +96,87 @@ function isNewerVersion(candidate: string, current: string): boolean {
   return versionToNumber(candidate) > versionToNumber(current)
 }
 
+function platformAssetDescription(): string {
+  if (process.platform === 'win32') return 'Windows 설치 파일(.exe)'
+  if (process.platform === 'darwin') return 'macOS 설치 파일(.dmg 또는 .zip)'
+  return '현재 운영체제용 설치 파일'
+}
+
+function macAssetScore(name: string): number {
+  const normalized = name.toLowerCase()
+  const currentArch = process.arch === 'arm64' ? 'arm64' : 'x64'
+  const isDmg = normalized.endsWith('.dmg')
+  const isZip = normalized.endsWith('.zip')
+  const isCurrentArch = normalized.includes(currentArch)
+  const isUniversal = normalized.includes('universal')
+  const hasAnyArch = normalized.includes('arm64') || normalized.includes('x64')
+
+  if (!isDmg && !isZip) return 0
+  if (isCurrentArch && isDmg) return 60
+  if (isUniversal && isDmg) return 50
+  if (!hasAnyArch && isDmg) return 40
+  if (isCurrentArch && isZip) return 30
+  if (isUniversal && isZip) return 20
+  if (!hasAnyArch && isZip) return 10
+  return 0
+}
+
 function releaseAsset(release: GitHubRelease): GitHubReleaseAsset | null {
-  return release.assets.find(asset => {
+  const assets = release.assets.filter(asset => !asset.name.toLowerCase().endsWith('.blockmap'))
+
+  if (process.platform === 'darwin') {
+    return assets
+      .map(asset => ({ asset, score: macAssetScore(asset.name) }))
+      .filter(candidate => candidate.score > 0)
+      .sort((a, b) => b.score - a.score)[0]?.asset ?? null
+  }
+
+  if (process.platform !== 'win32') {
+    return null
+  }
+
+  return assets.find(asset => {
     const name = asset.name.toLowerCase()
-    return name.endsWith('.exe') && !name.endsWith('.blockmap') && name.includes('setup')
-  }) ?? release.assets.find(asset => {
+    return name.endsWith('.exe') && name.includes('setup')
+  }) ?? assets.find(asset => {
     const name = asset.name.toLowerCase()
-    return name.endsWith('.exe') && !name.endsWith('.blockmap')
+    return name.endsWith('.exe')
   }) ?? null
+}
+
+function releaseChecksumAsset(release: GitHubRelease, assetName: string): GitHubReleaseAsset | null {
+  const normalizedAssetName = assetName.toLowerCase()
+  const exactNames = new Set([
+    `${normalizedAssetName}.sha256`,
+    `${normalizedAssetName}.sha256.txt`,
+    `${normalizedAssetName}.sha256sum`,
+  ])
+  const checksumAssets = release.assets.filter(asset => {
+    const name = asset.name.toLowerCase()
+    return name.endsWith('.sha256') || name.endsWith('.sha256.txt') || name.endsWith('.sha256sum')
+  })
+
+  return checksumAssets.find(asset => exactNames.has(asset.name.toLowerCase())) ?? null
+}
+
+function parseSha256Checksum(content: string, assetName: string): string {
+  const lines = content.split(/\r?\n/).map(line => line.trim()).filter(Boolean)
+  const matchingLine = lines.find(line => line.includes(assetName)) ?? lines[0] ?? ''
+  const checksum = matchingLine.match(/\b[a-fA-F0-9]{64}\b/)?.[0]?.toLowerCase()
+  if (!checksum) throw new Error('업데이트 체크섬 파일이 올바르지 않습니다.')
+  return checksum
+}
+
+async function fetchExpectedSha256(update: AvailableUpdate): Promise<string> {
+  const response = await fetch(update.checksumUrl, {
+    headers: {
+      'User-Agent': `a8a/${APP_VERSION}`,
+    },
+  })
+  if (!response.ok) {
+    throw new Error(`업데이트 체크섬 다운로드 실패: ${response.status} ${response.statusText}`)
+  }
+  return parseSha256Checksum(await response.text(), update.assetName)
 }
 
 async function fetchLatestRelease(): Promise<AvailableUpdate | null> {
@@ -141,13 +217,19 @@ async function fetchLatestRelease(): Promise<AvailableUpdate | null> {
 
   const asset = releaseAsset(release)
   if (!asset) {
-    throw new Error('새 릴리스에 Windows 설치 파일(.exe)이 없습니다.')
+    throw new Error(`새 릴리스에 ${platformAssetDescription()}이 없습니다.`)
+  }
+  const checksumAsset = releaseChecksumAsset(release, asset.name)
+  if (!checksumAsset) {
+    throw new Error(`새 릴리스에 ${asset.name} 체크섬 파일(.sha256)이 없습니다.`)
   }
 
   return {
     version,
     downloadUrl: asset.browser_download_url,
     assetName: asset.name,
+    checksumUrl: checksumAsset.browser_download_url,
+    checksumAssetName: checksumAsset.name,
     releaseUrl: release.html_url,
     size: asset.size,
   }
@@ -179,6 +261,8 @@ async function downloadUpdate(update: AvailableUpdate): Promise<void> {
 
     const total = Number(response.headers.get('content-length') ?? update.size)
     let received = 0
+    const expectedSha256 = await fetchExpectedSha256(update)
+    const hash = createHash('sha256')
     const writer = createWriteStream(installerPath)
     const reader = response.body.getReader()
 
@@ -187,6 +271,7 @@ async function downloadUpdate(update: AvailableUpdate): Promise<void> {
         const { done, value } = await reader.read()
         if (done) break
         received += value.length
+        hash.update(value)
         if (!writer.write(value)) await once(writer, 'drain')
         if (total > 0) {
           setUpdateState({
@@ -204,12 +289,20 @@ async function downloadUpdate(update: AvailableUpdate): Promise<void> {
       if (!writer.closed) writer.destroy()
     }
 
+    const actualSha256 = hash.digest('hex').toLowerCase()
+    if (actualSha256 !== expectedSha256) {
+      await unlink(installerPath).catch(() => {})
+      throw new Error('업데이트 파일 체크섬이 일치하지 않습니다. 다운로드한 파일을 삭제했습니다.')
+    }
+
     downloadedInstallerPath = installerPath
     setUpdateState({
       status: 'downloaded',
       availableVersion: update.version,
       progress: 100,
-      message: '업데이트 다운로드가 완료되었습니다. 재시작하면 설치를 진행합니다.',
+      message: process.platform === 'darwin'
+        ? '업데이트 다운로드가 완료되었습니다. 적용하면 macOS 설치 파일을 엽니다.'
+        : '업데이트 다운로드가 완료되었습니다. 재시작하면 설치를 진행합니다.',
     })
   })().finally(() => {
     downloadPromise = null
@@ -282,8 +375,26 @@ export function registerUpdaterIpcHandlers(): void {
     }
   })
 
-  ipcMain.handle('update:install', () => {
+  ipcMain.handle('update:install', async () => {
     if (!downloadedInstallerPath) return { ...updateState }
+    if (process.platform === 'darwin') {
+      const errorMessage = await shell.openPath(downloadedInstallerPath)
+      if (errorMessage) throw new Error(errorMessage)
+      return setUpdateState({
+        status: 'downloaded',
+        message: 'macOS 설치 파일을 열었습니다. a8a를 종료한 뒤 새 앱으로 교체하세요.',
+      })
+    }
+
+    if (process.platform !== 'win32') {
+      const errorMessage = await shell.openPath(downloadedInstallerPath)
+      if (errorMessage) throw new Error(errorMessage)
+      return setUpdateState({
+        status: 'downloaded',
+        message: '설치 파일을 열었습니다.',
+      })
+    }
+
     const child = spawn(downloadedInstallerPath, [], {
       detached: true,
       stdio: 'ignore',

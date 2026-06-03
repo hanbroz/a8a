@@ -8,6 +8,8 @@ import { randomId } from '../../utils/id'
 import { applyInputMappings, getInputPathSuggestions, parseTemplate, resolveInputExpression, resolveTemplate } from '../../utils/interpolate'
 import { API_AUTH_TYPES, DEFAULT_API_AUTH, applyApiAuth, getApiAuthTemplateValues, normalizeApiAuth } from '../../utils/apiAuth'
 import { isScriptRuntimeError, runPostResponse, runPreRequest } from '../../utils/scriptRuntime'
+import { useMonacoTheme } from '../../utils/useMonacoTheme'
+import { DEFAULT_POST_RESPONSE_SCRIPT, DEFAULT_PRE_REQUEST_SCRIPT } from '../../utils/scriptTemplates'
 import type { Token } from '../../utils/interpolate'
 import type { ScriptConsoleEntry } from '../../utils/scriptRuntime'
 import type { BeforeMount, Monaco } from '@monaco-editor/react'
@@ -869,6 +871,7 @@ export default function ApiNodeModal({
   envVars = {}, dataVars, onRun, onSave, onDelete, onClose,
 }: Props): JSX.Element {
   const initial = parseConfig(node.config)
+  const monacoTheme = useMonacoTheme()
   const inputPickerExpandedStorageKey = `api-input-picker-expanded-${node.id}`
   const [moduleName, setModuleName] = useState(node.label)
   const [method, setMethod] = useState<ApiConfig['method']>(initial.method)
@@ -882,8 +885,8 @@ export default function ApiNodeModal({
   const [body, setBody] = useState(initial.body)
   const [bodyType] = useState<ApiConfig['bodyType']>(initial.bodyType)
   const [auth, setAuth] = useState<ApiAuthConfig>(() => normalizeApiAuth(initial.auth))
-  const [preScript, setPreScript] = useState<string>(initial.preScript ?? '')
-  const [postScript, setPostScript] = useState<string>(initial.postScript ?? '')
+  const [preScript, setPreScript] = useState<string>(() => initial.preScript?.trim() ? initial.preScript : DEFAULT_PRE_REQUEST_SCRIPT)
+  const [postScript, setPostScript] = useState<string>(() => initial.postScript?.trim() ? initial.postScript : DEFAULT_POST_RESPONSE_SCRIPT)
   const [inputMappings, setInputMappings] = useState<Record<string, string>>(initial.inputMappings ?? {})
   const [activeTab, setActiveTab] = useState<SettingsTab>(() => hasBody(initial.method) ? 'body' : 'auth')
   const [prePaneTab, setPrePaneTab] = useState<ScriptPaneTab>('script')
@@ -1471,7 +1474,7 @@ export default function ApiNodeModal({
                         height="100%"
                         language="javascript"
                         path={`a8a://api-script/${node.id}/pre-request.js`}
-                        theme="vs-dark"
+                        theme={monacoTheme}
                         value={preScript}
                         beforeMount={beforeApiScriptEditorMount}
                         onChange={(v: string | undefined) => setPreScript(v ?? '')}
@@ -1843,7 +1846,7 @@ export default function ApiNodeModal({
                         height="100%"
                         language="javascript"
                         path={`a8a://api-script/${node.id}/post-response.js`}
-                        theme="vs-dark"
+                        theme={monacoTheme}
                         value={postScript}
                         beforeMount={beforeApiScriptEditorMount}
                         onChange={(v: string | undefined) => setPostScript(v ?? '')}

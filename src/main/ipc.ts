@@ -1,5 +1,5 @@
 import { ipcMain, app, dialog, BrowserWindow, shell } from 'electron'
-import { writeFile } from 'fs/promises'
+import { readFile, writeFile } from 'fs/promises'
 import { basename, dirname, extname, isAbsolute, join, relative, resolve } from 'path'
 import * as db from './db'
 import type { EnvRow } from './db'
@@ -17,6 +17,59 @@ function isInsideDir(filePath: string, dirPath: string): boolean {
 
 function rememberWriteDir(path: string): void {
   allowedWriteDirs.add(normalizePath(path))
+}
+
+function safeExportFilePart(value: string): string {
+  const cleaned = value
+    .trim()
+    .replace(/[\\/:*?"<>|]+/g, '_')
+    .replace(/\s+/g, '_')
+    .replace(/^_+|_+$/g, '')
+  return cleaned || 'a8a'
+}
+
+async function saveTransferPayload(
+  sender: Electron.WebContents,
+  payload: db.TransferPayload,
+  defaultName: string,
+): Promise<{ ok: true; path: string } | { ok: false; canceled?: boolean; error?: string }> {
+  try {
+    const win = BrowserWindow.fromWebContents(sender)
+    const defaultPath = join(app.getPath('downloads'), `${safeExportFilePart(defaultName)}.json`)
+    const opts: Electron.SaveDialogOptions = {
+      title: 'a8a 내보내기',
+      defaultPath,
+      filters: [{ name: 'a8a Export JSON', extensions: ['json'] }],
+    }
+    const result = win ? await dialog.showSaveDialog(win, opts) : await dialog.showSaveDialog(opts)
+    if (result.canceled || !result.filePath) return { ok: false, canceled: true }
+    const targetPath = normalizePath(result.filePath)
+    await writeFile(targetPath, JSON.stringify(payload, null, 2), 'utf-8')
+    rememberWriteDir(dirname(targetPath))
+    return { ok: true, path: targetPath }
+  } catch (err) {
+    return { ok: false, error: String((err as Error)?.message ?? err) }
+  }
+}
+
+async function openTransferPayload(
+  sender: Electron.WebContents,
+): Promise<{ ok: true; payload: unknown } | { ok: false; canceled?: boolean; error?: string }> {
+  try {
+    const win = BrowserWindow.fromWebContents(sender)
+    const opts: Electron.OpenDialogOptions = {
+      title: 'a8a 가져오기',
+      properties: ['openFile'],
+      filters: [{ name: 'a8a Export JSON', extensions: ['json'] }],
+    }
+    const result = win ? await dialog.showOpenDialog(win, opts) : await dialog.showOpenDialog(opts)
+    if (result.canceled || result.filePaths.length === 0) return { ok: false, canceled: true }
+    const sourcePath = normalizePath(result.filePaths[0])
+    const content = await readFile(sourcePath, 'utf-8')
+    return { ok: true, payload: JSON.parse(content) as unknown }
+  } catch (err) {
+    return { ok: false, error: String((err as Error)?.message ?? err) }
+  }
 }
 
 export function registerIpcHandlers(): void {
@@ -38,7 +91,9 @@ export function registerIpcHandlers(): void {
   ipcMain.handle('proj:create', (_, workspaceId: string, name: string, description: string) => db.createProject(workspaceId, name, description))
   ipcMain.handle('proj:update', (_, id: string, name: string, description: string) => db.updateProject(id, name, description))
   ipcMain.handle('proj:delete', (_, id: string) => db.deleteProject(id))
+  ipcMain.handle('proj:duplicate', (_, id: string, name: string) => db.duplicateProject(id, name))
   ipcMain.handle('proj:reorder', (_, workspaceId: string, orderedIds: string[]) => db.reorderProjects(workspaceId, orderedIds))
+  ipcMain.handle('proj:replace-canvas', (_, id: string, nodes: db.NodeRow[], edges: db.EdgeRow[]) => db.replaceProjectCanvas(id, nodes, edges))
 
   // ── Module ──
   ipcMain.handle('mod:list', (_, workspaceId: string) => db.listModules(workspaceId))
@@ -64,6 +119,36 @@ export function registerIpcHandlers(): void {
   ipcMain.handle('edge:list', (_, projectId: string) => db.listEdges(projectId))
   ipcMain.handle('edge:create', (_, projectId: string, sourceNodeId: string, targetNodeId: string, sourcePort?: string | null) => db.createEdge(projectId, sourceNodeId, targetNodeId, sourcePort))
   ipcMain.handle('edge:delete', (_, id: string) => db.deleteEdge(id))
+
+  // ── Import / Export ──
+  ipcMain.handle('transfer:export-workspace', async (e, workspaceId: string) => {
+    const payload = db.exportWorkspaceData(workspaceId)
+    const workspaceName = payload.workspace?.name ?? 'workspace'
+    return saveTransferPayload(e.sender, payload, `a8a_workspace_${workspaceName}`)
+  })
+  ipcMain.handle('transfer:export-project', async (e, projectId: string) => {
+    const payload = db.exportProjectData(projectId)
+    const projectName = payload.project?.name ?? 'project'
+    return saveTransferPayload(e.sender, payload, `a8a_project_${projectName}`)
+  })
+  ipcMain.handle('transfer:import-workspace', async (e) => {
+    const opened = await openTransferPayload(e.sender)
+    if (!opened.ok) return opened
+    try {
+      return { ok: true as const, result: db.importWorkspaceData(opened.payload) }
+    } catch (err) {
+      return { ok: false as const, error: String((err as Error)?.message ?? err) }
+    }
+  })
+  ipcMain.handle('transfer:import-project', async (e, workspaceId: string) => {
+    const opened = await openTransferPayload(e.sender)
+    if (!opened.ok) return opened
+    try {
+      return { ok: true as const, result: db.importProjectData(workspaceId, opened.payload) }
+    } catch (err) {
+      return { ok: false as const, error: String((err as Error)?.message ?? err) }
+    }
+  })
 
   // ── HTTP Fetch (CORS-free via main process) ──
   ipcMain.handle('http:fetch', async (_, url: string, options: { method: string; headers: Record<string, string>; body?: string }) => {

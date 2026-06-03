@@ -1,5 +1,10 @@
 import { useState } from 'react'
-import { IcoHelpCircle, IcoX } from '../Icon'
+import { IcoCopy, IcoHelpCircle, IcoX } from '../Icon'
+import {
+  POST_OUTPUT_OBJECT_EXAMPLE,
+  POST_RESPONSE_EXAMPLE,
+  PRE_REQUEST_EXAMPLE,
+} from '../../utils/scriptTemplates'
 
 type ScriptPhase = 'pre' | 'post'
 
@@ -7,39 +12,60 @@ interface ScriptHelpButtonProps {
   phase: ScriptPhase
 }
 
-const PRE_REQUEST_EXAMPLE = `const input = getInput()
+function copyTextFallback(text: string): Promise<void> {
+  const textarea = document.createElement('textarea')
+  textarea.value = text
+  textarea.setAttribute('readonly', '')
+  textarea.style.position = 'fixed'
+  textarea.style.left = '-9999px'
+  textarea.style.opacity = '0'
+  document.body.appendChild(textarea)
+  textarea.select()
+  try {
+    return document.execCommand('copy') ? Promise.resolve() : Promise.reject(new Error('copy failed'))
+  } finally {
+    document.body.removeChild(textarea)
+  }
+}
 
-// API URL, Header, Body에서 [[customerId]] 또는 <<customerId>>로 사용할 수 있습니다.
-setInput("customerId", input.customerId)
-
-// 이후 요청에서 {{token}}으로 사용할 수 있습니다.
-setEnv("token", input.token)
-
-console.log("customerId", input.customerId)`
-
-const POST_RESPONSE_EXAMPLE = `const output = getOutput()
-
-// OUTPUT 전체를 단순한 객체로 교체합니다.
-setOutput({
-  orderId: output.orderId,
-  currencyCode: output.currencyCode
-})
-
-// 또는 이름/값 형태로 OUTPUT 필드를 추가할 수 있습니다.
-setOutput("orderId", output.orderId)`
-
-const POST_OUTPUT_OBJECT_EXAMPLE = `const output = getOutput()
-const next = new Output()
-
-next.add("from", output.results?.[0]?.trips?.[0])
-next.add("to", output.results?.[1]?.trips?.[0])
-
-setOutput(next)`
+function copyText(text: string): Promise<void> {
+  if (navigator.clipboard?.writeText) {
+    return navigator.clipboard.writeText(text).catch(() => copyTextFallback(text))
+  }
+  return copyTextFallback(text)
+}
 
 export default function ScriptHelpButton({ phase }: ScriptHelpButtonProps): JSX.Element {
   const [open, setOpen] = useState(false)
+  const [copiedId, setCopiedId] = useState<string | null>(null)
   const isPre = phase === 'pre'
   const title = isPre ? 'PRE REQUEST 스크립트 도움말' : 'POST RESPONSE 스크립트 도움말'
+  const copyExample = async (id: string, code: string): Promise<void> => {
+    try {
+      await copyText(code)
+      setCopiedId(id)
+      window.setTimeout(() => setCopiedId(current => current === id ? null : current), 1400)
+    } catch {
+      setCopiedId(null)
+    }
+  }
+  const renderExample = (id: string, label: string, code: string): JSX.Element => (
+    <div className="script-help-example">
+      <div className="script-help-example-hd">
+        <div className="script-help-section-title">{label}</div>
+        <button
+          type="button"
+          className={`btn ghost script-help-copy${copiedId === id ? ' copied' : ''}`}
+          onClick={() => void copyExample(id, code)}
+          title="예제 코드 복사"
+        >
+          <IcoCopy size={12} />
+          {copiedId === id ? '복사됨' : '복사'}
+        </button>
+      </div>
+      <pre className="script-help-code">{code}</pre>
+    </div>
+  )
 
   return (
     <>
@@ -93,13 +119,9 @@ export default function ScriptHelpButton({ phase }: ScriptHelpButtonProps): JSX.
               </div>
 
               <div className="script-help-section">
-                <div className="script-help-section-title">예제</div>
-                <pre className="script-help-code">{isPre ? PRE_REQUEST_EXAMPLE : POST_RESPONSE_EXAMPLE}</pre>
+                {renderExample(isPre ? 'pre-main' : 'post-main', '예제', isPre ? PRE_REQUEST_EXAMPLE : POST_RESPONSE_EXAMPLE)}
                 {!isPre && (
-                  <>
-                    <div className="script-help-section-title script-help-section-title-secondary">Output 객체 예제</div>
-                    <pre className="script-help-code">{POST_OUTPUT_OBJECT_EXAMPLE}</pre>
-                  </>
+                  renderExample('post-output-object', 'Output 객체 예제', POST_OUTPUT_OBJECT_EXAMPLE)
                 )}
               </div>
             </div>

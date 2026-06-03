@@ -8,9 +8,10 @@ import { useModalMaximize } from './useModalMaximize'
 interface Props {
   node: ApiNode
   isNew?: boolean
+  sharedDataModule?: ApiModule | null
   initialInput?: string
   onRun?: () => string | Promise<string>
-  onSave: (nodeId: string, label: string, config: string) => Promise<void>
+  onSave: (nodeId: string, label: string, config: string, options?: { shareAsCommonData?: boolean }) => Promise<void>
   onDelete?: () => Promise<void>
   onClose: () => void
 }
@@ -103,15 +104,16 @@ interface ExcelInfo {
   rowCount: number
 }
 
-export default function DataNodeModal({ node, isNew, initialInput, onRun, onSave, onDelete, onClose }: Props): JSX.Element {
-  const initial = parseConfig(node.config)
-  const [moduleName, setModuleName] = useState(node.label)
+export default function DataNodeModal({ node, isNew, sharedDataModule, initialInput, onRun, onSave, onDelete, onClose }: Props): JSX.Element {
+  const initial = parseConfig(sharedDataModule?.config ?? node.config)
+  const [moduleName, setModuleName] = useState(sharedDataModule?.label ?? node.label)
   const [outputJson, setOutputJson] = useState(initial.output)
   const [outputError, setOutputError] = useState(false)
   const [excelInfo, setExcelInfo] = useState<ExcelInfo | null>(null)
   const [saving, setSaving] = useState(false)
   const [dragOver, setDragOver] = useState(false)
   const [confirmDelete, setConfirmDelete] = useState(false)
+  const [shareAsCommonData, setShareAsCommonData] = useState(!!sharedDataModule)
 
   const [inputJson, setInputJson] = useState(initialInput ?? '')
   const [inputError, setInputError] = useState(false)
@@ -136,14 +138,15 @@ export default function DataNodeModal({ node, isNew, initialInput, onRun, onSave
   const [rightW, setRightW] = useState(() => Math.round(rect.w / 3))
 
   useEffect(() => {
-    const nextInitial = parseConfig(node.config)
-    setModuleName(node.label)
+    const nextInitial = parseConfig(sharedDataModule?.config ?? node.config)
+    setModuleName(sharedDataModule?.label ?? node.label)
     setOutputJson(nextInitial.output)
     setOutputError(false)
     setInputJson(initialInput ?? '')
     setInputError(false)
     setExcelInfo(null)
-  }, [node.id, node.label, node.config, initialInput])
+    setShareAsCommonData(!!sharedDataModule)
+  }, [node.id, node.label, node.config, sharedDataModule?.id, sharedDataModule?.label, sharedDataModule?.config, initialInput])
 
   const onHeaderDown = useCallback((e: React.MouseEvent) => {
     if (isMaximized) return
@@ -282,7 +285,7 @@ export default function DataNodeModal({ node, isNew, initialInput, onRun, onSave
     }
     const config: DataConfig = { output: result.value }
     const nextModuleName = moduleName.trim() || 'DATA'
-    await onSave(node.id, nextModuleName, JSON.stringify(config))
+    await onSave(node.id, nextModuleName, JSON.stringify(config), { shareAsCommonData })
     setSaving(false); onClose()
   }
 
@@ -378,6 +381,22 @@ export default function DataNodeModal({ node, isNew, initialInput, onRun, onSave
                 <div className="dm-field">
                   <label className="dm-field-label">모듈 이름</label>
                   <input className="dm-input" value={moduleName} onChange={e => setModuleName(e.target.value)} placeholder="DATA" autoFocus />
+                </div>
+
+                <div className="dm-field">
+                  <label className="sn-repeat-check">
+                    <input
+                      type="checkbox"
+                      checked={shareAsCommonData}
+                      onChange={e => setShareAsCommonData(e.target.checked)}
+                    />
+                    <span>공용 DATA로 공유</span>
+                  </label>
+                  <div className="dm-hint">
+                    {shareAsCommonData
+                      ? '이 DATA를 사용하는 모든 프로젝트의 DATA 모듈이 같은 데이터를 사용합니다.'
+                      : '체크하지 않으면 이 캔버스의 DATA 모듈만 독립적으로 저장됩니다.'}
+                  </div>
                 </div>
 
                 {/* Excel upload — populates OUTPUT on success; info chip is local-only */}

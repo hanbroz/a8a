@@ -12,6 +12,7 @@ import {
 } from './ApiNodeModal'
 import { useModalMaximize } from './useModalMaximize'
 import { isScriptRuntimeError, runPostResponse, runPreRequest } from '../../utils/scriptRuntime'
+import { useMonacoTheme } from '../../utils/useMonacoTheme'
 import type { ScriptConsoleEntry } from '../../utils/scriptRuntime'
 
 interface Props {
@@ -30,12 +31,22 @@ interface Props {
 
 type ResizeDir = 'n' | 'ne' | 'e' | 'se' | 's' | 'sw' | 'w' | 'nw'
 type ScriptPaneTab = 'script' | 'console'
+type SelectInputViewMode = 'json' | 'tree' | 'table'
 
 const MIN_W = 600
 const MIN_H = 360
 const RESIZE_DIRS: ResizeDir[] = ['n', 'ne', 'e', 'se', 's', 'sw', 'w', 'nw']
 const EMPTY_SCRIPT_LOGS: ScriptConsoleEntry[] = []
 type SelectSelectionType = NonNullable<SelectConfig['selectionType']>
+
+function selectModeFromViewMode(viewMode: SelectInputViewMode): NonNullable<SelectConfig['selectMode']> {
+  return viewMode === 'table' ? 'table' : 'json'
+}
+
+function initialSelectInputViewMode(selectMode: SelectConfig['selectMode'], inputJson?: string): SelectInputViewMode {
+  if (selectMode === 'table' && inputJson && parseTableData(inputJson)) return 'table'
+  return 'tree'
+}
 
 function hasPreRequestScript(script?: string): boolean {
   return typeof script === 'string' && script.trim().length > 0
@@ -286,6 +297,7 @@ export default function SelectNodeModal({
   onClose,
 }: Props): JSX.Element {
   const initial = parseConfig(node.config)
+  const monacoTheme = useMonacoTheme()
   const [moduleName, setModuleName] = useState(node.label)
   const [selectionType, setSelectionType] = useState<SelectSelectionType>(initial.selectionType ?? 'multiple')
   const [selectedRowIndices, setSelectedRowIndices] = useState<number[]>(normalizeSelection(initial.selectedRowIndices, selectionType))
@@ -298,12 +310,9 @@ export default function SelectNodeModal({
   const [confirmDelete, setConfirmDelete] = useState(false)
   const [inputJson, setInputJson] = useState(initialInput ?? '')
   const [inputError, setInputError] = useState(false)
-  const [viewMode, setViewMode] = useState<'json' | 'table'>(() => {
-    if (initial.selectMode === 'json') return 'json'
-    if (initial.selectMode === 'table' && initialInput && parseTableData(initialInput)) return 'table'
-    if (initialInput && parseTableData(initialInput)) return 'table'
-    return 'json'
-  })
+  const [viewMode, setViewMode] = useState<SelectInputViewMode>(() =>
+    initialSelectInputViewMode(initial.selectMode, initialInput),
+  )
   const [outputOverride, setOutputOverride] = useState<{ source: string; value: string } | null>(null)
   const [scriptOutputOverride, setScriptOutputOverride] = useState<{ source: string; value: string } | null>(() =>
     initialOutput ? { source: '', value: initialOutput } : null,
@@ -328,11 +337,7 @@ export default function SelectNodeModal({
     setAutoSelect(nextInitial.autoSelect ?? false)
     setInputJson(initialInput ?? '')
     setInputError(false)
-    setViewMode(() => {
-      if (nextInitial.selectMode === 'json') return 'json'
-      if (nextInitial.selectMode === 'table' && initialInput && parseTableData(initialInput)) return 'table'
-      return initialInput && parseTableData(initialInput) ? 'table' : 'json'
-    })
+    setViewMode(() => initialSelectInputViewMode(nextInitial.selectMode, initialInput))
     setOutputOverride(null)
     setScriptOutputOverride(initialOutput ? { source: '', value: initialOutput } : null)
     setPreScript(nextInitial.preScript ?? '')
@@ -532,7 +537,7 @@ export default function SelectNodeModal({
     const result = await onRun()
     setInputJson(result)
     setInputError(false)
-    setViewMode(prev => prev === 'json' ? 'json' : parseTableData(result) ? 'table' : 'json')
+    setViewMode(prev => prev === 'table' ? (parseTableData(result) ? 'table' : 'tree') : prev)
     setOutputOverride(null)
     setScriptOutputOverride(null)
     setScriptError(null)
@@ -552,7 +557,7 @@ export default function SelectNodeModal({
       ...initial,
       selectedRowIndices: normalizeSelection(selectedRowIndices, effectiveSelectionType),
       selectedJsonPaths: normalizeSelection(selectedJsonPathIds, effectiveSelectionType),
-      selectMode: viewMode,
+      selectMode: selectModeFromViewMode(viewMode),
       selectionType: effectiveSelectionType,
       autoSelect,
       preScript,
@@ -566,9 +571,9 @@ export default function SelectNodeModal({
 
   const outputJson = activeSelectionType === 'script'
     ? '[]'
-    : viewMode === 'json'
-      ? buildSelectedJsonArray(inputJson, normalizeSelection(selectedJsonPathIds, activeSelectionType))
-      : inputRows ? buildOutputJson(inputRows, normalizeSelection(selectedRowIndices, activeSelectionType)) : '[]'
+    : viewMode === 'table'
+      ? inputRows ? buildOutputJson(inputRows, normalizeSelection(selectedRowIndices, activeSelectionType)) : '[]'
+      : buildSelectedJsonArray(inputJson, normalizeSelection(selectedJsonPathIds, activeSelectionType))
   const formattedOutputJson = outputOverride?.source === outputJson ? outputOverride.value : outputJson
   const displayedOutputJson = scriptOutputOverride && (scriptOutputOverride.source === outputJson || scriptOutputOverride.source === '')
     ? scriptOutputOverride.value
@@ -663,7 +668,7 @@ export default function SelectNodeModal({
                   <JsonInspectorButton
                     title={`${moduleName || 'SELECT'} INPUT`}
                     value={inputJson}
-                    defaultMode={viewMode === 'json' ? 'tree' : 'json'}
+                    defaultMode={viewMode === 'tree' ? 'tree' : 'json'}
                     disabled={!inputJson.trim()}
                   />
                   <div className="sm-view-toggle">
@@ -671,6 +676,10 @@ export default function SelectNodeModal({
                       className={`sm-view-btn${viewMode === 'json' ? ' active' : ''}`}
                       onClick={() => { setViewMode('json'); setScriptOutputOverride(null); setScriptError(null) }}
                     >JSON</button>
+                    <button
+                      className={`sm-view-btn${viewMode === 'tree' ? ' active' : ''}`}
+                      onClick={() => { setViewMode('tree'); setScriptOutputOverride(null); setScriptError(null) }}
+                    >TREE</button>
                     <button
                       className={`sm-view-btn${viewMode === 'table' ? ' active' : ''}`}
                       onClick={() => { setViewMode('table'); setScriptOutputOverride(null); setScriptError(null) }}
@@ -692,45 +701,45 @@ export default function SelectNodeModal({
               </div>
               <div className="dm-pane-body">
                 {viewMode === 'json' ? (
-                  jsonParseError ? (
-                    <JsonMonacoEditor
-                      path={`${node.id}/select-input.json`}
-                      value={inputJson}
-                      onChange={handleInputChange}
-                      error={inputError || jsonParseError}
-                      placeholder='[{"column1": "value"}]'
-                    />
-                  ) : (
-                    <div className="sp-json-tree sm-json-select-tree">
-                      {visibleJsonNodes.map(jsonNode => {
-                        const selected = selectedJsonPathIds.includes(jsonNode.id)
-                        const expanded = expandedJsonIds.has(jsonNode.id)
-                        return (
-                          <button
-                            key={jsonNode.id}
-                            className={`sp-json-node${selected ? ' sp-json-node-selected' : ''}`}
-                            style={{ paddingLeft: 12 + jsonNode.depth * 18 }}
-                            onClick={() => toggleJsonNode(jsonNode)}
+                  <JsonMonacoEditor
+                    path={`${node.id}/select-input.json`}
+                    value={inputJson}
+                    onChange={handleInputChange}
+                    error={inputError || jsonParseError}
+                    placeholder='[{"column1": "value"}]'
+                  />
+                ) : viewMode === 'tree' ? (
+                  <div className="sp-json-tree sm-json-select-tree">
+                    {visibleJsonNodes.length > 0 ? visibleJsonNodes.map(jsonNode => {
+                      const selected = selectedJsonPathIds.includes(jsonNode.id)
+                      const expanded = expandedJsonIds.has(jsonNode.id)
+                      return (
+                        <button
+                          key={jsonNode.id}
+                          className={`sp-json-node${selected ? ' sp-json-node-selected' : ''}`}
+                          style={{ paddingLeft: 12 + jsonNode.depth * 18 }}
+                          onClick={() => toggleJsonNode(jsonNode)}
+                        >
+                          <span
+                            className={`sp-json-expander${jsonNode.hasChildren ? ' sp-json-expander-visible' : ''}`}
+                            onClick={(e) => {
+                              e.stopPropagation()
+                              if (jsonNode.hasChildren) toggleJsonExpanded(jsonNode.id)
+                            }}
                           >
-                            <span
-                              className={`sp-json-expander${jsonNode.hasChildren ? ' sp-json-expander-visible' : ''}`}
-                              onClick={(e) => {
-                                e.stopPropagation()
-                                if (jsonNode.hasChildren) toggleJsonExpanded(jsonNode.id)
-                              }}
-                            >
-                              {jsonNode.hasChildren ? (expanded ? '-' : '+') : ''}
-                            </span>
-                            <span className={`sm-col-check${activeSelectionType === 'single' ? ' sm-col-check-radio' : ''}${selected ? ' checked' : ''}`} />
-                            <span className="sp-json-key">{jsonNode.key}</span>
-                            <span className="sp-json-type">{jsonNode.type}</span>
-                            <span className="sp-json-path">{jsonNode.id}</span>
-                            <span className="sp-json-preview">{valuePreview(jsonNode.value)}</span>
-                          </button>
-                        )
-                      })}
-                    </div>
-                  )
+                            {jsonNode.hasChildren ? (expanded ? '-' : '+') : ''}
+                          </span>
+                          <span className={`sm-col-check${activeSelectionType === 'single' ? ' sm-col-check-radio' : ''}${selected ? ' checked' : ''}`} />
+                          <span className="sp-json-key">{jsonNode.key}</span>
+                          <span className="sp-json-type">{jsonNode.type}</span>
+                          <span className="sp-json-path">{jsonNode.id}</span>
+                          <span className="sp-json-preview">{valuePreview(jsonNode.value)}</span>
+                        </button>
+                      )
+                    }) : (
+                      <div className="sm-col-empty">표시할 JSON 데이터가 없습니다.</div>
+                    )}
+                  </div>
                 ) : (
                   <div className="sm-input-table">
                     {inputRows && inputRows.length > 0 ? (
@@ -802,7 +811,7 @@ export default function SelectNodeModal({
                         height="100%"
                         language="javascript"
                         path={`a8a://api-script/${node.id}/pre-request.js`}
-                        theme="vs-dark"
+                        theme={monacoTheme}
                         value={preScript}
                         beforeMount={beforeApiScriptEditorMount}
                         onChange={(v: string | undefined) => setPreScript(v ?? '')}
@@ -875,7 +884,7 @@ export default function SelectNodeModal({
                   <span style={{ fontSize: 12, color: 'var(--text-2)' }}>
                     {activeSelectionType === 'script'
                       ? 'PRE REQUEST SCRIPT 에서 결정'
-                      : viewMode === 'json'
+                      : viewMode !== 'table'
                       ? selectedJsonPathIds.length > 0 ? `${selectedJsonPathIds.length}개 JSON 노드 선택됨` : '미선택'
                       : `${selectedRowIndices.length > 0 ? `${selectedRowIndices.length}개 행 선택됨` : '미선택'} / 전체 ${totalRows}행`}
                   </span>
@@ -982,7 +991,7 @@ export default function SelectNodeModal({
                         height="100%"
                         language="javascript"
                         path={`a8a://api-script/${node.id}/post-response.js`}
-                        theme="vs-dark"
+                        theme={monacoTheme}
                         value={postScript}
                         beforeMount={beforeApiScriptEditorMount}
                         onChange={(v: string | undefined) => setPostScript(v ?? '')}

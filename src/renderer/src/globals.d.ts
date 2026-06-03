@@ -53,6 +53,7 @@ declare global {
 
   interface DataConfig {
     output: string
+    sharedDataModuleId?: string
   }
 
   interface LegacyDataConfig {
@@ -173,6 +174,7 @@ declare global {
     savePath: string
     filenameTemplate: string
     selectedModuleIds: string[]
+    reportCandidateModuleIds?: string[]
     displayEnvKeys?: string[]
   }
 
@@ -202,6 +204,22 @@ declare global {
     message?: string
   }
 
+  type A8aTransferFileResult =
+    | { ok: true; path: string }
+    | { ok: false; canceled?: boolean; error?: string }
+
+  interface A8aTransferImportedItem {
+    scope: 'workspace' | 'project'
+    workspaceId?: string
+    workspaceName?: string
+    projectId?: string
+    projectName?: string
+  }
+
+  type A8aTransferImportResult =
+    | { ok: true; result: A8aTransferImportedItem }
+    | { ok: false; canceled?: boolean; error?: string }
+
   interface AppApi {
     dialog: {
       openDirectory: (defaultPath?: string) => Promise<string | null>
@@ -228,7 +246,9 @@ declare global {
       create: (workspaceId: string, name: string, description: string) => Promise<ApiProject>
       update: (id: string, name: string, description: string) => Promise<void>
       delete: (id: string) => Promise<void>
+      duplicate: (id: string, name: string) => Promise<ApiProject>
       reorder: (workspaceId: string, orderedIds: string[]) => Promise<void>
+      replaceCanvas: (id: string, nodes: ApiNode[], edges: ApiEdge[]) => Promise<void>
     }
     module: {
       list: (workspaceId: string) => Promise<ApiModule[]>
@@ -254,6 +274,12 @@ declare global {
       list: (projectId: string) => Promise<ApiEdge[]>
       create: (projectId: string, sourceNodeId: string, targetNodeId: string, sourcePort?: string | null) => Promise<ApiEdge>
       delete: (id: string) => Promise<void>
+    }
+    transfer: {
+      exportWorkspace: (workspaceId: string) => Promise<A8aTransferFileResult>
+      exportProject: (projectId: string) => Promise<A8aTransferFileResult>
+      importWorkspace: () => Promise<A8aTransferImportResult>
+      importProject: (workspaceId: string) => Promise<A8aTransferImportResult>
     }
     http: {
       fetch: (url: string, options: { method: string; headers: Record<string, string>; body?: string }) => Promise<{ status: number; statusText: string; text: string; ok: boolean }>

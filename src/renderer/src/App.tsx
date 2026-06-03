@@ -5,12 +5,14 @@ import { applyApiAuth, getApiAuthTemplateValues } from './utils/apiAuth'
 import { isScriptRuntimeError, runPreRequest, runPostResponse } from './utils/scriptRuntime'
 import { generateReport, fillFilenameTemplate } from './utils/reportGenerator'
 import type { ReportNode, ReportApiDetail, ReportVariable } from './utils/reportGenerator'
+import { resolveEndReportSelectedModuleIds } from './utils/endReportSelection'
 import type { ScriptConsoleEntry } from './utils/scriptRuntime'
-import { IcoPanelL, IcoPlay, IcoReset, IcoSave, IcoSun, IcoMoon, IcoPanelB, IcoChevD, IcoX, IcoDownload } from './components/Icon'
+import { IcoPanelL, IcoSave, IcoSun, IcoMoon, IcoPanelB, IcoChevD, IcoX, IcoDownload, IcoUpload } from './components/Icon'
 import WorkspaceHeader from './components/sidebar/WorkspaceHeader'
 import ModulePaletteSection from './components/sidebar/ModulePaletteSection'
 import ProjectSection from './components/sidebar/ProjectSection'
 import ProjectModal from './components/sidebar/ProjectModal'
+import ProjectCloneModal from './components/sidebar/ProjectCloneModal'
 import WorkspaceModal from './components/sidebar/WorkspaceModal'
 import EnvSection from './components/env/EnvSection'
 import EnvModal from './components/env/EnvModal'
@@ -34,11 +36,44 @@ import type { WorkspaceModalItem } from './components/sidebar/WorkspaceModal'
 import { randomId } from './utils/id'
 import { buildExcelWorkbookBase64 } from './utils/tabularData'
 
-// Read a DATA node's output value. Accepts both new shape (`{ output: string }`)
-// and legacy shape (`{ items, excelData }`). On any failure returns an empty array.
-function readDataNodeOutput(rawConfig: string): unknown {
+function sharedDataModuleIdFromConfig(rawConfig: string): string | null {
   try {
     const cfg = JSON.parse(rawConfig || '{}') as DataConfig & LegacyDataConfig
+    return typeof cfg.sharedDataModuleId === 'string' && cfg.sharedDataModuleId.trim()
+      ? cfg.sharedDataModuleId.trim()
+      : null
+  } catch { return null }
+}
+
+function sharedDataNodeConfig(moduleId: string): string {
+  return JSON.stringify({ sharedDataModuleId: moduleId })
+}
+
+function stripSharedDataModuleMarker(rawConfig: string): string {
+  try {
+    const parsed = JSON.parse(rawConfig || '{}') as Record<string, unknown>
+    delete parsed.sharedDataModuleId
+    return JSON.stringify(parsed)
+  } catch {
+    return rawConfig
+  }
+}
+
+function findCommonDataModule(modules: ApiModule[], moduleId: string | null): ApiModule | null {
+  if (!moduleId) return null
+  return modules.find(mod => mod.id === moduleId && mod.type === 'data' && mod.isCommon) ?? null
+}
+
+function effectiveDataConfig(rawConfig: string, commonDataModules: ApiModule[] = []): string {
+  const sharedModule = findCommonDataModule(commonDataModules, sharedDataModuleIdFromConfig(rawConfig))
+  return sharedModule?.config ?? rawConfig
+}
+
+// Read a DATA node's output value. Accepts both new shape (`{ output: string }`)
+// and legacy shape (`{ items, excelData }`). On any failure returns an empty array.
+function readDataNodeOutput(rawConfig: string, commonDataModules: ApiModule[] = []): unknown {
+  try {
+    const cfg = JSON.parse(effectiveDataConfig(rawConfig, commonDataModules) || '{}') as DataConfig & LegacyDataConfig
     if (typeof cfg.output === 'string') {
       try { return JSON.parse(cfg.output) } catch { return [] }
     }
@@ -138,6 +173,11 @@ interface ExecutionLoopContext {
 type EndNodeDisplayValue = {
   name: string
   value: string
+}
+
+type StartNodeLoopProgressValue = {
+  current: number
+  total: number
 }
 
 function usedVariableKey(kind: ReportVariable['kind'], name: string): string {
@@ -286,13 +326,20 @@ function getStartRepeatPreviewRow(startNode: ApiNode | undefined): Record<string
   return result.rows[0]
 }
 
-function repeatDataSignature(config: string): string {
+function repeatExecutionSignature(config: string): string {
   const repeat = parseStartConfig(config).repeat
-  if (!repeat?.enabled || repeat.mode !== 'data' || !repeat.data) return ''
+  if (!repeat?.enabled) return ''
   return JSON.stringify({
-    fileName: repeat.data.fileName,
-    columns: repeat.data.columns,
-    rows: repeat.data.rows,
+    mode: repeat.mode,
+    count: repeat.count,
+    stopOnFailure: repeat.stopOnFailure,
+    data: repeat.mode === 'data' && repeat.data
+      ? {
+          fileName: repeat.data.fileName,
+          columns: repeat.data.columns,
+          rows: repeat.data.rows,
+        }
+      : null,
   })
 }
 
@@ -793,7 +840,7 @@ function getValidWorkflowEdges(nodes: ApiNode[], edges: ApiEdge[], replacedEdgeI
   return edges.filter(e => !excluded.has(e.id) && isValidWorkflowEdge(e, nodes))
 }
 
-function executeNodeOutput(nodeId: string, nodes: ApiNode[], edges: ApiEdge[], visiting = new Set<string>()): string {
+function executeNodeOutput(nodeId: string, nodes: ApiNode[], edges: ApiEdge[], commonDataModules: ApiModule[] = [], visiting = new Set<string>()): string {
   if (visiting.has(nodeId)) return JSON.stringify({ __previewError: '순환 연결이 감지되었습니다.' }, null, 2)
   const node = nodes.find(n => n.id === nodeId)
   if (!node) return '[]'
@@ -801,9 +848,9 @@ function executeNodeOutput(nodeId: string, nodes: ApiNode[], edges: ApiEdge[], v
   const inEdge = validEdges.find(e => e.targetNodeId === nodeId)
   const nextVisiting = new Set(visiting)
   nextVisiting.add(nodeId)
-  const upstreamJson = inEdge ? executeNodeOutput(inEdge.sourceNodeId, nodes, validEdges, nextVisiting) : '[]'
+  const upstreamJson = inEdge ? executeNodeOutput(inEdge.sourceNodeId, nodes, validEdges, commonDataModules, nextVisiting) : '[]'
   if (node.type === 'data') {
-    return JSON.stringify(readDataNodeOutput(node.config), null, 2)
+    return JSON.stringify(readDataNodeOutput(node.config, commonDataModules), null, 2)
   }
   if (node.type === 'select') {
     try {
@@ -841,11 +888,17 @@ function wouldCreateCycle(edges: ApiEdge[], sourceId: string, targetId: string):
   return false
 }
 
+function normalizeEdgeSourcePort(sourceType: ApiNode['type'] | undefined, sourcePort?: string | null): string | null {
+  if (sourceType !== 'branch') return null
+  return sourcePort === 'false' ? 'false' : 'true'
+}
+
 function canConnectEdge(
   nodes: ApiNode[],
   edges: ApiEdge[],
   sourceId: string,
   targetId: string,
+  sourcePort?: string | null,
   replacedEdgeIds?: string | string[],
 ): boolean {
   if (sourceId === targetId) return false
@@ -854,14 +907,19 @@ function canConnectEdge(
   if (!source || !target) return false
   if (source.type === 'end' || target.type === 'start') return false
   const nextEdges = getValidWorkflowEdges(nodes, edges, replacedEdgeIds)
-  if (nextEdges.some(e => e.sourceNodeId === sourceId && e.targetNodeId === targetId)) return false
+  const normalizedSourcePort = normalizeEdgeSourcePort(source.type, sourcePort)
+  if (nextEdges.some(e =>
+    e.sourceNodeId === sourceId
+    && e.targetNodeId === targetId
+    && normalizeEdgeSourcePort(source.type, e.sourcePort) === normalizedSourcePort
+  )) return false
   if (source.type === 'start' && nextEdges.some(e => e.sourceNodeId === sourceId)) return false
   if (!allowsMultipleIncoming(target.type) && nextEdges.some(e => e.targetNodeId === targetId)) return false
   return !wouldCreateCycle(nextEdges, sourceId, targetId)
 }
 
 function allowsMultipleIncoming(type: string): boolean {
-  return type === 'api' || type === 'branch'
+  return type === 'api' || type === 'branch' || type === 'end'
 }
 
 function isRuntimeEdgeActive(edge: ApiEdge, nodes: ApiNode[], branchRoutes: Record<string, 'true' | 'false'>): boolean {
@@ -905,7 +963,7 @@ function buildNodeInputValue(
   incomingEdges: ApiEdge[],
   nodeOutputs: Record<string, unknown>,
 ): unknown {
-  if (node.type === 'api' || (node.type === 'branch' && incomingEdges.length > 1)) {
+  if (node.type === 'api' || node.type === 'end' || (node.type === 'branch' && incomingEdges.length > 1)) {
     return buildApiInputEnvelope(incomingEdges, nodeOutputs)
   }
   const inEdge = incomingEdges[0]
@@ -972,6 +1030,21 @@ function buildApiTemplateItems(
   })
 }
 
+function appendApiExecutionResult(
+  results: unknown[],
+  value: unknown,
+): void {
+  if (Array.isArray(value)) {
+    results.push(...value)
+    return
+  }
+  results.push(value)
+}
+
+function normalizeApiExecutionOutput(results: unknown[]): unknown {
+  return results.length === 1 ? results[0] : results
+}
+
 type Theme = 'dark' | 'light'
 type SidebarLayout = 'full' | 'icons'
 type LogState = 'collapsed' | 'fullscreen'
@@ -993,6 +1066,16 @@ type CopiedCanvasSelection = {
 }
 
 type CanvasModuleType = Extract<ApiNode['type'], 'data' | 'select' | 'api' | 'branch'>
+type CanvasSnapshot = { nodes: ApiNode[]; edges: ApiEdge[] }
+type CanvasHistoryEntry = { before: CanvasSnapshot; after: CanvasSnapshot }
+type CanvasHistoryState = { undo: CanvasHistoryEntry[]; redo: CanvasHistoryEntry[] }
+type CanvasNodeMove = { id: string; x: number; y: number }
+
+const CANVAS_GRID_SIZE = 10
+const MODULE_NODE_DEFAULT_WIDTH = 200
+const MODULE_NODE_DEFAULT_HEIGHT = 72
+const MODULE_NODE_LABEL_HORIZONTAL_CHROME = 28 + 10 + 28
+const CANVAS_HISTORY_LIMIT = 10
 
 function isCanvasModuleType(type: string): type is CanvasModuleType {
   return type === 'data' || type === 'select' || type === 'api' || type === 'branch'
@@ -1005,8 +1088,109 @@ function defaultCanvasNodeLabel(type: string): string {
   return 'DATA'
 }
 
+function projectIconSeed(name: string, fallbackIndex: number): string {
+  const trimmed = name.trim()
+  const withoutOrderPrefix = trimmed.replace(/^[\s\d._-]+/, '')
+  const source = withoutOrderPrefix || trimmed || String(fallbackIndex + 1)
+  const token = source.split(/[\s._/\\|-]+/).find(part => /\D/.test(part)) ?? source
+  const chars = Array.from(token)
+    .filter(ch => /[0-9A-Za-z\u3131-\u318E\uAC00-\uD7A3]/.test(ch))
+    .join('')
+  return (chars || String(fallbackIndex + 1)).replace(/[a-z]/g, ch => ch.toUpperCase())
+}
+
+function buildProjectIconLabels(projects: ProjectItem[]): Map<string, string> {
+  const seeds = projects.map((project, index) => projectIconSeed(project.name, index))
+  const labels = new Map<string, string>()
+
+  projects.forEach((project, index) => {
+    const seed = seeds[index] || String(index + 1)
+    for (let len = 1; len <= 3; len += 1) {
+      const candidate = Array.from(seed).slice(0, len).join('')
+      const duplicate = seeds.some((otherSeed, otherIndex) => (
+        otherIndex !== index && Array.from(otherSeed).slice(0, len).join('') === candidate
+      ))
+      if (!duplicate) {
+        labels.set(project.id, candidate)
+        return
+      }
+    }
+
+    const suffix = String(index + 1)
+    const base = Array.from(seed).slice(0, Math.max(1, 3 - suffix.length)).join('')
+    labels.set(project.id, `${base}${suffix}`)
+  })
+
+  return labels
+}
+
+function estimateCanvasLabelWidth(label: string): number {
+  const text = label.trim()
+  if (!text) return 0
+  if (typeof document !== 'undefined') {
+    const canvas = document.createElement('canvas')
+    const context = canvas.getContext('2d')
+    if (context) {
+      const fontFamily = getComputedStyle(document.body).getPropertyValue('--font-sans').trim() || 'system-ui'
+      context.font = `600 13px ${fontFamily}`
+      return context.measureText(text).width
+    }
+  }
+  return Array.from(text).reduce((sum, char) => {
+    if (/[A-Z0-9]/.test(char)) return sum + 8
+    if (/[a-z]/.test(char)) return sum + 7
+    if (/\s/.test(char)) return sum + 4
+    return sum + 13
+  }, 0)
+}
+
+function preferredCanvasModuleWidth(type: ApiNode['type'], label: string): number | null {
+  if (!isCanvasModuleType(type)) return null
+  const labelWidth = estimateCanvasLabelWidth(label)
+  const rawWidth = Math.ceil(labelWidth + MODULE_NODE_LABEL_HORIZONTAL_CHROME)
+  return Math.max(MODULE_NODE_DEFAULT_WIDTH, Math.ceil(rawWidth / CANVAS_GRID_SIZE) * CANVAS_GRID_SIZE)
+}
+
+function cloneCanvasSnapshot(nodes: ApiNode[], edges: ApiEdge[]): CanvasSnapshot {
+  return {
+    nodes: nodes.map(node => ({ ...node })),
+    edges: edges.map(edge => ({ ...edge })),
+  }
+}
+
+function canvasSnapshotsEqual(a: CanvasSnapshot, b: CanvasSnapshot): boolean {
+  return JSON.stringify(a) === JSON.stringify(b)
+}
+
+function emptyCanvasHistory(): CanvasHistoryState {
+  return { undo: [], redo: [] }
+}
+
+function filterRecordByKeys<T>(record: Record<string, T>, keys: Set<string>): Record<string, T> {
+  const next: Record<string, T> = {}
+  Object.entries(record).forEach(([key, value]) => {
+    if (keys.has(key)) next[key] = value
+  })
+  return next
+}
+
+function remapCopiedNodeConfig(config: string, nodeIdMap: Map<string, string>): string {
+  if (!config || nodeIdMap.size === 0) return config
+  let next = config
+  nodeIdMap.forEach((newId, oldId) => {
+    next = next.split(oldId).join(newId)
+  })
+  return next
+}
+
 export default function App(): JSX.Element {
-  const [theme, setTheme] = useState<Theme>('dark')
+  const [theme, setTheme] = useState<Theme>(() => {
+    try {
+      return localStorage.getItem('a8a-theme') === 'light' ? 'light' : 'dark'
+    } catch {
+      return 'dark'
+    }
+  })
   const [sidebarLayout, setSidebarLayout] = useState<SidebarLayout>('full')
   const [logState, setLogState] = useState<LogState>('collapsed')
   const [isCanvasFullscreen, setCanvasFullscreen] = useState(false)
@@ -1022,14 +1206,15 @@ export default function App(): JSX.Element {
   const isResizing = useRef(false)
 
   const [workspaces, setWorkspaces] = useState<Workspace[]>([])
+  const [commonDataModules, setCommonDataModules] = useState<ApiModule[]>([])
   const [activeWsId, setActiveWsId] = useState<string>('')
   const [activeProjectId, setActiveProjectId] = useState<string>('')
   const [loading, setLoading] = useState(true)
 
   const [activeNodes, setActiveNodes] = useState<ApiNode[]>([])
   const [activeEdges, setActiveEdges] = useState<ApiEdge[]>([])
+  const [canvasHistories, setCanvasHistories] = useState<Record<string, CanvasHistoryState>>({})
   const [copiedCanvasSelection, setCopiedCanvasSelection] = useState<CopiedCanvasSelection | null>(null)
-  const pasteOffsetRef = useRef(0)
   const [confirmDeleteEdge, setConfirmDeleteEdge] = useState<ApiEdge | null>(null)
   const [editingNode, setEditingNode] = useState<ApiNode | null>(null)
   const [nodeRunInputs, setNodeRunInputs] = useState<Record<string, string>>({})
@@ -1040,15 +1225,17 @@ export default function App(): JSX.Element {
   const [envDropdownPos, setEnvDropdownPos] = useState({ top: 0, left: 0 })
   const envBtnRef = useRef<HTMLButtonElement>(null)
   const envDropdownRef = useRef<HTMLDivElement>(null)
+  const transferMenuRef = useRef<HTMLDivElement>(null)
   const sidebarRef = useRef<HTMLElement>(null)
   const [modalEnv, setModalEnv] = useState<Environment | null | undefined>(undefined)
   const [modalWsId, setModalWsId] = useState<string>('')
   const [modalProject, setModalProject] = useState<{ wsId: string; project: ProjectItem | null } | null>(null)
+  const [modalProjectClone, setModalProjectClone] = useState<{ wsId: string; project: ProjectItem } | null>(null)
   const [modalWorkspace, setModalWorkspace] = useState<{ workspace: WorkspaceModalItem | null } | null>(null)
   const [confirmDeleteWsId, setConfirmDeleteWsId] = useState<string | null>(null)
   const [confirmDeleteProject, setConfirmDeleteProject] = useState<{ wsId: string; project: ProjectItem } | null>(null)
   const [confirmDeleteEnv, setConfirmDeleteEnv] = useState<{ wsId: string; env: Environment } | null>(null)
-  const [confirmDeleteCanvasNode, setConfirmDeleteCanvasNode] = useState<ApiNode | null>(null)
+  const [confirmDeleteCanvasNodes, setConfirmDeleteCanvasNodes] = useState<ApiNode[]>([])
   const [iconTooltip, setIconTooltip] = useState<{ text: string; x: number; y: number } | null>(null)
 
   // ── Canvas execution ──
@@ -1058,6 +1245,7 @@ export default function App(): JSX.Element {
   const [activeBranchRoutes, setActiveBranchRoutes] = useState<Record<string, 'true' | 'false'>>({})
   const [endNodeDisplayValues, setEndNodeDisplayValues] = useState<Record<string, EndNodeDisplayValue[]>>({})
   const [startRepeatRowStates, setStartRepeatRowStates] = useState<Record<string, Record<number, StartRepeatRowRunState>>>({})
+  const [lastStartNodeLoopProgress, setLastStartNodeLoopProgress] = useState<Record<string, StartNodeLoopProgressValue>>({})
   const [activeLogNodeId, setActiveLogNodeId] = useState<string | null>(null)
   const [downloadingReport, setDownloadingReport] = useState(false)
   const [savedReport, setSavedReport] = useState<{ path: string } | null>(null)
@@ -1073,6 +1261,14 @@ export default function App(): JSX.Element {
   const [updateState, setUpdateState] = useState<AppUpdateState | null>(null)
   const [updateNoticeHidden, setUpdateNoticeHidden] = useState(false)
   const [manualUpdateRequested, setManualUpdateRequested] = useState(false)
+  const [transferMenuOpen, setTransferMenuOpen] = useState(false)
+  const [transferBusy, setTransferBusy] = useState(false)
+
+  const refreshCommonDataModules = useCallback(async (): Promise<ApiModule[]> => {
+    const modules = (await window.api.module.listAll()).filter(mod => mod.type === 'data' && mod.isCommon)
+    setCommonDataModules(modules)
+    return modules
+  }, [])
 
   const setScriptLogsForNode = useCallback((nodeId: string, phase: keyof ScriptLogBundle, logs: ScriptConsoleEntry[]): void => {
     setNodeScriptLogs(prev => ({
@@ -1089,7 +1285,10 @@ export default function App(): JSX.Element {
   useEffect(() => {
     async function init(): Promise<void> {
       try {
-        const wsList = await window.api.workspace.list()
+        const [wsList] = await Promise.all([
+          window.api.workspace.list(),
+          refreshCommonDataModules(),
+        ])
         const all = await Promise.all(
           wsList.map(async (ws) => {
             const [envs, projects] = await Promise.all([
@@ -1121,12 +1320,23 @@ export default function App(): JSX.Element {
       }
     }
     init()
-  }, [])
+  }, [refreshCommonDataModules])
+
+  useEffect(() => {
+    try {
+      localStorage.setItem('a8a-theme', theme)
+    } catch {
+      // localStorage를 사용할 수 없는 환경에서는 현재 세션 테마만 유지합니다.
+    }
+  }, [theme])
 
   useEffect(() => {
     const handler = (e: MouseEvent): void => {
       if (envDropdownRef.current && !envDropdownRef.current.contains(e.target as Node)) {
         setEnvDropdownOpen(false)
+      }
+      if (transferMenuRef.current && !transferMenuRef.current.contains(e.target as Node)) {
+        setTransferMenuOpen(false)
       }
     }
     document.addEventListener('mousedown', handler)
@@ -1178,11 +1388,14 @@ export default function App(): JSX.Element {
         return keys.sort((a, b) => a.localeCompare(b))
       })()
     : []
+  const activeCanvasHistory = activeProject ? canvasHistories[activeProject.id] ?? emptyCanvasHistory() : emptyCanvasHistory()
+  const canCanvasUndo = !canvasExecution && activeCanvasHistory.undo.length > 0
+  const canCanvasRedo = !canvasExecution && activeCanvasHistory.redo.length > 0
   const startRepeatPreviewData = useMemo(
     () => getStartRepeatPreviewRow(activeNodes.find(node => node.type === 'start')) ?? undefined,
     [activeNodes],
   )
-  const startNodeLoopProgress = canvasExecution?.loop
+  const runningStartNodeLoopProgress = canvasExecution?.loop
     ? (() => {
         const startNodeId = activeNodes.find(node => node.type === 'start')?.id
         if (!startNodeId) return undefined
@@ -1194,6 +1407,22 @@ export default function App(): JSX.Element {
         }
       })()
     : undefined
+  const startNodeLoopProgress = runningStartNodeLoopProgress ?? lastStartNodeLoopProgress
+
+  useEffect(() => {
+    if (commonDataModules.length === 0) return
+    setActiveNodes(prev => {
+      let changed = false
+      const next = prev.map(node => {
+        if (node.type !== 'data') return node
+        const sharedModule = findCommonDataModule(commonDataModules, sharedDataModuleIdFromConfig(node.config))
+        if (!sharedModule || node.label === sharedModule.label) return node
+        changed = true
+        return { ...node, label: sharedModule.label }
+      })
+      return changed ? next : prev
+    })
+  }, [commonDataModules])
 
   useEffect(() => {
     // 프로젝트가 바뀌면 이전 프로젝트의 실행 상태(진행 중 실행/로그/상태 배지/분기 경로)를
@@ -1204,6 +1433,7 @@ export default function App(): JSX.Element {
     setActiveBranchRoutes({})
     setEndNodeDisplayValues({})
     setStartRepeatRowStates({})
+    setLastStartNodeLoopProgress({})
     if (!activeProject) { setActiveNodes([]); setActiveEdges([]); return }
     // 프로젝트 전환 경쟁 상태 방지: 로드가 끝나기 전에 다른 프로젝트로 바꾸면
     // 뒤늦게 도착한 응답이 현재 캔버스를 덮어쓰고, 엉뚱한 프로젝트의 엣지를
@@ -1270,36 +1500,133 @@ export default function App(): JSX.Element {
     }
   }, [updateState?.status])
 
-  const handleNodeMove = useCallback(async (id: string, x: number, y: number): Promise<void> => {
-    await window.api.node.updatePosition(id, x, y)
-    setActiveNodes(prev => prev.map(n => n.id === id ? { ...n, x, y } : n))
+  const recordCanvasHistory = useCallback((projectId: string, before: CanvasSnapshot, after: CanvasSnapshot): void => {
+    if (canvasSnapshotsEqual(before, after)) return
+    const entry: CanvasHistoryEntry = {
+      before: cloneCanvasSnapshot(before.nodes, before.edges),
+      after: cloneCanvasSnapshot(after.nodes, after.edges),
+    }
+    setCanvasHistories(prev => {
+      const current = prev[projectId] ?? emptyCanvasHistory()
+      return {
+        ...prev,
+        [projectId]: {
+          undo: [...current.undo, entry].slice(-CANVAS_HISTORY_LIMIT),
+          redo: [],
+        },
+      }
+    })
   }, [])
 
+  const restoreCanvasSnapshot = useCallback(async (projectId: string, snapshot: CanvasSnapshot): Promise<void> => {
+    const next = cloneCanvasSnapshot(snapshot.nodes, snapshot.edges)
+    await window.api.project.replaceCanvas(projectId, next.nodes, next.edges)
+    if (activeProjectId !== projectId) return
+
+    const nodeIds = new Set(next.nodes.map(node => node.id))
+    setActiveNodes(next.nodes)
+    setActiveEdges(next.edges)
+    setNodeRunInputs(prev => filterRecordByKeys(prev, nodeIds))
+    setNodeRunOutputs(prev => filterRecordByKeys(prev, nodeIds))
+    setNodeScriptLogs(prev => filterRecordByKeys(prev, nodeIds))
+    setStartRepeatRowStates(prev => filterRecordByKeys(prev, nodeIds))
+    setLastStartNodeLoopProgress(prev => filterRecordByKeys(prev, nodeIds))
+    setNodeStatuses({})
+    setActiveBranchRoutes({})
+    setEndNodeDisplayValues({})
+    setActiveLogNodeId(null)
+    setEditingNode(prev => prev ? next.nodes.find(node => node.id === prev.id) ?? null : null)
+  }, [activeProjectId])
+
+  const handleCanvasUndo = useCallback(async (): Promise<void> => {
+    if (!activeProject || canvasExecution) return
+    const history = canvasHistories[activeProject.id]
+    const entry = history?.undo[history.undo.length - 1]
+    if (!entry) return
+    await restoreCanvasSnapshot(activeProject.id, entry.before)
+    setCanvasHistories(prev => {
+      const current = prev[activeProject.id] ?? emptyCanvasHistory()
+      return {
+        ...prev,
+        [activeProject.id]: {
+          undo: current.undo.slice(0, -1),
+          redo: [...current.redo, entry].slice(-CANVAS_HISTORY_LIMIT),
+        },
+      }
+    })
+  }, [activeProject, canvasExecution, canvasHistories, restoreCanvasSnapshot])
+
+  const handleCanvasRedo = useCallback(async (): Promise<void> => {
+    if (!activeProject || canvasExecution) return
+    const history = canvasHistories[activeProject.id]
+    const entry = history?.redo[history.redo.length - 1]
+    if (!entry) return
+    await restoreCanvasSnapshot(activeProject.id, entry.after)
+    setCanvasHistories(prev => {
+      const current = prev[activeProject.id] ?? emptyCanvasHistory()
+      return {
+        ...prev,
+        [activeProject.id]: {
+          undo: [...current.undo, entry].slice(-CANVAS_HISTORY_LIMIT),
+          redo: current.redo.slice(0, -1),
+        },
+      }
+    })
+  }, [activeProject, canvasExecution, canvasHistories, restoreCanvasSnapshot])
+
+  const handleNodeMove = useCallback(async (moves: CanvasNodeMove[]): Promise<void> => {
+    if (!activeProject || moves.length === 0) return
+    const moveById = new Map(moves.map(move => [move.id, move]))
+    const nextNodes = activeNodes.map(node => {
+      const move = moveById.get(node.id)
+      return move ? { ...node, x: move.x, y: move.y } : node
+    })
+    const changedMoves = moves.filter(move => {
+      const node = activeNodes.find(item => item.id === move.id)
+      return !!node && (node.x !== move.x || node.y !== move.y)
+    })
+    if (changedMoves.length === 0) return
+
+    const before = cloneCanvasSnapshot(activeNodes, activeEdges)
+    await Promise.all(changedMoves.map(move => window.api.node.updatePosition(move.id, move.x, move.y)))
+    setActiveNodes(nextNodes)
+    recordCanvasHistory(activeProject.id, before, { nodes: nextNodes, edges: activeEdges })
+  }, [activeEdges, activeNodes, activeProject, recordCanvasHistory])
+
   const handleNodeResize = useCallback(async (id: string, width: number, height: number): Promise<void> => {
+    if (!activeProject) return
+    const node = activeNodes.find(item => item.id === id)
+    if (!node || (node.width === width && node.height === height)) return
+    const before = cloneCanvasSnapshot(activeNodes, activeEdges)
+    const nextNodes = activeNodes.map(n => n.id === id ? { ...n, width, height } : n)
     await window.api.node.updateSize(id, width, height)
-    setActiveNodes(prev => prev.map(n => n.id === id ? { ...n, width, height } : n))
-  }, [])
+    setActiveNodes(nextNodes)
+    recordCanvasHistory(activeProject.id, before, { nodes: nextNodes, edges: activeEdges })
+  }, [activeEdges, activeNodes, activeProject, recordCanvasHistory])
 
   const handleEdgeCreate = useCallback(async (sourceId: string, targetId: string, sourcePort?: string | null): Promise<void> => {
     if (!activeProject) return
     try {
+      const before = cloneCanvasSnapshot(activeNodes, activeEdges)
       const source = activeNodes.find(n => n.id === sourceId)
       const target = activeNodes.find(n => n.id === targetId)
       const existingIncoming = target && allowsMultipleIncoming(target.type) ? undefined : activeEdges.find(e => e.targetNodeId === targetId)
       const existingStartOutgoing = source?.type === 'start' ? activeEdges.find(e => e.sourceNodeId === sourceId) : undefined
       if (existingIncoming?.sourceNodeId === sourceId && existingStartOutgoing?.targetNodeId === targetId) return
       const replaceIds = Array.from(new Set([existingIncoming?.id, existingStartOutgoing?.id].filter((id): id is string => typeof id === 'string')))
-      if (!canConnectEdge(activeNodes, activeEdges, sourceId, targetId, replaceIds)) return
+      if (!canConnectEdge(activeNodes, activeEdges, sourceId, targetId, sourcePort ?? null, replaceIds)) return
       await Promise.all(replaceIds.map(id => window.api.edge.delete(id)))
       const edge = await window.api.edge.create(activeProject.id, sourceId, targetId, sourcePort ?? null)
-      setActiveEdges(prev => [...prev.filter(e => !replaceIds.includes(e.id)), edge])
+      const nextEdges = [...activeEdges.filter(e => !replaceIds.includes(e.id)), edge]
+      setActiveEdges(nextEdges)
       setNodeStatuses({})
       setActiveBranchRoutes({})
       setActiveLogNodeId(null)
+      recordCanvasHistory(activeProject.id, before, { nodes: activeNodes, edges: nextEdges })
     } catch (err) {
       console.error('연결 생성 실패:', err)
     }
-  }, [activeProject?.id, activeNodes, activeEdges])
+  }, [activeProject, activeNodes, activeEdges, recordCanvasHistory])
 
   const handleNodeOpen = useCallback((nodeId: string): void => {
     const node = activeNodes.find(n => n.id === nodeId)
@@ -1308,11 +1635,21 @@ export default function App(): JSX.Element {
 
   const handleNodeSave = async (nodeId: string, config: string): Promise<void> => {
     const node = activeNodes.find(n => n.id === nodeId)
-    const shouldResetRepeatRows = node?.type === 'start' && repeatDataSignature(node.config) !== repeatDataSignature(config)
+    if (!activeProject || !node) return
+    const shouldResetRepeatRows = node?.type === 'start' && repeatExecutionSignature(node.config) !== repeatExecutionSignature(config)
+    const before = cloneCanvasSnapshot(activeNodes, activeEdges)
+    const nextNodes = activeNodes.map(n => n.id === nodeId ? { ...n, config } : n)
     await window.api.node.updateConfig(nodeId, config)
-    setActiveNodes(prev => prev.map(n => n.id === nodeId ? { ...n, config } : n))
+    setActiveNodes(nextNodes)
+    recordCanvasHistory(activeProject.id, before, { nodes: nextNodes, edges: activeEdges })
     if (shouldResetRepeatRows) {
       setStartRepeatRowStates(prev => {
+        if (!prev[nodeId]) return prev
+        const next = { ...prev }
+        delete next[nodeId]
+        return next
+      })
+      setLastStartNodeLoopProgress(prev => {
         if (!prev[nodeId]) return prev
         const next = { ...prev }
         delete next[nodeId]
@@ -1321,14 +1658,56 @@ export default function App(): JSX.Element {
     }
   }
 
-  const handleDataNodeSave = async (nodeId: string, label: string, config: string): Promise<void> => {
+  const handleDataNodeSave = async (
+    nodeId: string,
+    label: string,
+    config: string,
+    options?: { shareAsCommonData?: boolean },
+  ): Promise<void> => {
     const node = activeNodes.find(n => n.id === nodeId)
+    if (!activeProject || !node) return
     const nextLabel = label.trim() || node?.label || defaultCanvasNodeLabel(node?.type ?? 'data')
+    const preferredWidth = node ? preferredCanvasModuleWidth(node.type, nextLabel) : null
+    const currentWidth = node?.width ?? MODULE_NODE_DEFAULT_WIDTH
+    const currentHeight = node?.height ?? MODULE_NODE_DEFAULT_HEIGHT
+    const nextWidth = preferredWidth !== null && preferredWidth > currentWidth ? preferredWidth : null
+    const before = cloneCanvasSnapshot(activeNodes, activeEdges)
+    let nextConfig = config
+    let affectedNodeIds = new Set([nodeId])
+
+    if (node.type === 'data') {
+      const dataConfig = stripSharedDataModuleMarker(config)
+      const currentSharedModuleId = sharedDataModuleIdFromConfig(node.config)
+      const shouldShare = options?.shareAsCommonData === true
+
+      if (shouldShare && currentSharedModuleId) {
+        await window.api.module.update(currentSharedModuleId, nextLabel, dataConfig)
+        setCommonDataModules(prev => prev.map(mod => mod.id === currentSharedModuleId ? { ...mod, label: nextLabel, config: dataConfig } : mod))
+        nextConfig = sharedDataNodeConfig(currentSharedModuleId)
+        affectedNodeIds = new Set(activeNodes
+          .filter(n => n.type === 'data' && sharedDataModuleIdFromConfig(n.config) === currentSharedModuleId)
+          .map(n => n.id))
+      } else if (shouldShare) {
+        const created = await window.api.module.createCommon('data', nextLabel, dataConfig)
+        setCommonDataModules(prev => [...prev, created])
+        nextConfig = sharedDataNodeConfig(created.id)
+      } else {
+        nextConfig = dataConfig
+      }
+    }
+
+    const nextNodes = activeNodes.map(n => affectedNodeIds.has(n.id)
+      ? { ...n, label: nextLabel, config: nextConfig, ...(n.id === nodeId && nextWidth !== null ? { width: nextWidth, height: currentHeight } : {}) }
+      : n)
     await Promise.all([
-      window.api.node.updateLabel(nodeId, nextLabel),
-      window.api.node.updateConfig(nodeId, config)
+      ...Array.from(affectedNodeIds).flatMap(id => [
+        window.api.node.updateLabel(id, nextLabel),
+        window.api.node.updateConfig(id, nextConfig),
+      ]),
+      nextWidth !== null ? window.api.node.updateSize(nodeId, nextWidth, currentHeight) : Promise.resolve(),
     ])
-    setActiveNodes(prev => prev.map(n => n.id === nodeId ? { ...n, label: nextLabel, config } : n))
+    setActiveNodes(nextNodes)
+    recordCanvasHistory(activeProject.id, before, { nodes: nextNodes, edges: activeEdges })
   }
 
   const rememberSelectSelection = useCallback(async (
@@ -1336,7 +1715,7 @@ export default function App(): JSX.Element {
     selection: SelectionPopupSelection,
   ): Promise<void> => {
     const node = activeNodes.find(n => n.id === nodeId)
-    if (!node || node.type !== 'select') return
+    if (!activeProject || !node || node.type !== 'select') return
 
     const current = parseSelectConfig(node.config)
     const next: SelectConfig = selection.mode === 'table'
@@ -1353,17 +1732,24 @@ export default function App(): JSX.Element {
           selectedJsonPaths: selection.selectedJsonPaths,
         }
     const nextConfig = JSON.stringify(next)
+    const before = cloneCanvasSnapshot(activeNodes, activeEdges)
+    const nextNodes = activeNodes.map(n => n.id === nodeId ? { ...n, config: nextConfig } : n)
     await window.api.node.updateConfig(nodeId, nextConfig)
-    setActiveNodes(prev => prev.map(n => n.id === nodeId ? { ...n, config: nextConfig } : n))
-  }, [activeNodes])
+    setActiveNodes(nextNodes)
+    recordCanvasHistory(activeProject.id, before, { nodes: nextNodes, edges: activeEdges })
+  }, [activeEdges, activeNodes, activeProject, recordCanvasHistory])
 
-  const handleModuleDrop = useCallback(async (moduleType: string, x: number, y: number): Promise<void> => {
+  const handleModuleDrop = useCallback(async (moduleType: string, x: number, y: number, moduleId?: string | null): Promise<void> => {
     if (!activeProject) return
     if (!isCanvasModuleType(moduleType)) return
-    const label = defaultCanvasNodeLabel(moduleType)
-    const node = await window.api.node.create(activeProject.id, moduleType, label, x, y)
-    setActiveNodes(prev => [...prev, node])
-  }, [activeProject?.id])
+    const before = cloneCanvasSnapshot(activeNodes, activeEdges)
+    const node = moduleType === 'data' && moduleId
+      ? await window.api.node.createFromModule(activeProject.id, moduleId, x, y)
+      : await window.api.node.create(activeProject.id, moduleType, defaultCanvasNodeLabel(moduleType), x, y)
+    const nextNodes = [...activeNodes, node]
+    setActiveNodes(nextNodes)
+    recordCanvasHistory(activeProject.id, before, { nodes: nextNodes, edges: activeEdges })
+  }, [activeEdges, activeNodes, activeProject, recordCanvasHistory])
 
   const handleCanvasNodeCopy = useCallback((nodeIds: string[]): void => {
     const selectedIds = new Set(nodeIds)
@@ -1380,10 +1766,9 @@ export default function App(): JSX.Element {
       nodes,
       edges,
     })
-    pasteOffsetRef.current = 0
   }, [activeEdges, activeNodes, activeProject?.id])
 
-  const handleCanvasNodePaste = useCallback(async (): Promise<void> => {
+  const handleCanvasNodePaste = useCallback(async (pasteCenter: { x: number; y: number }): Promise<void> => {
     if (!activeProject || !copiedCanvasSelection) return
     const pasteCandidates = copiedCanvasSelection.nodes.filter(node => {
       if (node.type === 'start' || node.type === 'end') return false
@@ -1391,24 +1776,38 @@ export default function App(): JSX.Element {
     })
 
     if (pasteCandidates.length === 0) return
+    const before = cloneCanvasSnapshot(activeNodes, activeEdges)
 
-    const offset = 40 + pasteOffsetRef.current * 20
+    const pasteBounds = pasteCandidates.reduce((bounds, node) => {
+      const width = node.width ?? MODULE_NODE_DEFAULT_WIDTH
+      const height = node.height ?? MODULE_NODE_DEFAULT_HEIGHT
+      return {
+        left: Math.min(bounds.left, node.x),
+        top: Math.min(bounds.top, node.y),
+        right: Math.max(bounds.right, node.x + width),
+        bottom: Math.max(bounds.bottom, node.y + height),
+      }
+    }, { left: Infinity, top: Infinity, right: -Infinity, bottom: -Infinity })
+    const sourceCenter = {
+      x: (pasteBounds.left + pasteBounds.right) / 2,
+      y: (pasteBounds.top + pasteBounds.bottom) / 2,
+    }
+    const delta = {
+      x: pasteCenter.x - sourceCenter.x,
+      y: pasteCenter.y - sourceCenter.y,
+    }
     const createdBySourceId = new Map<string, ApiNode>()
     const pastedNodes: ApiNode[] = []
 
     for (const copiedNode of pasteCandidates) {
-      const x = Math.round((copiedNode.x + offset) / 10) * 10
-      const y = Math.round((copiedNode.y + offset) / 10) * 10
+      const x = Math.round((copiedNode.x + delta.x) / 10) * 10
+      const y = Math.round((copiedNode.y + delta.y) / 10) * 10
       const label = copiedNode.label.trim() || defaultCanvasNodeLabel(copiedNode.type)
-      const config = copiedNode.config ?? ''
 
       try {
         const created = await window.api.node.create(activeProject.id, copiedNode.type, label, x, y)
 
-        await Promise.all([
-          window.api.node.updateConfig(created.id, config),
-          window.api.node.updateSize(created.id, copiedNode.width, copiedNode.height),
-        ])
+        await window.api.node.updateSize(created.id, copiedNode.width, copiedNode.height)
 
         const pasted: ApiNode = {
           ...created,
@@ -1417,7 +1816,7 @@ export default function App(): JSX.Element {
           y,
           width: copiedNode.width,
           height: copiedNode.height,
-          config,
+          config: copiedNode.config ?? '',
         }
 
         createdBySourceId.set(copiedNode.id, pasted)
@@ -1429,6 +1828,14 @@ export default function App(): JSX.Element {
 
     if (pastedNodes.length === 0) return
 
+    const nodeIdMap = new Map(Array.from(createdBySourceId.entries()).map(([sourceId, pasted]) => [sourceId, pasted.id]))
+    await Promise.all(Array.from(createdBySourceId.entries()).map(([sourceId, pasted]) => {
+      const copiedNode = pasteCandidates.find(node => node.id === sourceId)
+      const nextConfig = remapCopiedNodeConfig(copiedNode?.config ?? '', nodeIdMap)
+      pasted.config = nextConfig
+      return window.api.node.updateConfig(pasted.id, nextConfig)
+    }))
+
     const nextNodes = [...activeNodes, ...pastedNodes]
     const nextEdges = [...activeEdges]
     const pastedEdges: ApiEdge[] = []
@@ -1437,7 +1844,7 @@ export default function App(): JSX.Element {
       const source = createdBySourceId.get(copiedEdge.sourceNodeId)
       const target = createdBySourceId.get(copiedEdge.targetNodeId)
       if (!source || !target) continue
-      if (!canConnectEdge(nextNodes, nextEdges, source.id, target.id)) continue
+      if (!canConnectEdge(nextNodes, nextEdges, source.id, target.id, copiedEdge.sourcePort ?? null)) continue
 
       try {
         const edge = await window.api.edge.create(activeProject.id, source.id, target.id, copiedEdge.sourcePort ?? null)
@@ -1448,76 +1855,93 @@ export default function App(): JSX.Element {
       }
     }
 
-    setActiveNodes(prev => [...prev, ...pastedNodes])
+    const finalNodes = [...activeNodes, ...pastedNodes]
+    const finalEdges = pastedEdges.length > 0 ? [...activeEdges, ...pastedEdges] : activeEdges
+    setActiveNodes(finalNodes)
     if (pastedEdges.length > 0) {
-      setActiveEdges(prev => [...prev, ...pastedEdges])
+      setActiveEdges(finalEdges)
     }
     setNodeStatuses({})
     setActiveBranchRoutes({})
     setActiveLogNodeId(null)
-    pasteOffsetRef.current = (pasteOffsetRef.current + 1) % 12
-  }, [activeEdges, activeNodes, activeProject?.id, copiedCanvasSelection])
+    recordCanvasHistory(activeProject.id, before, { nodes: finalNodes, edges: finalEdges })
+  }, [activeEdges, activeNodes, activeProject, copiedCanvasSelection, recordCanvasHistory])
 
-  const deleteCanvasNodeInstance = useCallback(async (node: ApiNode): Promise<void> => {
-    if (node.type === 'start' || node.type === 'end') return
-    await window.api.node.delete(node.id)
-    setActiveNodes(prev => prev.filter(n => n.id !== node.id))
-    setActiveEdges(prev => prev.filter(e => e.sourceNodeId !== node.id && e.targetNodeId !== node.id))
+  const deleteCanvasNodeInstances = useCallback(async (nodes: ApiNode[]): Promise<void> => {
+    if (!activeProject) return
+    const deletableNodes = nodes.filter(node => node.type !== 'start' && node.type !== 'end')
+    if (deletableNodes.length === 0) return
+
+    const before = cloneCanvasSnapshot(activeNodes, activeEdges)
+    const deletedNodeIds = new Set(deletableNodes.map(node => node.id))
+    await Promise.all(deletableNodes.map(node => window.api.node.delete(node.id)))
+    const nextNodes = activeNodes.filter(n => !deletedNodeIds.has(n.id))
+    const nextEdges = activeEdges.filter(e => !deletedNodeIds.has(e.sourceNodeId) && !deletedNodeIds.has(e.targetNodeId))
+    setActiveNodes(nextNodes)
+    setActiveEdges(nextEdges)
     setNodeRunInputs(prev => {
       const next = { ...prev }
-      delete next[node.id]
+      deletedNodeIds.forEach(id => delete next[id])
       return next
     })
     setNodeRunOutputs(prev => {
       const next = { ...prev }
-      delete next[node.id]
+      deletedNodeIds.forEach(id => delete next[id])
       return next
     })
     setNodeScriptLogs(prev => {
       const next = { ...prev }
-      delete next[node.id]
+      deletedNodeIds.forEach(id => delete next[id])
       return next
     })
     setNodeStatuses({})
     setActiveBranchRoutes({})
     setActiveLogNodeId(null)
-    setEditingNode(prev => prev?.id === node.id ? null : prev)
-  }, [])
+    setEditingNode(prev => prev && deletedNodeIds.has(prev.id) ? null : prev)
+    recordCanvasHistory(activeProject.id, before, { nodes: nextNodes, edges: nextEdges })
+  }, [activeEdges, activeNodes, activeProject, recordCanvasHistory])
 
-  const handleCanvasNodeDeleteRequest = useCallback((nodeId: string): void => {
-    const node = activeNodes.find(n => n.id === nodeId)
-    if (!node || node.type === 'start' || node.type === 'end') return
-    setConfirmDeleteCanvasNode(node)
+  const handleCanvasNodeDeleteRequest = useCallback((nodeIds: string[]): void => {
+    const selectedNodeIds = new Set(nodeIds)
+    const nodes = activeNodes.filter(node => selectedNodeIds.has(node.id) && node.type !== 'start' && node.type !== 'end')
+    if (nodes.length === 0) return
+    setConfirmDeleteCanvasNodes(nodes)
   }, [activeNodes])
 
   const deleteEdge = async (): Promise<void> => {
-    if (!confirmDeleteEdge) return
+    if (!activeProject || !confirmDeleteEdge) return
+    const before = cloneCanvasSnapshot(activeNodes, activeEdges)
     await window.api.edge.delete(confirmDeleteEdge.id)
-    setActiveEdges(prev => prev.filter(e => e.id !== confirmDeleteEdge.id))
+    const nextEdges = activeEdges.filter(e => e.id !== confirmDeleteEdge.id)
+    setActiveEdges(nextEdges)
     setNodeStatuses({})
     setActiveLogNodeId(null)
     setConfirmDeleteEdge(null)
+    recordCanvasHistory(activeProject.id, before, { nodes: activeNodes, edges: nextEdges })
   }
 
   const handleEdgeReconnect = useCallback(async (edgeId: string, newSourceId: string, newTargetId: string, sourcePort?: string | null): Promise<void> => {
     if (!activeProject) return
     try {
+      const before = cloneCanvasSnapshot(activeNodes, activeEdges)
       const source = activeNodes.find(n => n.id === newSourceId)
       const target = activeNodes.find(n => n.id === newTargetId)
       const targetIncoming = target && allowsMultipleIncoming(target.type) ? undefined : activeEdges.find(e => e.targetNodeId === newTargetId && e.id !== edgeId)
       const startOutgoing = source?.type === 'start' ? activeEdges.find(e => e.sourceNodeId === newSourceId && e.id !== edgeId) : undefined
       const replaceIds = Array.from(new Set([edgeId, targetIncoming?.id, startOutgoing?.id].filter((id): id is string => typeof id === 'string')))
-      if (!canConnectEdge(activeNodes, activeEdges, newSourceId, newTargetId, replaceIds)) return
+      if (!canConnectEdge(activeNodes, activeEdges, newSourceId, newTargetId, sourcePort ?? null, replaceIds)) return
       await Promise.all(replaceIds.map(id => window.api.edge.delete(id)))
       const newEdge = await window.api.edge.create(activeProject.id, newSourceId, newTargetId, sourcePort ?? null)
-      setActiveEdges(prev => [...prev.filter(e => !replaceIds.includes(e.id)), newEdge])
+      const nextEdges = [...activeEdges.filter(e => !replaceIds.includes(e.id)), newEdge]
+      setActiveEdges(nextEdges)
       setNodeStatuses({})
       setActiveBranchRoutes({})
       setActiveLogNodeId(null)
+      recordCanvasHistory(activeProject.id, before, { nodes: activeNodes, edges: nextEdges })
     } catch (err) {
       console.error('연결 변경 실패:', err)
     }
-  }, [activeProject?.id, activeNodes, activeEdges])
+  }, [activeProject, activeNodes, activeEdges, recordCanvasHistory])
 
   // Run upstream nodes for real and return the immediate parent's output as
   // JSON. Used by the INPUT ▶ button so users can preview live data without
@@ -1566,7 +1990,7 @@ export default function App(): JSX.Element {
       }
       if (node.type === 'data') {
         moduleVarsMap[nodeId] = { ...upstreamModuleVars }
-        const output = readDataNodeOutput(node.config)
+        const output = readDataNodeOutput(node.config, commonDataModules)
         visiting.delete(nodeId)
         return output
       }
@@ -1693,16 +2117,15 @@ export default function App(): JSX.Element {
           if (!res.ok) throw new ApiHttpError(res.status, res.statusText, res.text)
           try {
             const data = JSON.parse(res.text) as unknown
-            if (Array.isArray(data)) allResults.push(...data)
-            else allResults.push(data)
-          } catch { allResults.push(res.text) }
+            appendApiExecutionResult(allResults, data)
+          } catch { appendApiExecutionResult(allResults, res.text) }
         }
 
         let postOutputVars: Record<string, unknown> = {}
-        let finalOutput: unknown = allResults
+        const responseOutput = normalizeApiExecutionOutput(allResults)
+        let finalOutput: unknown = responseOutput
         if (cfg.postScript && cfg.postScript.trim()) {
           try {
-            const responseOutput = allResults.length === 1 ? allResults[0] : allResults
             const postScriptInput = buildRuntimeInputContext(upstream, { ...upstreamModuleVars, ...preInputVars })
             const r = await runPostResponse(cfg.postScript, {
               input: postScriptInput,
@@ -1745,7 +2168,7 @@ export default function App(): JSX.Element {
       }
       return JSON.stringify({ __previewError: String((err as Error)?.message ?? err) }, null, 2)
     }
-  }, [activeNodes, activeEdges, activeProjectWs, activeProjectEnvVars, rememberSelectSelection, setScriptLogsForNode])
+  }, [activeNodes, activeEdges, activeProjectWs, activeProjectEnvVars, commonDataModules, rememberSelectSelection, setScriptLogsForNode])
 
   const handleNodeRun = useCallback(async (nodeId: string) => {
     const inputJson = await previewUpToNode(nodeId)
@@ -1838,9 +2261,19 @@ export default function App(): JSX.Element {
         }
       })
     }
+    const rememberLoopProgress = (index: number): void => {
+      if (!loop) return
+      setLastStartNodeLoopProgress({
+        [loop.startNodeId]: {
+          current: Math.max(1, Math.min(loop.total, index + 1)),
+          total: loop.total,
+        },
+      })
+    }
     const startNextLoopIteration = (): boolean => {
       if (!loop || loop.index + 1 >= loop.total) return false
       const nextStartedAt = Date.now()
+      rememberLoopProgress(loop.index + 1)
       const nextExecution: CanvasExecution = {
         nodeOutputs: {},
         moduleVars: {},
@@ -2061,10 +2494,7 @@ export default function App(): JSX.Element {
             const connectedModuleIds = activeNodes
               .filter(n => planSet.has(n.id) && n.type !== 'start' && n.type !== 'end')
               .map(n => n.id)
-            const hasExplicitSelection = Object.prototype.hasOwnProperty.call(endCfg, 'selectedModuleIds')
-            const selectedSet = hasExplicitSelection && Array.isArray(endCfg.selectedModuleIds)
-              ? new Set(endCfg.selectedModuleIds.filter(id => planSet.has(id)))
-              : new Set(connectedModuleIds)
+            const selectedSet = resolveEndReportSelectedModuleIds(endCfg, connectedModuleIds)
             const reportNodes: ReportNode[] = plan.map(pid => {
               const pn = activeNodes.find(n => n.id === pid)
               const logEntry = reportLogs.find(e => e.nodeId === pid)
@@ -2147,7 +2577,7 @@ export default function App(): JSX.Element {
       if (node.type === 'data') {
         setNodeRunInputs(prev => ({ ...prev, [nodeId]: JSON.stringify(rawInput, null, 2) }))
         try {
-          const output = readDataNodeOutput(node.config)
+          const output = readDataNodeOutput(node.config, commonDataModules)
           nodeOutputs[nodeId] = output
           updateLog(entryId, { status: 'success', output, duration: Date.now() - startedAt })
           setNodeStatuses(prev => ({ ...prev, [nodeId]: 'success' }))
@@ -2442,19 +2872,18 @@ export default function App(): JSX.Element {
             }
             try {
               const data = JSON.parse(res.text) as unknown
-              if (Array.isArray(data)) allResults.push(...data)
-              else allResults.push(data)
+              appendApiExecutionResult(allResults, data)
             } catch {
-              allResults.push(res.text)
+              appendApiExecutionResult(allResults, res.text)
             }
           }
 
           // ── Post Response script ───────────────────────
           let postOutputVars: Record<string, unknown> = {}
-          let finalOutput: unknown = allResults
+          const responseOutput = normalizeApiExecutionOutput(allResults)
+          let finalOutput: unknown = responseOutput
           if (cfg.postScript && cfg.postScript.trim()) {
             try {
-              const responseOutput = allResults.length === 1 ? allResults[0] : allResults
               const postScriptInput = buildRuntimeInputContext(rawInput, { ...upstreamModuleVars, ...preInputVars })
               const r = await runPostResponse(cfg.postScript, {
                 input: postScriptInput,
@@ -2536,6 +2965,14 @@ export default function App(): JSX.Element {
           })),
         }
       : {})
+    setLastStartNodeLoopProgress(loop && startNode
+      ? {
+          [startNode.id]: {
+            current: 1,
+            total: loop.total,
+          },
+        }
+      : {})
     const execution: CanvasExecution = {
       nodeOutputs: {},
       moduleVars: {},
@@ -2564,6 +3001,7 @@ export default function App(): JSX.Element {
     setNodeRunOutputs({})
     setNodeScriptLogs({})
     setStartRepeatRowStates({})
+    setLastStartNodeLoopProgress({})
   }, [])
 
   const handleExportFailedRepeatRows = useCallback(async (nodeId: string): Promise<string> => {
@@ -2611,26 +3049,47 @@ export default function App(): JSX.Element {
 
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent): void => {
-      if (!(e.ctrlKey || e.metaKey) || e.key !== 'Enter') return
+      if (!(e.ctrlKey || e.metaKey)) return
 
       const target = e.target as HTMLElement | null
       const tagName = target?.tagName.toLowerCase()
       if (target?.isContentEditable || tagName === 'input' || tagName === 'textarea' || tagName === 'select') return
+      if (target?.closest('.wf-canvas')) return
 
       const hasOpenModal = editingNode
         || modalEnv !== undefined
         || modalProject
+        || modalProjectClone
         || modalWorkspace
         || confirmDeleteWsId
         || confirmDeleteProject
         || confirmDeleteEnv
-        || confirmDeleteCanvasNode
+        || confirmDeleteCanvasNodes.length > 0
         || confirmDeleteEdge
         || savedReport
         || pendingPreviewSelect
         || envDropdownOpen
 
-      if (!activeProject || canvasExecution || hasOpenModal) return
+      if (!activeProject || hasOpenModal) return
+
+      const key = e.key.toLowerCase()
+      if (!canvasExecution && key === 'z') {
+        e.preventDefault()
+        if (e.shiftKey) {
+          if (canCanvasRedo) void handleCanvasRedo()
+        } else if (canCanvasUndo) {
+          void handleCanvasUndo()
+        }
+        return
+      }
+
+      if (!canvasExecution && key === 'y') {
+        e.preventDefault()
+        if (canCanvasRedo) void handleCanvasRedo()
+        return
+      }
+
+      if (canvasExecution || key !== 'enter') return
 
       e.preventDefault()
       handleCanvasRun()
@@ -2640,17 +3099,22 @@ export default function App(): JSX.Element {
     return () => window.removeEventListener('keydown', onKeyDown)
   }, [
     activeProject,
+    canCanvasRedo,
+    canCanvasUndo,
     canvasExecution,
-    confirmDeleteCanvasNode,
+    confirmDeleteCanvasNodes.length,
     confirmDeleteEdge,
     confirmDeleteEnv,
     confirmDeleteProject,
     confirmDeleteWsId,
     editingNode,
     envDropdownOpen,
+    handleCanvasRedo,
     handleCanvasRun,
+    handleCanvasUndo,
     modalEnv,
     modalProject,
+    modalProjectClone,
     modalWorkspace,
     pendingPreviewSelect,
     savedReport,
@@ -2731,6 +3195,107 @@ export default function App(): JSX.Element {
     if (!result.ok) alert(`보고서 파일 열기 실패: ${result.error}`)
   }, [savedReport])
 
+  const reloadWorkspaceTree = useCallback(async (preferredWsId?: string, preferredProjectId?: string): Promise<void> => {
+    const [wsList] = await Promise.all([
+      window.api.workspace.list(),
+      refreshCommonDataModules(),
+    ])
+    const all = await Promise.all(
+      wsList.map(async (ws) => {
+        const [envs, projects] = await Promise.all([
+          window.api.environment.list(ws.id),
+          window.api.project.list(ws.id)
+        ])
+        const baseEnv = envs.find(e => e.isBase)
+        const savedEnvId = localStorage.getItem(`ws_active_env_${ws.id}`)
+        const savedEnv = savedEnvId ? envs.find(e => e.id === savedEnvId) : null
+        return {
+          id: ws.id,
+          name: ws.name,
+          description: ws.description ?? '',
+          environments: envs as Environment[],
+          activeEnvId: savedEnv?.id ?? baseEnv?.id ?? envs[0]?.id ?? '',
+          projects: projects as ProjectItem[]
+        }
+      })
+    )
+    setWorkspaces(all)
+
+    const nextWs = all.find(ws => ws.id === preferredWsId) ?? all[0]
+    setActiveWsId(nextWs?.id ?? '')
+    const nextProject = nextWs?.projects.find(project => project.id === preferredProjectId) ?? nextWs?.projects[0]
+    setActiveProjectId(nextProject?.id ?? '')
+  }, [refreshCommonDataModules])
+
+  const handleExportWorkspace = useCallback(async (): Promise<void> => {
+    if (!activeProjectWs) {
+      alert('내보낼 워크스페이스가 없습니다.')
+      return
+    }
+    setTransferBusy(true)
+    setTransferMenuOpen(false)
+    try {
+      const result = await window.api.transfer.exportWorkspace(activeProjectWs.id)
+      if (result.ok) alert(`워크스페이스 내보내기 완료:\n${result.path}`)
+      else if (!result.canceled) alert(`워크스페이스 내보내기 실패: ${result.error ?? '알 수 없는 오류'}`)
+    } finally {
+      setTransferBusy(false)
+    }
+  }, [activeProjectWs])
+
+  const handleExportProject = useCallback(async (): Promise<void> => {
+    if (!activeProject) {
+      alert('내보낼 프로젝트가 없습니다.')
+      return
+    }
+    setTransferBusy(true)
+    setTransferMenuOpen(false)
+    try {
+      const result = await window.api.transfer.exportProject(activeProject.id)
+      if (result.ok) alert(`프로젝트 내보내기 완료:\n${result.path}`)
+      else if (!result.canceled) alert(`프로젝트 내보내기 실패: ${result.error ?? '알 수 없는 오류'}`)
+    } finally {
+      setTransferBusy(false)
+    }
+  }, [activeProject])
+
+  const handleImportWorkspace = useCallback(async (): Promise<void> => {
+    setTransferBusy(true)
+    setTransferMenuOpen(false)
+    try {
+      const result = await window.api.transfer.importWorkspace()
+      if (!result.ok) {
+        if (!result.canceled) alert(`워크스페이스 가져오기 실패: ${result.error ?? '알 수 없는 오류'}`)
+        return
+      }
+      await reloadWorkspaceTree(result.result.workspaceId, result.result.projectId)
+      alert(`워크스페이스 가져오기 완료: ${result.result.workspaceName ?? '가져온 워크스페이스'}`)
+    } finally {
+      setTransferBusy(false)
+    }
+  }, [reloadWorkspaceTree])
+
+  const handleImportProject = useCallback(async (): Promise<void> => {
+    const targetWorkspace = activeProjectWs ?? workspaces.find(ws => ws.id === activeWsId) ?? workspaces[0]
+    if (!targetWorkspace) {
+      alert('프로젝트를 가져올 워크스페이스가 없습니다. 먼저 워크스페이스를 생성하거나 워크스페이스 내보내기 파일을 가져오세요.')
+      return
+    }
+    setTransferBusy(true)
+    setTransferMenuOpen(false)
+    try {
+      const result = await window.api.transfer.importProject(targetWorkspace.id)
+      if (!result.ok) {
+        if (!result.canceled) alert(`프로젝트 가져오기 실패: ${result.error ?? '알 수 없는 오류'}`)
+        return
+      }
+      await reloadWorkspaceTree(targetWorkspace.id, result.result.projectId)
+      alert(`프로젝트 가져오기 완료: ${result.result.projectName ?? '가져온 프로젝트'}`)
+    } finally {
+      setTransferBusy(false)
+    }
+  }, [activeProjectWs, activeWsId, reloadWorkspaceTree, workspaces])
+
   const onNodeStatusClick = useCallback((nodeId: string) => {
     setLogState('fullscreen')
     setActiveLogNodeId(nodeId)
@@ -2785,7 +3350,14 @@ export default function App(): JSX.Element {
 
   const deleteWorkspace = async (): Promise<void> => {
     if (!confirmDeleteWsId) return
+    const deletedProjectIds = new Set(workspaces.find(w => w.id === confirmDeleteWsId)?.projects.map(project => project.id) ?? [])
     await window.api.workspace.delete(confirmDeleteWsId)
+    setCanvasHistories(prev => {
+      if (deletedProjectIds.size === 0) return prev
+      const next = { ...prev }
+      deletedProjectIds.forEach(id => delete next[id])
+      return next
+    })
     setWorkspaces(prev => {
       const next = prev.filter(w => w.id !== confirmDeleteWsId)
       if (activeWsId === confirmDeleteWsId) setActiveWsId(next[0]?.id ?? '')
@@ -2840,7 +3412,9 @@ export default function App(): JSX.Element {
   // ── Project handlers ──
   const openAddProjectModal = (wsId: string): void => setModalProject({ wsId, project: null })
   const openEditProjectModal = (wsId: string, project: ProjectItem): void => setModalProject({ wsId, project })
+  const openCloneProjectModal = (wsId: string, project: ProjectItem): void => setModalProjectClone({ wsId, project })
   const closeProjectModal = (): void => setModalProject(null)
+  const closeCloneProjectModal = (): void => setModalProjectClone(null)
 
   const saveProject = async (name: string, description: string): Promise<void> => {
     if (!modalProject) return
@@ -2863,10 +3437,36 @@ export default function App(): JSX.Element {
     closeProjectModal()
   }
 
+  const duplicateProject = async (name: string): Promise<void> => {
+    if (!modalProjectClone) return
+    const { wsId, project } = modalProjectClone
+    const created = await window.api.project.duplicate(project.id, name)
+    const newProject = created as ProjectItem
+    setWorkspaces(prev => prev.map(w => {
+      if (w.id !== wsId) return w
+      const sourceIndex = w.projects.findIndex(p => p.id === project.id)
+      const nextProjects = [...w.projects]
+      if (sourceIndex >= 0) {
+        nextProjects.splice(sourceIndex + 1, 0, newProject)
+      } else {
+        nextProjects.push(newProject)
+      }
+      return { ...w, projects: nextProjects }
+    }))
+    closeCloneProjectModal()
+    selectProject(wsId, newProject.id)
+  }
+
   const deleteProject = async (): Promise<void> => {
     if (!confirmDeleteProject) return
     const { wsId, project } = confirmDeleteProject
     await window.api.project.delete(project.id)
+    setCanvasHistories(prev => {
+      if (!prev[project.id]) return prev
+      const next = { ...prev }
+      delete next[project.id]
+      return next
+    })
     setWorkspaces(prev => prev.map(w => {
       if (w.id !== wsId) return w
       const next = w.projects.filter(p => p.id !== project.id)
@@ -2974,8 +3574,8 @@ export default function App(): JSX.Element {
               </button>
             )}
             {updateState.status === 'downloaded' && (
-              <button className="btn primary" onClick={() => { void window.api.update.install() }}>
-                재시작 후 적용
+              <button className="btn primary" onClick={() => { void handleUpdateAction() }} disabled={updateActionBusy}>
+                {updateActionLabel}
               </button>
             )}
             <button
@@ -3027,8 +3627,9 @@ export default function App(): JSX.Element {
 
         {!isFull && (
           <div className="sidebar-icons-projects">
-            {workspaces.map(ws =>
-              ws.projects.length > 0 ? (
+            {workspaces.map(ws => {
+              const projectIconLabels = buildProjectIconLabels(ws.projects)
+              return ws.projects.length > 0 ? (
                 <div key={ws.id} className="sidebar-icons-ws-group">
                   {ws.projects.map(proj => (
                     <button
@@ -3040,13 +3641,14 @@ export default function App(): JSX.Element {
                       }}
                       onMouseLeave={() => setIconTooltip(null)}
                       onClick={() => selectProject(ws.id, proj.id)}
+                      aria-label={`${ws.name} ${proj.name} 프로젝트 열기`}
                     >
-                      {proj.name.charAt(0).toUpperCase()}
+                      {projectIconLabels.get(proj.id) ?? proj.name.charAt(0).toUpperCase()}
                     </button>
                   ))}
                 </div>
               ) : null
-            )}
+            })}
           </div>
         )}
 
@@ -3079,6 +3681,7 @@ export default function App(): JSX.Element {
                       onSelect={(id) => selectProject(wsId, id)}
                       onAdd={() => openAddProjectModal(wsId)}
                       onEdit={(proj) => openEditProjectModal(wsId, proj)}
+                      onDuplicate={(proj) => openCloneProjectModal(wsId, proj)}
                       onDelete={(proj) => setConfirmDeleteProject({ wsId, project: proj })}
                       onReorder={(orderedIds) => { void handleProjectReorder(wsId, orderedIds) }}
                     />
@@ -3086,7 +3689,7 @@ export default function App(): JSX.Element {
                 )
               }}
             />
-            <ModulePaletteSection stateKey="common-module" title="공통 모듈" />
+            <ModulePaletteSection stateKey="common-module" title="공통 모듈" commonDataModules={commonDataModules} />
           </div>
         )}
 
@@ -3146,22 +3749,41 @@ export default function App(): JSX.Element {
             <button className="btn ghost icon" onClick={toggleTheme} title={theme === 'dark' ? '라이트 테마' : '다크 테마'}>
               {theme === 'dark' ? <IcoSun size={15} /> : <IcoMoon size={15} />}
             </button>
-            <button className="btn" onClick={() => {}}>
-              <IcoSave size={14} />
-              저장
-            </button>
-            {Object.keys(nodeStatuses).length > 0 ? (
-              <button className="btn" onClick={handleCanvasReset}>
-                <IcoReset size={13} />
-                초기화
+            <div className="topbar-transfer" ref={transferMenuRef}>
+              <button
+                className="btn topbar-transfer-btn"
+                onClick={() => setTransferMenuOpen(open => !open)}
+                disabled={transferBusy}
+                title="워크스페이스 또는 프로젝트 가져오기/내보내기"
+              >
+                <IcoUpload size={13} />
+                {transferBusy ? '처리 중' : '가져오기/내보내기'}
+                <IcoChevD size={10} />
               </button>
-            ) : (
-              <button className="btn primary topbar-run-btn" onClick={handleCanvasRun} title="실행 (Ctrl+Enter)">
-                <IcoPlay size={13} />
-                실행
-                <kbd className="topbar-run-shortcut">Ctrl+Enter</kbd>
-              </button>
-            )}
+              {transferMenuOpen && (
+                <div className="topbar-transfer-menu">
+                  <div className="topbar-transfer-group-label">내보내기</div>
+                  <button className="topbar-transfer-option" onClick={() => { void handleExportWorkspace() }} disabled={!activeProjectWs || transferBusy}>
+                    <IcoDownload size={13} />
+                    현재 워크스페이스 내보내기
+                  </button>
+                  <button className="topbar-transfer-option" onClick={() => { void handleExportProject() }} disabled={!activeProject || transferBusy}>
+                    <IcoDownload size={13} />
+                    현재 프로젝트 내보내기
+                  </button>
+                  <div className="topbar-transfer-separator" />
+                  <div className="topbar-transfer-group-label">가져오기</div>
+                  <button className="topbar-transfer-option" onClick={() => { void handleImportWorkspace() }} disabled={transferBusy}>
+                    <IcoUpload size={13} />
+                    워크스페이스 가져오기
+                  </button>
+                  <button className="topbar-transfer-option" onClick={() => { void handleImportProject() }} disabled={transferBusy}>
+                    <IcoUpload size={13} />
+                    프로젝트 가져오기
+                  </button>
+                </div>
+              )}
+            </div>
           </div>
         </header>
 
@@ -3170,6 +3792,8 @@ export default function App(): JSX.Element {
             <div className="canvas-wrap">
               <div className="canvas-bg" />
               <WorkflowCanvas
+                  key={activeProject.id}
+                  projectId={activeProject.id}
                   nodes={activeNodes}
                   edges={activeEdges}
                   onNodeMove={handleNodeMove}
@@ -3188,6 +3812,18 @@ export default function App(): JSX.Element {
                   branchRoutes={activeBranchRoutes}
                   endNodeDisplayValues={endNodeDisplayValues}
                   startNodeLoopProgress={startNodeLoopProgress}
+                  commonDataModules={commonDataModules}
+                  envVars={activeProjectEnvVars}
+                  dataVars={startRepeatPreviewData}
+                  nodeRunInputs={nodeRunInputs}
+                  onCanvasRun={handleCanvasRun}
+                  onCanvasReset={handleCanvasReset}
+                  onCanvasUndo={handleCanvasUndo}
+                  onCanvasRedo={handleCanvasRedo}
+                  canCanvasUndo={canCanvasUndo}
+                  canCanvasRedo={canCanvasRedo}
+                  showCanvasReset={Object.keys(nodeStatuses).length > 0}
+                  canvasRunDisabled={!!canvasExecution}
                   onNodeStatusClick={onNodeStatusClick}
                   isCanvasFullscreen={isCanvasFullscreen}
                   onCanvasFullscreenChange={setCanvasFullscreen}
@@ -3316,6 +3952,14 @@ export default function App(): JSX.Element {
         />
       )}
 
+      {modalProjectClone !== null && (
+        <ProjectCloneModal
+          project={modalProjectClone.project}
+          onConfirm={duplicateProject}
+          onClose={closeCloneProjectModal}
+        />
+      )}
+
       {/* ── Workspace Delete Confirm ── */}
       {confirmDeleteWsId && (() => {
         const ws = workspaces.find(w => w.id === confirmDeleteWsId)
@@ -3342,18 +3986,22 @@ export default function App(): JSX.Element {
       )}
 
       {/* ── Project Delete Confirm ── */}
-      {confirmDeleteCanvasNode && (
+      {confirmDeleteCanvasNodes.length > 0 && (
         <ConfirmDialog
           title="캔버스 모듈 삭제"
-          message={`"${confirmDeleteCanvasNode.label}" 모듈을 캔버스에서 삭제하시겠습니까?`}
+          message={
+            confirmDeleteCanvasNodes.length === 1
+              ? `"${confirmDeleteCanvasNodes[0].label}" 모듈을 캔버스에서 삭제하시겠습니까?`
+              : `선택한 ${confirmDeleteCanvasNodes.length}개 모듈을 캔버스에서 삭제하시겠습니까?`
+          }
           warning="현재 캔버스에 배치된 독립 모듈과 연결선만 삭제됩니다."
           confirmLabel="삭제"
           onConfirm={async () => {
-            const node = confirmDeleteCanvasNode
-            setConfirmDeleteCanvasNode(null)
-            await deleteCanvasNodeInstance(node)
+            const nodes = confirmDeleteCanvasNodes
+            setConfirmDeleteCanvasNodes([])
+            await deleteCanvasNodeInstances(nodes)
           }}
-          onCancel={() => setConfirmDeleteCanvasNode(null)}
+          onCancel={() => setConfirmDeleteCanvasNodes([])}
         />
       )}
 
@@ -3377,6 +4025,12 @@ export default function App(): JSX.Element {
           repeatRowStates={startRepeatRowStates[editingNode.id]}
           onResetRepeatRowStates={nodeId => {
             setStartRepeatRowStates(prev => {
+              if (!prev[nodeId]) return prev
+              const next = { ...prev }
+              delete next[nodeId]
+              return next
+            })
+            setLastStartNodeLoopProgress(prev => {
               if (!prev[nodeId]) return prev
               const next = { ...prev }
               delete next[nodeId]
@@ -3412,13 +4066,12 @@ export default function App(): JSX.Element {
         <DataNodeModal
           key={editingNode.id}
           node={editingNode}
+          sharedDataModule={findCommonDataModule(commonDataModules, sharedDataModuleIdFromConfig(editingNode.config))}
           initialInput={nodeRunInputs[editingNode.id]}
           onRun={() => previewUpToNode(editingNode.id)}
           onSave={handleDataNodeSave}
           onDelete={async () => {
-            await window.api.node.delete(editingNode.id)
-            setActiveNodes(prev => prev.filter(n => n.id !== editingNode.id))
-            setActiveEdges(prev => prev.filter(e => e.sourceNodeId !== editingNode.id && e.targetNodeId !== editingNode.id))
+            await deleteCanvasNodeInstances([editingNode])
             setEditingNode(null)
           }}
           onClose={() => setEditingNode(null)}
@@ -3433,9 +4086,7 @@ export default function App(): JSX.Element {
           onRun={() => previewUpToNode(editingNode.id)}
           onSave={handleDataNodeSave}
           onDelete={async () => {
-            await window.api.node.delete(editingNode.id)
-            setActiveNodes(prev => prev.filter(n => n.id !== editingNode.id))
-            setActiveEdges(prev => prev.filter(e => e.sourceNodeId !== editingNode.id && e.targetNodeId !== editingNode.id))
+            await deleteCanvasNodeInstances([editingNode])
             setEditingNode(null)
           }}
           onClose={() => setEditingNode(null)}
@@ -3455,9 +4106,7 @@ export default function App(): JSX.Element {
           dataVars={startRepeatPreviewData}
           onSave={handleDataNodeSave}
           onDelete={async () => {
-            await window.api.node.delete(editingNode.id)
-            setActiveNodes(prev => prev.filter(n => n.id !== editingNode.id))
-            setActiveEdges(prev => prev.filter(e => e.sourceNodeId !== editingNode.id && e.targetNodeId !== editingNode.id))
+            await deleteCanvasNodeInstances([editingNode])
             setEditingNode(null)
           }}
           onClose={() => setEditingNode(null)}
@@ -3477,9 +4126,7 @@ export default function App(): JSX.Element {
           onRun={() => previewUpToNode(editingNode.id)}
           onSave={handleDataNodeSave}
           onDelete={async () => {
-            await window.api.node.delete(editingNode.id)
-            setActiveNodes(prev => prev.filter(n => n.id !== editingNode.id))
-            setActiveEdges(prev => prev.filter(e => e.sourceNodeId !== editingNode.id && e.targetNodeId !== editingNode.id))
+            await deleteCanvasNodeInstances([editingNode])
             setEditingNode(null)
           }}
           onClose={() => setEditingNode(null)}

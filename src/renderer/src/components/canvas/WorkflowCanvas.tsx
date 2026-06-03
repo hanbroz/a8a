@@ -1,7 +1,8 @@
 import { useRef, useState, useCallback, useEffect } from 'react'
 import type { CSSProperties } from 'react'
-import { IcoChevD, IcoCopy, IcoPlay, IcoX } from '../Icon'
+import { IcoChevD, IcoCopy, IcoPlay, IcoRedo, IcoReset, IcoUndo, IcoX } from '../Icon'
 import { parseBranchConfig } from '../../utils/branch'
+import { applyInputMappings, resolveTemplate } from '../../utils/interpolate'
 
 const NODE_W = 160
 const NODE_H = 52
@@ -22,9 +23,15 @@ type EdgeLineStyle = 'curve' | 'straight'
 type InputPortSide = 'left' | 'top'
 type OutputPortSide = 'right' | 'bottom'
 type NodeSize = { width: number; height: number }
+type NodeMove = { id: string; x: number; y: number }
 type EndNodeDisplayValue = { name: string; value: string }
 type StartNodeLoopProgress = { current: number; total: number }
 type ApiFlowItem = { id: string; index: number; label: string; method: string; url: string; rawUrl: string }
+type ApiUrlDisplayContext = {
+  envVars: Record<string, string>
+  dataVars: Record<string, unknown>
+  nodeRunInputs: Record<string, string>
+}
 
 function isCanvasModuleNodeType(type: ApiNode['type']): boolean {
   return type === 'data' || type === 'select' || type === 'api' || type === 'branch'
@@ -64,9 +71,10 @@ function nodeStyle(node: ApiNode): CSSProperties {
 }
 
 interface Props {
+  projectId: string
   nodes: ApiNode[]
   edges: ApiEdge[]
-  onNodeMove: (id: string, x: number, y: number) => void
+  onNodeMove: (moves: NodeMove[]) => void
   onNodeResize: (id: string, width: number, height: number) => void
   onEdgeCreate: (sourceId: string, targetId: string, sourcePort?: string | null) => void
   onEdgeDelete: (id: string) => void
@@ -74,14 +82,26 @@ interface Props {
   onNodeOpen: (nodeId: string) => void
   onNodeRun?: (nodeId: string) => void
   onNodeCopy?: (nodeIds: string[]) => void
-  onNodePaste?: () => void
-  onNodeDeleteRequest?: (nodeId: string) => void
+  onNodePaste?: (center: Point) => void
+  onNodeDeleteRequest?: (nodeIds: string[]) => void
   canPasteNode?: boolean
-  onModuleDrop: (moduleType: string, x: number, y: number) => void
+  onModuleDrop: (moduleType: string, x: number, y: number, moduleId?: string | null) => void
   nodeStatuses?: Record<string, NodeStatus>
   branchRoutes?: Record<string, 'true' | 'false'>
   endNodeDisplayValues?: Record<string, EndNodeDisplayValue[]>
   startNodeLoopProgress?: Record<string, StartNodeLoopProgress>
+  commonDataModules?: ApiModule[]
+  envVars?: Record<string, string>
+  dataVars?: Record<string, unknown>
+  nodeRunInputs?: Record<string, string>
+  onCanvasRun?: () => void
+  onCanvasReset?: () => void
+  onCanvasUndo?: () => void
+  onCanvasRedo?: () => void
+  canCanvasUndo?: boolean
+  canCanvasRedo?: boolean
+  showCanvasReset?: boolean
+  canvasRunDisabled?: boolean
   onNodeStatusClick?: (nodeId: string) => void
   isCanvasFullscreen?: boolean
   onCanvasFullscreenChange?: (fullscreen: boolean) => void
@@ -100,8 +120,41 @@ interface NodeResizeDrag {
   minSize: NodeSize
 }
 type Point = { x: number; y: number }
+type CanvasViewState = { viewport: Point; zoom: number }
 type SelectionBox = { x: number; y: number; width: number; height: number }
 type PortPoint = Point & { side: InputPortSide | OutputPortSide; sourcePort?: string | null }
+
+function canvasViewStorageKey(projectId: string): string {
+  return `wf-canvas-view:${projectId}`
+}
+
+function isFinitePoint(value: unknown): value is Point {
+  if (!value || typeof value !== 'object') return false
+  const point = value as Partial<Point>
+  return Number.isFinite(point.x) && Number.isFinite(point.y)
+}
+
+function loadCanvasViewState(projectId: string): CanvasViewState {
+  try {
+    const raw = localStorage.getItem(canvasViewStorageKey(projectId))
+    if (!raw) return { viewport: { x: 0, y: 0 }, zoom: 1 }
+    const parsed = JSON.parse(raw) as Partial<CanvasViewState>
+    return {
+      viewport: isFinitePoint(parsed.viewport) ? parsed.viewport : { x: 0, y: 0 },
+      zoom: Number.isFinite(parsed.zoom) ? clamp(Number(parsed.zoom), MIN_ZOOM, MAX_ZOOM) : 1,
+    }
+  } catch {
+    return { viewport: { x: 0, y: 0 }, zoom: 1 }
+  }
+}
+
+function saveCanvasViewState(projectId: string, viewport: Point, zoom: number): void {
+  try {
+    localStorage.setItem(canvasViewStorageKey(projectId), JSON.stringify({ viewport, zoom }))
+  } catch {
+    // View state persistence is best-effort; canvas editing must keep working.
+  }
+}
 
 interface SelectionDrag {
   start: Point
@@ -309,6 +362,23 @@ function parseDataConfig(config: string): DataConfig {
   } catch { return { output: '' } }
 }
 
+function sharedDataModuleIdFromConfig(config: string): string | null {
+  try {
+    const parsed = JSON.parse(config || '{}') as Partial<DataConfig>
+    return typeof parsed.sharedDataModuleId === 'string' && parsed.sharedDataModuleId.trim()
+      ? parsed.sharedDataModuleId.trim()
+      : null
+  } catch {
+    return null
+  }
+}
+
+function findCommonDataModule(modules: ApiModule[], config: string): ApiModule | null {
+  const moduleId = sharedDataModuleIdFromConfig(config)
+  if (!moduleId) return null
+  return modules.find(mod => mod.id === moduleId && mod.type === 'data' && mod.isCommon) ?? null
+}
+
 function describeDataOutput(cfg: DataConfig): string {
   if (!cfg.output.trim()) return '비어있음'
   try {
@@ -344,9 +414,35 @@ function parseApiConfig(config: string): ApiConfig {
 function displayApiUrl(url: string): string {
   const trimmed = url.trim()
   if (!trimmed) return '미설정'
-  const withoutLeadingEnv = trimmed.replace(/^\{\{\s*[^{}[\]]+?\s*\}\}/, '').trim()
-  if (!withoutLeadingEnv && withoutLeadingEnv !== trimmed) return '/'
-  return withoutLeadingEnv || trimmed
+  const withoutFirstEnv = trimmed.replace(/\{\{\s*[^{}[\]]+?\s*\}\}/, '').trim()
+  if (!withoutFirstEnv && withoutFirstEnv !== trimmed) return '/'
+  return withoutFirstEnv || trimmed
+}
+
+function parseDisplayInputData(raw?: string): Record<string, unknown> {
+  if (!raw?.trim()) return {}
+  try {
+    const parsed = JSON.parse(raw) as unknown
+    if (Array.isArray(parsed)) {
+      if (parsed.length === 1 && parsed[0] && typeof parsed[0] === 'object' && !Array.isArray(parsed[0])) {
+        return parsed[0] as Record<string, unknown>
+      }
+      return {}
+    }
+    if (parsed && typeof parsed === 'object') return parsed as Record<string, unknown>
+  } catch {
+    return {}
+  }
+  return {}
+}
+
+function resolvedDisplayApiUrl(config: ApiConfig, nodeId: string, context: ApiUrlDisplayContext): string {
+  const inputData = parseDisplayInputData(context.nodeRunInputs[nodeId])
+  const mappedInputData = applyInputMappings(inputData, config.inputMappings ?? {})
+  const displayUrlTemplate = config.url.replace(/\{\{\s*[^{}[\]]+?\s*\}\}/, '')
+  if (!displayUrlTemplate.trim() && config.url.trim()) return '/'
+  const resolvedUrl = resolveTemplate(displayUrlTemplate, context.envVars, mappedInputData, context.dataVars)
+  return displayApiUrl(resolvedUrl)
 }
 
 function ApiIcon(): JSX.Element {
@@ -458,7 +554,7 @@ function buildAutoArrangeOrder(nodes: ApiNode[], edges: ApiEdge[]): ApiNode[] {
   return orderedIds.map(id => nodeById.get(id)).filter((node): node is ApiNode => !!node)
 }
 
-function buildApiFlowItems(nodes: ApiNode[], edges: ApiEdge[]): ApiFlowItem[] {
+function buildApiFlowItems(nodes: ApiNode[], edges: ApiEdge[], context: ApiUrlDisplayContext): ApiFlowItem[] {
   const nodeById = new Map(nodes.map(node => [node.id, node]))
   const { orderedIds, reachableIds } = buildExecutionOrderedIds(nodes, edges)
   return orderedIds
@@ -471,7 +567,7 @@ function buildApiFlowItems(nodes: ApiNode[], edges: ApiEdge[]): ApiFlowItem[] {
         index: index + 1,
         label: node.label || 'API',
         method: cfg.method || 'GET',
-        url: displayApiUrl(cfg.url),
+        url: resolvedDisplayApiUrl(cfg, node.id, context),
         rawUrl: cfg.url,
       }
     })
@@ -479,11 +575,14 @@ function buildApiFlowItems(nodes: ApiNode[], edges: ApiEdge[]): ApiFlowItem[] {
 
 
 export default function WorkflowCanvas({
+  projectId,
   nodes, edges,
   onNodeMove, onNodeResize, onEdgeCreate, onEdgeDelete, onEdgeReconnect,
   onNodeOpen, onNodeRun, onNodeCopy, onNodePaste, onNodeDeleteRequest, canPasteNode,
   onModuleDrop,
-  nodeStatuses, branchRoutes, endNodeDisplayValues, startNodeLoopProgress, onNodeStatusClick,
+  nodeStatuses, branchRoutes, endNodeDisplayValues, startNodeLoopProgress, commonDataModules = [], onNodeStatusClick,
+  envVars = {}, dataVars = {}, nodeRunInputs = {},
+  onCanvasRun, onCanvasReset, onCanvasUndo, onCanvasRedo, canCanvasUndo = false, canCanvasRedo = false, showCanvasReset = false, canvasRunDisabled = false,
   isCanvasFullscreen = false, onCanvasFullscreenChange,
 }: Props): JSX.Element {
   const canvasRef = useRef<HTMLDivElement>(null)
@@ -505,8 +604,8 @@ export default function WorkflowCanvas({
   const [canvasDragOver, setCanvasDragOver] = useState(false)
   const [selectedNodeIds, setSelectedNodeIds] = useState<string[]>([])
   const [selectionBox, setSelectionBox] = useState<SelectionBox | null>(null)
-  const [viewport, setViewport] = useState({ x: 0, y: 0 })
-  const [zoom, setZoom] = useState(1)
+  const [viewport, setViewport] = useState<Point>(() => loadCanvasViewState(projectId).viewport)
+  const [zoom, setZoom] = useState(() => loadCanvasViewState(projectId).zoom)
   const [copiedEndValueKey, setCopiedEndValueKey] = useState<string | null>(null)
   const [lineStyle, setLineStyle] = useState<EdgeLineStyle>(() =>
     localStorage.getItem('wf-edge-line-style') === 'straight' ? 'straight' : 'curve',
@@ -526,6 +625,15 @@ export default function WorkflowCanvas({
     return {
       x: (clientX - rect.left - viewport.x) / zoom,
       y: (clientY - rect.top - viewport.y) / zoom,
+    }
+  }, [viewport, zoom])
+
+  const canvasCenterWorld = useCallback((): Point | null => {
+    const rect = canvasRect()
+    if (!rect) return null
+    return {
+      x: (rect.width / 2 - viewport.x) / zoom,
+      y: (rect.height / 2 - viewport.y) / zoom,
     }
   }, [viewport, zoom])
 
@@ -618,7 +726,11 @@ export default function WorkflowCanvas({
     setSizes(prev => {
       const next: Record<string, NodeSize> = {}
       nodes.forEach(n => {
-        next[n.id] = prev[n.id] ?? { width: nW(n), height: nH(n) }
+        const propSize = { width: nW(n), height: nH(n) }
+        const current = prev[n.id]
+        next[n.id] = !current || current.width !== propSize.width || current.height !== propSize.height
+          ? propSize
+          : current
       })
       return next
     })
@@ -627,6 +739,10 @@ export default function WorkflowCanvas({
   useEffect(() => {
     localStorage.setItem('wf-edge-line-style', lineStyle)
   }, [lineStyle])
+
+  useEffect(() => {
+    saveCanvasViewState(projectId, viewport, zoom)
+  }, [projectId, viewport, zoom])
 
   useEffect(() => {
     const row = floatingToolRowRef.current
@@ -938,10 +1054,12 @@ export default function WorkflowCanvas({
 
     const nd = nodeDragRef.current
     if (nd) {
+      const moves: NodeMove[] = []
       nd.nodeIds.forEach(id => {
         const pos = positions[id]
-        if (pos) onNodeMove(id, pos.x, pos.y)
+        if (pos) moves.push({ id, x: pos.x, y: pos.y })
       })
+      if (moves.length > 0) onNodeMove(moves)
       nodeDragRef.current = null
       setDraggingNodeIds([])
     }
@@ -1028,10 +1146,11 @@ export default function WorkflowCanvas({
     })
 
     setPositions(prev => ({ ...prev, ...nextPositions }))
-    orderedNodes.forEach(node => {
+    const moves: NodeMove[] = orderedNodes.map(node => {
       const pos = nextPositions[node.id]
-      onNodeMove(node.id, pos.x, pos.y)
+      return { id: node.id, x: pos.x, y: pos.y }
     })
+    onNodeMove(moves)
   }, [edges, nodes, onNodeMove, sizes, viewport, zoom])
 
   const liveNodes = nodes.map(n => {
@@ -1045,12 +1164,11 @@ export default function WorkflowCanvas({
       height: endDisplayCount > 0 ? Math.max(size.height, 54 + endDisplayCount * 26) : size.height,
     }
   })
-  const apiFlowItems = buildApiFlowItems(liveNodes, edges)
+  const apiUrlDisplayContext = { envVars, dataVars, nodeRunInputs }
+  const apiFlowItems = buildApiFlowItems(liveNodes, edges, apiUrlDisplayContext)
   const liveNodeById = new Map(liveNodes.map(node => [node.id, node]))
   const selectedNodeIdSet = new Set(selectedNodeIds)
   const draggingNodeIdSet = new Set(draggingNodeIds)
-  const selectedNode = selectedNodeIds.length === 1 ? liveNodeById.get(selectedNodeIds[0]) ?? null : null
-  const selectedCopyableNode = selectedNode && selectedNode.type !== 'start' && selectedNode.type !== 'end' ? selectedNode : null
   const selectedCopyableNodeIds = selectedNodeIds.filter(id => {
     const node = liveNodeById.get(id)
     return !!node && node.type !== 'start' && node.type !== 'end'
@@ -1063,21 +1181,36 @@ export default function WorkflowCanvas({
       setZoomMenuOpen(false)
       return
     }
-    if (key === 'delete' && selectedCopyableNode && onNodeDeleteRequest) {
+    if (key === 'delete' && selectedCopyableNodeIds.length > 0 && onNodeDeleteRequest) {
       e.preventDefault()
-      onNodeDeleteRequest(selectedCopyableNode.id)
+      onNodeDeleteRequest(selectedCopyableNodeIds)
       return
     }
     if (!(e.ctrlKey || e.metaKey) || e.altKey) return
+    if (key === 'z' && (onCanvasUndo || onCanvasRedo)) {
+      e.preventDefault()
+      if (e.shiftKey) {
+        if (canCanvasRedo) onCanvasRedo?.()
+      } else if (canCanvasUndo) {
+        onCanvasUndo?.()
+      }
+      return
+    }
+    if (key === 'y' && onCanvasRedo) {
+      e.preventDefault()
+      if (canCanvasRedo) onCanvasRedo()
+      return
+    }
     if (key === 'c' && selectedCopyableNodeIds.length > 0 && onNodeCopy) {
       e.preventDefault()
       onNodeCopy(selectedCopyableNodeIds)
     }
     if (key === 'v' && canPasteNode && onNodePaste) {
       e.preventDefault()
-      onNodePaste()
+      const center = canvasCenterWorld()
+      if (center) onNodePaste(center)
     }
-  }, [canPasteNode, onNodeCopy, onNodeDeleteRequest, onNodePaste, selectedCopyableNode, selectedCopyableNodeIds, zoomMenuOpen])
+  }, [canCanvasRedo, canCanvasUndo, canPasteNode, canvasCenterWorld, onCanvasRedo, onCanvasUndo, onNodeCopy, onNodeDeleteRequest, onNodePaste, selectedCopyableNodeIds, zoomMenuOpen])
 
   // Snap indicators: which input/output ports to highlight
   const snapInputId = connecting?.snapTo ?? (reconnecting?.dragging === 'target' ? reconnecting.snapTo : null)
@@ -1127,20 +1260,22 @@ export default function WorkflowCanvas({
     if (node.type === 'branch') {
       const cfg = parseBranchConfig(node.config)
       const selectedRoute = branchRoutes?.[node.id]
+      const trueSelected = selectedRoute === 'true'
+      const falseSelected = selectedRoute === 'false'
       return (
         <>
           <div
-            className={`wf-port wf-port-output wf-port-output-branch wf-port-output-branch-true${active}`}
+            className={`wf-port wf-port-output wf-port-output-branch wf-port-output-branch-true${active}${trueSelected ? ' wf-port-output-branch-selected' : ''}`}
             onMouseDown={e => onOutputPortDown(e, node.id, node.type, 'right', 'true')}
             title={cfg.trueLabel ?? 'TRUE'}
           />
-          <span className={`wf-branch-port-label wf-branch-port-label-true${selectedRoute === 'true' ? ' wf-branch-port-label-selected' : ''}`}>{cfg.trueLabel ?? 'TRUE'}</span>
+          <span className={`wf-branch-port-label wf-branch-port-label-true${trueSelected ? ' wf-branch-port-label-selected' : ''}`}>{cfg.trueLabel ?? 'TRUE'}</span>
           <div
-            className={`wf-port wf-port-output wf-port-output-branch wf-port-output-branch-false${active}`}
+            className={`wf-port wf-port-output wf-port-output-branch wf-port-output-branch-false${active}${falseSelected ? ' wf-port-output-branch-selected' : ''}`}
             onMouseDown={e => onOutputPortDown(e, node.id, node.type, 'right', 'false')}
             title={cfg.falseLabel ?? 'FALSE'}
           />
-          <span className={`wf-branch-port-label wf-branch-port-label-false${selectedRoute === 'false' ? ' wf-branch-port-label-selected' : ''}`}>{cfg.falseLabel ?? 'FALSE'}</span>
+          <span className={`wf-branch-port-label wf-branch-port-label-false${falseSelected ? ' wf-branch-port-label-selected' : ''}`}>{cfg.falseLabel ?? 'FALSE'}</span>
         </>
       )
     }
@@ -1196,10 +1331,11 @@ export default function WorkflowCanvas({
         e.preventDefault()
         setCanvasDragOver(false)
         const moduleType = e.dataTransfer.getData('moduleType')
+        const moduleId = e.dataTransfer.getData('moduleId')
         if (!moduleType || !canvasRef.current) return
         const world = clientToWorld(e.clientX, e.clientY)
         if (!world) return
-        onModuleDrop(moduleType, snapToGrid(world.x - 100), snapToGrid(world.y - 36))
+        onModuleDrop(moduleType, snapToGrid(world.x - 100), snapToGrid(world.y - 36), moduleId || null)
       }}
     >
       <div
@@ -1208,103 +1344,157 @@ export default function WorkflowCanvas({
         onMouseDown={e => e.stopPropagation()}
       >
         <div className="wf-floating-tool-row" ref={floatingToolRowRef}>
-        {onNodeCopy && (
-          <button
-            type="button"
-            className="wf-floating-tool-btn"
-            disabled={selectedCopyableNodeIds.length === 0}
-            onClick={() => { if (selectedCopyableNodeIds.length > 0) onNodeCopy(selectedCopyableNodeIds) }}
-            title="선택한 모듈 복사 (Ctrl+C)"
-          >
-            복사
+          {onCanvasUndo && (
+            <button
+              type="button"
+              className="wf-floating-tool-btn wf-floating-icon-btn"
+              disabled={!canCanvasUndo}
+              onClick={onCanvasUndo}
+              title="되돌리기 (Ctrl+Z)"
+              aria-label="되돌리기"
+            >
+              <IcoUndo size={13} />
+            </button>
+          )}
+          {onCanvasRedo && (
+            <button
+              type="button"
+              className="wf-floating-tool-btn wf-floating-icon-btn"
+              disabled={!canCanvasRedo}
+              onClick={onCanvasRedo}
+              title="다시 실행 (Ctrl+Y / Ctrl+Shift+Z)"
+              aria-label="다시 실행"
+            >
+              <IcoRedo size={13} />
+            </button>
+          )}
+          {onNodeCopy && (
+            <button
+              type="button"
+              className="wf-floating-tool-btn"
+              disabled={selectedCopyableNodeIds.length === 0}
+              onClick={() => { if (selectedCopyableNodeIds.length > 0) onNodeCopy(selectedCopyableNodeIds) }}
+              title="선택한 모듈 복사 (Ctrl+C)"
+            >
+              복사
+            </button>
+          )}
+          {onNodePaste && (
+            <button
+              type="button"
+              className="wf-floating-tool-btn"
+              disabled={!canPasteNode}
+              onClick={() => {
+                const center = canvasCenterWorld()
+                if (canPasteNode && center) onNodePaste(center)
+              }}
+              title="복사한 모듈 붙여넣기 (Ctrl+V)"
+            >
+              붙여넣기
+            </button>
+          )}
+          <button type="button" className="wf-floating-tool-btn" onClick={autoArrangeNodes} title="연결 순서 기준 자동정렬">
+            자동정렬
           </button>
-        )}
-        {onNodePaste && (
           <button
             type="button"
-            className="wf-floating-tool-btn"
-            disabled={!canPasteNode}
-            onClick={() => { if (canPasteNode) onNodePaste() }}
-            title="복사한 모듈 붙여넣기 (Ctrl+V)"
-          >
-            붙여넣기
-          </button>
-        )}
-        <button type="button" className="wf-floating-tool-btn" onClick={autoArrangeNodes} title="연결 순서 기준 자동정렬">
-          자동정렬
-        </button>
-        <button
-          type="button"
-          className={`wf-floating-tool-btn${apiListOpen ? ' active' : ''}`}
-          onClick={() => {
-            setApiListOpen(open => !open)
-            setZoomMenuOpen(false)
-          }}
-          title="연결선 실행 순서에 따른 API 목록"
-        >
-          API 목록
-        </button>
-        <div className="wf-line-style-toggle" role="group" aria-label="연결선 형태">
-          <button
-            type="button"
-            className={`wf-line-style-btn${lineStyle === 'curve' ? ' active' : ''}`}
-            onClick={() => setLineStyle('curve')}
-            title="곡선 연결선"
-          >
-            곡선
-          </button>
-          <button
-            type="button"
-            className={`wf-line-style-btn${lineStyle === 'straight' ? ' active' : ''}`}
-            onClick={() => setLineStyle('straight')}
-            title="직선 연결선"
-          >
-            직선
-          </button>
-        </div>
-        <div className="wf-zoom-menu-wrap">
-          <button
-            type="button"
-            className={`wf-zoom-indicator${zoomMenuOpen ? ' active' : ''}`}
+            className={`wf-floating-tool-btn${apiListOpen ? ' active' : ''}`}
             onClick={() => {
-              setZoomMenuOpen(open => !open)
-              setApiListOpen(false)
+              setApiListOpen(open => !open)
+              setZoomMenuOpen(false)
             }}
-            title="캔버스 확대비율"
-            aria-haspopup="menu"
-            aria-expanded={zoomMenuOpen}
+            title="연결선 실행 순서에 따른 API 목록"
           >
-            <span>{Math.round(zoom * 100)}%</span>
-            <IcoChevD size={10} />
+            API 목록
           </button>
-          {zoomMenuOpen && (
-            <div className="wf-zoom-menu" role="menu">
-              {onCanvasFullscreenChange && (
-                <>
-                  <button type="button" className="wf-zoom-menu-option" role="menuitem" onClick={toggleCanvasFullscreen}>
-                    {isCanvasFullscreen ? '닫기' : '전체화면'}
-                  </button>
-                  <div className="wf-zoom-menu-divider" />
-                </>
-              )}
-              {ZOOM_PRESETS.map(value => {
-                const percent = Math.round(value * 100)
-                const active = Math.round(zoom * 100) === percent
-                return (
-                  <button
-                    key={value}
-                    type="button"
-                    className={`wf-zoom-menu-option${active ? ' active' : ''}`}
-                    role="menuitem"
-                    onClick={() => selectZoomPreset(value)}
-                  >
-                    {percent}%
-                  </button>
-                )
-              })}
+          <div className="wf-line-style-toggle" role="group" aria-label="연결선 형태">
+            <button
+              type="button"
+              className={`wf-line-style-btn${lineStyle === 'curve' ? ' active' : ''}`}
+              onClick={() => setLineStyle('curve')}
+              title="곡선 연결선"
+            >
+              곡선
+            </button>
+            <button
+              type="button"
+              className={`wf-line-style-btn${lineStyle === 'straight' ? ' active' : ''}`}
+              onClick={() => setLineStyle('straight')}
+              title="직선 연결선"
+            >
+              직선
+            </button>
+          </div>
+          <div className="wf-zoom-menu-wrap">
+            <button
+              type="button"
+              className={`wf-zoom-indicator${zoomMenuOpen ? ' active' : ''}`}
+              onClick={() => {
+                setZoomMenuOpen(open => !open)
+                setApiListOpen(false)
+              }}
+              title="캔버스 확대비율"
+              aria-haspopup="menu"
+              aria-expanded={zoomMenuOpen}
+            >
+              <span>{Math.round(zoom * 100)}%</span>
+              <IcoChevD size={10} />
+            </button>
+            {zoomMenuOpen && (
+              <div className="wf-zoom-menu" role="menu">
+                {onCanvasFullscreenChange && (
+                  <>
+                    <button type="button" className="wf-zoom-menu-option" role="menuitem" onClick={toggleCanvasFullscreen}>
+                      {isCanvasFullscreen ? '닫기' : '전체화면'}
+                    </button>
+                    <div className="wf-zoom-menu-divider" />
+                  </>
+                )}
+                {ZOOM_PRESETS.map(value => {
+                  const percent = Math.round(value * 100)
+                  const active = Math.round(zoom * 100) === percent
+                  return (
+                    <button
+                      key={value}
+                      type="button"
+                      className={`wf-zoom-menu-option${active ? ' active' : ''}`}
+                      role="menuitem"
+                      onClick={() => selectZoomPreset(value)}
+                    >
+                      {percent}%
+                    </button>
+                  )
+                })}
+              </div>
+            )}
+          </div>
+          {(onCanvasRun || onCanvasReset) && (
+            <div className="wf-floating-action-group">
+              {showCanvasReset && onCanvasReset ? (
+                <button
+                  type="button"
+                  className="wf-floating-tool-btn wf-floating-reset-btn"
+                  onClick={onCanvasReset}
+                  title="실행 결과 초기화"
+                >
+                  <IcoReset size={13} />
+                  초기화
+                </button>
+              ) : onCanvasRun ? (
+                <button
+                  type="button"
+                  className="wf-floating-tool-btn wf-floating-run-btn"
+                  onClick={onCanvasRun}
+                  disabled={canvasRunDisabled}
+                  title="실행 (Ctrl+Enter)"
+                >
+                  <IcoPlay size={13} />
+                  실행
+                  <kbd className="wf-floating-run-shortcut">Ctrl+Enter</kbd>
+                </button>
+              ) : null}
             </div>
           )}
-        </div>
         </div>
         {apiListOpen && (
           <div className="wf-api-flow-list">
@@ -1326,7 +1516,7 @@ export default function WorkflowCanvas({
                       key={item.id}
                       type="button"
                       className={`wf-api-flow-item${selected ? ' active' : ''}`}
-                      title={`${item.label} ${item.method} ${item.rawUrl}`}
+                      title={`${item.label} ${item.method} ${item.url}${item.url !== displayApiUrl(item.rawUrl) ? `\n원본: ${item.rawUrl}` : ''}`}
                       onClick={() => {
                         setSelectedNodeIds([item.id])
                         canvasRef.current?.focus({ preventScroll: true })
@@ -1528,8 +1718,10 @@ export default function WorkflowCanvas({
         ) : null
 
         if (node.type === 'data') {
-          const cfg = parseDataConfig(node.config)
+          const sharedDataModule = findCommonDataModule(commonDataModules, node.config)
+          const cfg = parseDataConfig(sharedDataModule?.config ?? node.config)
           const countLabel = describeDataOutput(cfg)
+          const label = sharedDataModule?.label ?? node.label
           return (
             <div
               key={node.id}
@@ -1542,7 +1734,7 @@ export default function WorkflowCanvas({
               {renderInputPorts(node)}
               <div className="wf-node-icon"><DataIcon /></div>
               <div className="wf-node-data-content">
-                <span className="wf-node-label">{node.label}</span>
+                <span className="wf-node-label">{label}</span>
                 <div className="wf-node-data-meta">
                   <span className="wf-node-data-count">{countLabel}</span>
                 </div>
@@ -1587,7 +1779,13 @@ export default function WorkflowCanvas({
         if (node.type === 'api') {
           const cfg = parseApiConfig(node.config)
           const mc = apiMethodColor(cfg.method)
-          const displayUrl = displayApiUrl(cfg.url)
+          const displayUrl = resolvedDisplayApiUrl(cfg, node.id, apiUrlDisplayContext)
+          const rawDisplayUrl = displayApiUrl(cfg.url)
+          const displayTitle = cfg.url
+            ? displayUrl !== rawDisplayUrl
+              ? `${displayUrl}\n원본: ${cfg.url}`
+              : cfg.url
+            : undefined
           return (
             <div
               key={node.id}
@@ -1603,7 +1801,7 @@ export default function WorkflowCanvas({
                 <span className="wf-node-label wf-node-label-api">{node.label}</span>
                 <div className="wf-node-api-meta">
                   <span className="wf-node-api-method" style={{ color: mc, background: `${mc}22` }}>{cfg.method}</span>
-                  <span className="wf-node-api-url" title={cfg.url || undefined}>{displayUrl}</span>
+                  <span className="wf-node-api-url" title={displayTitle}>{displayUrl}</span>
                 </div>
               </div>
               {statusBullet}
