@@ -518,6 +518,8 @@ npm run build:linux
 
 ## 배포 방식
 
+중요 배포 지침: 새 릴리스는 항상 로컬에서 빌드한 산출물을 GitHub Release에 직접 업로드해 공개합니다. GitHub Actions는 보조 자동화 또는 검증 수단일 뿐이며, 실제 배포 기준은 로컬 빌드 산출물입니다.
+
 현재 GitHub Actions Release workflow는 계정 결제 또는 지출 한도 문제로 실패할 수 있습니다. 따라서 새 버전을 배포할 때는 로컬에서 Windows 빌드를 만들고 GitHub Release를 직접 생성하는 방식을 표준으로 사용합니다. macOS 배포 파일까지 함께 제공하려면 같은 버전 번호로 macOS 환경에서 `npm run build:mac`을 실행한 뒤 생성된 `.dmg`와 `.zip` 파일을 같은 Release에 업로드합니다.
 
 새 버전 배포 절차는 매번 동일합니다.
@@ -583,7 +585,7 @@ dist/a8a-Mac-x64-yyyy.MM.dd.HH.mm.zip.sha256
 - Intel Mac 사용자에게는 `a8a-Mac-x64-yyyy.MM.dd.HH.mm.dmg`를 전달합니다.
 - `.blockmap` 파일은 자동 업데이트용 Release asset이고, `.sha256` 파일은 업데이트 파일 검증용 asset이므로 직접 전달할 필요가 없습니다.
 
-GitHub Actions가 정상화되면 `main` 또는 `master` 브랜치에 push할 때 자동으로 Windows와 macOS 설치 파일을 만들고 GitHub Release를 생성할 수 있습니다. 자동 배포 흐름은 다음과 같습니다.
+GitHub Actions가 정상화되면 `main` 또는 `master` 브랜치에 push할 때 자동으로 Windows와 macOS 설치 파일을 만들고 GitHub Release를 생성할 수 있습니다. 다만 이 프로젝트의 공식 배포 절차는 로컬 빌드 후 수동 Release 공개입니다. 자동 배포 흐름은 참고용으로만 사용합니다.
 
 1. push 시점의 시간을 `yyyy.MM.dd.HH.mm` 형식으로 계산합니다.
 2. 앱 내부 표시 버전을 해당 날짜 버전으로 기록합니다.
