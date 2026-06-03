@@ -48,7 +48,9 @@ function ensureRuntimeErrorPanel(): HTMLDivElement {
 
   const close = document.createElement('button')
   close.type = 'button'
-  close.textContent = '닫기'
+  const isKorean = navigator.languages?.some(lang => lang.toLowerCase().startsWith('ko'))
+    || navigator.language?.toLowerCase().startsWith('ko')
+  close.textContent = isKorean ? '닫기' : 'Close'
   close.style.cssText = [
     'position:sticky',
     'top:0',

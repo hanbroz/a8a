@@ -1,5 +1,6 @@
 import { useState, useRef, useEffect, useCallback } from 'react'
 import { IcoX } from '../Icon'
+import { useI18n } from '../../i18n'
 
 interface Props {
   data: unknown
@@ -162,6 +163,7 @@ export default function SelectionPopup({
   onConfirm,
   onCancel,
 }: Props): JSX.Element {
+  const { t } = useI18n()
   const tableRows = getTableRows(data)
   const canUseTable = tableRows !== null
   const jsonData = tableRows && tableRows.length === 1 ? tableRows[0] : data
@@ -310,11 +312,11 @@ export default function SelectionPopup({
       >
         <div className="sp-hd" style={{ cursor: 'move' }} onMouseDown={onHeaderDown}>
           <div className="sp-hd-left">
-            <span className="sp-title">{mode === 'table' ? '데이터 선택' : 'JSON 노드 선택'}</span>
+            <span className="sp-title">{mode === 'table' ? t('module.selection.title.table') : t('module.selection.title.json')}</span>
             <span className="sp-subtitle">
               {mode === 'table'
-                ? selectionType === 'single' ? '다음 모듈로 전달할 행을 하나만 선택하세요.' : '다음 모듈로 전달할 행을 선택하세요.'
-                : selectionType === 'single' ? '전달할 JSON 노드를 하나만 선택하세요.' : '전달할 JSON 노드를 선택하세요. 선택된 노드 값은 배열로 전달됩니다.'}
+                ? selectionType === 'single' ? t('module.selection.subtitle.tableSingle') : t('module.selection.subtitle.tableMultiple')
+                : selectionType === 'single' ? t('module.selection.subtitle.jsonSingle') : t('module.selection.subtitle.jsonMultiple')}
             </span>
           </div>
           <div className="sp-hd-actions" onMouseDown={e => e.stopPropagation()}>
@@ -407,16 +409,16 @@ export default function SelectionPopup({
         <div className="sp-ft">
           <span className="sp-count">
             {mode === 'table' && tableRows
-              ? selectedIndices.length > 0 ? `${selectedIndices.length}개 행 선택됨` : '미선택'
-              : selectedJsonNodes.length > 0 ? `${selectedJsonNodes.length}개 항목 선택됨` : '미선택'}
+              ? selectedIndices.length > 0 ? t('module.selection.rowsSelected', { count: selectedIndices.length }) : t('module.selection.noneSelected')
+              : selectedJsonNodes.length > 0 ? t('module.selection.itemsSelected', { count: selectedJsonNodes.length }) : t('module.selection.noneSelected')}
           </span>
-          <button className="btn ghost" onClick={onCancel}>취소</button>
+          <button className="btn ghost" onClick={onCancel}>{t('common.cancel')}</button>
           <button
             className="btn primary"
             onClick={handleConfirm}
             disabled={!hasSelection}
           >
-            선택 완료
+            {t('module.selection.complete')}
           </button>
         </div>
         <div className="sp-resize-handle" onMouseDown={onResizeDown} />

@@ -7,7 +7,7 @@ import { generateReport, fillFilenameTemplate } from './utils/reportGenerator'
 import type { ReportNode, ReportApiDetail, ReportVariable } from './utils/reportGenerator'
 import { resolveEndReportSelectedModuleIds } from './utils/endReportSelection'
 import type { ScriptConsoleEntry } from './utils/scriptRuntime'
-import { IcoPanelL, IcoSave, IcoSun, IcoMoon, IcoPanelB, IcoChevD, IcoX, IcoDownload, IcoUpload } from './components/Icon'
+import { IcoPanelL, IcoSave, IcoSun, IcoMoon, IcoPanelB, IcoChevD, IcoX, IcoDownload, IcoUpload, IcoSettings } from './components/Icon'
 import WorkspaceHeader from './components/sidebar/WorkspaceHeader'
 import ModulePaletteSection from './components/sidebar/ModulePaletteSection'
 import ProjectSection from './components/sidebar/ProjectSection'
@@ -17,6 +17,7 @@ import WorkspaceModal from './components/sidebar/WorkspaceModal'
 import EnvSection from './components/env/EnvSection'
 import EnvModal from './components/env/EnvModal'
 import ConfirmDialog from './components/ConfirmDialog'
+import SettingsPage from './components/settings/SettingsPage'
 import WorkflowCanvas from './components/canvas/WorkflowCanvas'
 import StartNodeModal from './components/canvas/StartNodeModal'
 import EndNodeModal from './components/canvas/EndNodeModal'
@@ -35,6 +36,19 @@ import type { ProjectItem } from './components/sidebar/ProjectModal'
 import type { WorkspaceModalItem } from './components/sidebar/WorkspaceModal'
 import { randomId } from './utils/id'
 import { buildExcelWorkbookBase64 } from './utils/tabularData'
+import {
+  I18nProvider,
+  detectSystemLanguage,
+  isTranslationKey,
+  loadLanguagePreference,
+  resolveLanguagePreference,
+  translate,
+  useI18n,
+  LANGUAGE_STORAGE_KEY,
+  type AppLanguage,
+  type LanguagePreference,
+  type TranslationKey,
+} from './i18n'
 
 function sharedDataModuleIdFromConfig(rawConfig: string): string | null {
   try {
@@ -304,13 +318,13 @@ type RepeatRowsResult =
   | { ok: true; rows: Record<string, unknown>[] | null; stopOnFailure: boolean }
   | { ok: false; error: string }
 
-function buildRepeatRows(startNode: ApiNode | undefined): RepeatRowsResult {
+function buildRepeatRows(startNode: ApiNode | undefined, missingDataMessage = 'START repeat data is empty. Attach the data again.'): RepeatRowsResult {
   if (!startNode) return { ok: true, rows: null, stopOnFailure: true }
   const repeat = parseStartConfig(startNode.config).repeat
   if (!repeat?.enabled) return { ok: true, rows: null, stopOnFailure: true }
   if (repeat.mode === 'data') {
     const rows = repeat.data?.rows ?? []
-    if (rows.length === 0) return { ok: false, error: 'START 반복 실행 데이터가 없습니다. 데이터를 다시 첨부해 주세요.' }
+    if (rows.length === 0) return { ok: false, error: missingDataMessage }
     return { ok: true, rows, stopOnFailure: repeat.stopOnFailure }
   }
   return {
@@ -494,13 +508,15 @@ function getLogJsonViewerHeight(value: string): number {
 function LogJsonViewer({
   value,
   path,
-  placeholder = 'JSON 값이 없습니다.',
+  placeholder,
 }: {
   value: unknown
   path: string
   placeholder?: string
 }): JSX.Element {
+  const { t } = useI18n()
   const formatted = formatLogJsonValue(value)
+  const resolvedPlaceholder = placeholder ?? t('log.placeholder.json')
   const lowerPath = path.toLowerCase()
   const title = lowerPath.includes('input') ? 'INPUT' : lowerPath.includes('output') || lowerPath.includes('response') ? 'OUTPUT' : 'JSON'
   return (
@@ -513,7 +529,7 @@ function LogJsonViewer({
           value={formatted}
           readOnly
           path={path}
-          placeholder={placeholder}
+          placeholder={resolvedPlaceholder}
         />
       </div>
     </div>
@@ -521,6 +537,7 @@ function LogJsonViewer({
 }
 
 function LogEntryRow({ entry, isActive }: { entry: LogEntry; isActive?: boolean }): JSX.Element {
+  const { t } = useI18n()
   const [open, setOpen] = useState(false)
   const cfg = NODE_TYPE_COLORS[entry.type] ?? { color: '#8b949e', bg: 'rgba(139,148,158,0.15)', label: entry.type.toUpperCase() }
   const statusColor = entry.status === 'success' ? '#3fb950' : entry.status === 'error' ? '#f85149' : entry.status === 'skip' ? '#8b949e' : '#d29922'
@@ -555,7 +572,7 @@ function LogEntryRow({ entry, isActive }: { entry: LogEntry; isActive?: boolean 
           </span>
         )}
         <span className="log-entry-status" style={{ color: statusColor }}>
-          {entry.status === 'running' ? '실행 중…' : entry.status === 'success' ? '완료' : entry.status === 'error' ? '오류' : '건너뜀'}
+          {entry.status === 'running' ? t('log.status.running') : entry.status === 'success' ? t('log.status.success') : entry.status === 'error' ? t('log.status.error') : t('log.status.skip')}
         </span>
         {entry.duration !== undefined && (
           <span className="log-entry-dur">{entry.duration < 1000 ? `${entry.duration}ms` : `${(entry.duration / 1000).toFixed(1)}s`}</span>
@@ -577,13 +594,13 @@ function LogEntryRow({ entry, isActive }: { entry: LogEntry; isActive?: boolean 
                   {entry.input !== null && entry.input !== undefined && (
                     <div className="log-entry-io-col">
                       <div className="log-entry-io-label">INPUT</div>
-                      <LogJsonViewer value={entry.input} path={`execution-log/${entry.id}/api-input.json`} placeholder="INPUT 값이 없습니다." />
+                      <LogJsonViewer value={entry.input} path={`execution-log/${entry.id}/api-input.json`} placeholder={t('log.placeholder.input')} />
                     </div>
                   )}
                   {entry.output !== null && entry.output !== undefined && (
                     <div className="log-entry-io-col">
                       <div className="log-entry-io-label">OUTPUT</div>
-                      <LogJsonViewer value={entry.output} path={`execution-log/${entry.id}/api-output.json`} placeholder="OUTPUT 값이 없습니다." />
+                      <LogJsonViewer value={entry.output} path={`execution-log/${entry.id}/api-output.json`} placeholder={t('log.placeholder.output')} />
                     </div>
                   )}
                 </div>
@@ -612,7 +629,7 @@ function LogEntryRow({ entry, isActive }: { entry: LogEntry; isActive?: boolean 
                 {api.body && (
                   <div className="log-api-block">
                     <div className="log-entry-io-label">BODY</div>
-                    <LogJsonViewer value={api.body} path={`execution-log/${entry.id}/request-body.json`} placeholder="요청 BODY가 없습니다." />
+                    <LogJsonViewer value={api.body} path={`execution-log/${entry.id}/request-body.json`} placeholder={t('log.placeholder.requestBody')} />
                   </div>
                 )}
               </div>
@@ -628,7 +645,7 @@ function LogEntryRow({ entry, isActive }: { entry: LogEntry; isActive?: boolean 
                   {api.responseText && (
                     <div className="log-api-block">
                       <div className="log-entry-io-label">BODY</div>
-                      <LogJsonViewer value={api.responseText} path={`execution-log/${entry.id}/response-body.json`} placeholder="응답 BODY가 없습니다." />
+                      <LogJsonViewer value={api.responseText} path={`execution-log/${entry.id}/response-body.json`} placeholder={t('log.placeholder.responseBody')} />
                     </div>
                   )}
                 </div>
@@ -645,12 +662,12 @@ function LogEntryRow({ entry, isActive }: { entry: LogEntry; isActive?: boolean 
             <div className="log-entry-io">
               <div className="log-entry-io-col">
                 <div className="log-entry-io-label">INPUT</div>
-                <LogJsonViewer value={entry.input ?? null} path={`execution-log/${entry.id}/input.json`} placeholder="INPUT 값이 없습니다." />
+                <LogJsonViewer value={entry.input ?? null} path={`execution-log/${entry.id}/input.json`} placeholder={t('log.placeholder.input')} />
               </div>
               {entry.output !== undefined && (
                 <div className="log-entry-io-col">
                   <div className="log-entry-io-label">OUTPUT</div>
-                  <LogJsonViewer value={entry.output} path={`execution-log/${entry.id}/output.json`} placeholder="OUTPUT 값이 없습니다." />
+                  <LogJsonViewer value={entry.output} path={`execution-log/${entry.id}/output.json`} placeholder={t('log.placeholder.output')} />
                 </div>
               )}
             </div>
@@ -841,7 +858,7 @@ function getValidWorkflowEdges(nodes: ApiNode[], edges: ApiEdge[], replacedEdgeI
 }
 
 function executeNodeOutput(nodeId: string, nodes: ApiNode[], edges: ApiEdge[], commonDataModules: ApiModule[] = [], visiting = new Set<string>()): string {
-  if (visiting.has(nodeId)) return JSON.stringify({ __previewError: '순환 연결이 감지되었습니다.' }, null, 2)
+  if (visiting.has(nodeId)) return JSON.stringify({ __previewError: 'A circular connection was detected.' }, null, 2)
   const node = nodes.find(n => n.id === nodeId)
   if (!node) return '[]'
   const validEdges = getValidWorkflowEdges(nodes, edges)
@@ -1047,6 +1064,7 @@ function normalizeApiExecutionOutput(results: unknown[]): unknown {
 
 type Theme = 'dark' | 'light'
 type SidebarLayout = 'full' | 'icons'
+type AppView = 'canvas' | 'settings'
 type LogState = 'collapsed' | 'fullscreen'
 type NodeStatus = 'running' | 'success' | 'error' | 'skip'
 
@@ -1184,6 +1202,12 @@ function remapCopiedNodeConfig(config: string, nodeIdMap: Map<string, string>): 
 }
 
 export default function App(): JSX.Element {
+  const [languagePreference, setLanguagePreferenceState] = useState<LanguagePreference>(() => loadLanguagePreference())
+  const [systemLanguage] = useState<AppLanguage>(() => detectSystemLanguage())
+  const language = resolveLanguagePreference(languagePreference, systemLanguage)
+  const t = useCallback((key: TranslationKey, vars?: Record<string, string | number | boolean | null | undefined>) => {
+    return translate(language, key, vars)
+  }, [language])
   const [theme, setTheme] = useState<Theme>(() => {
     try {
       return localStorage.getItem('a8a-theme') === 'light' ? 'light' : 'dark'
@@ -1192,6 +1216,7 @@ export default function App(): JSX.Element {
     }
   })
   const [sidebarLayout, setSidebarLayout] = useState<SidebarLayout>('full')
+  const [activeView, setActiveView] = useState<AppView>('canvas')
   const [logState, setLogState] = useState<LogState>('collapsed')
   const [isCanvasFullscreen, setCanvasFullscreen] = useState(false)
   const [sidebarWidth, setSidebarWidth] = useState<number>(() => {
@@ -1329,6 +1354,27 @@ export default function App(): JSX.Element {
       // localStorage를 사용할 수 없는 환경에서는 현재 세션 테마만 유지합니다.
     }
   }, [theme])
+
+  const setLanguagePreference = useCallback((preference: LanguagePreference): void => {
+    setLanguagePreferenceState(preference)
+  }, [])
+
+  useEffect(() => {
+    document.documentElement.lang = language
+    try {
+      localStorage.setItem(LANGUAGE_STORAGE_KEY, languagePreference)
+    } catch {
+      // localStorage를 사용할 수 없는 환경에서는 현재 세션 언어만 유지합니다.
+    }
+  }, [language, languagePreference])
+
+  const i18nValue = useMemo(() => ({
+    language,
+    languagePreference,
+    systemLanguage,
+    setLanguagePreference,
+    t,
+  }), [language, languagePreference, systemLanguage, setLanguagePreference, t])
 
   useEffect(() => {
     const handler = (e: MouseEvent): void => {
@@ -1624,7 +1670,7 @@ export default function App(): JSX.Element {
       setActiveLogNodeId(null)
       recordCanvasHistory(activeProject.id, before, { nodes: activeNodes, edges: nextEdges })
     } catch (err) {
-      console.error('연결 생성 실패:', err)
+      console.error('Failed to create edge:', err)
     }
   }, [activeProject, activeNodes, activeEdges, recordCanvasHistory])
 
@@ -1822,7 +1868,7 @@ export default function App(): JSX.Element {
         createdBySourceId.set(copiedNode.id, pasted)
         pastedNodes.push(pasted)
       } catch (err) {
-        console.error('노드 붙여넣기 실패:', err)
+        console.error('Failed to paste nodes:', err)
       }
     }
 
@@ -1851,7 +1897,7 @@ export default function App(): JSX.Element {
         nextEdges.push(edge)
         pastedEdges.push(edge)
       } catch (err) {
-        console.error('연결 붙여넣기 실패:', err)
+        console.error('Failed to paste edges:', err)
       }
     }
 
@@ -1939,7 +1985,7 @@ export default function App(): JSX.Element {
       setActiveLogNodeId(null)
       recordCanvasHistory(activeProject.id, before, { nodes: activeNodes, edges: nextEdges })
     } catch (err) {
-      console.error('연결 변경 실패:', err)
+      console.error('Failed to change edge:', err)
     }
   }, [activeProject, activeNodes, activeEdges, recordCanvasHistory])
 
@@ -1961,7 +2007,7 @@ export default function App(): JSX.Element {
     const visiting = new Set<string>()
 
     const runNode = async (nodeId: string): Promise<unknown> => {
-      if (visiting.has(nodeId)) throw new Error('순환 연결이 감지되었습니다.')
+      if (visiting.has(nodeId)) throw new Error(t('runtime.error.cycleDetected'))
       visiting.add(nodeId)
       const node = activeNodes.find(n => n.id === nodeId)
       if (!node) { visiting.delete(nodeId); return null }
@@ -2000,7 +2046,7 @@ export default function App(): JSX.Element {
         const preScriptInput = buildRuntimeInputContext(upstream, upstreamModuleVars)
         if (cfg.preScript && cfg.preScript.trim()) {
           try {
-            const r = await runPreRequest(cfg.preScript, { input: preScriptInput, envVars })
+            const r = await runPreRequest(cfg.preScript, { input: preScriptInput, envVars, language })
             setScriptLogsForNode(nodeId, 'pre', r.logs)
             preInputVars = r.inputVars
             for (const [k, v] of Object.entries(r.envUpdates)) envVars[k] = v
@@ -2020,6 +2066,7 @@ export default function App(): JSX.Element {
                 input: postScriptInput,
                 output: selectedOutput,
                 envVars,
+                language,
               })
               setScriptLogsForNode(nodeId, 'post', r.logs)
               postOutputVars = r.outputVars
@@ -2077,7 +2124,7 @@ export default function App(): JSX.Element {
         const preScriptInput = buildRuntimeInputContext(upstream, upstreamModuleVars)
         if (cfg.preScript && cfg.preScript.trim()) {
           try {
-            const r = await runPreRequest(cfg.preScript, { input: preScriptInput, envVars })
+            const r = await runPreRequest(cfg.preScript, { input: preScriptInput, envVars, language })
             setScriptLogsForNode(nodeId, 'pre', r.logs)
             preInputVars = r.inputVars
             for (const [k, v] of Object.entries(r.envUpdates)) envVars[k] = v
@@ -2131,6 +2178,7 @@ export default function App(): JSX.Element {
               input: postScriptInput,
               output: responseOutput,
               envVars,
+              language,
             })
             setScriptLogsForNode(nodeId, 'post', r.logs)
             postOutputVars = r.outputVars
@@ -2168,7 +2216,7 @@ export default function App(): JSX.Element {
       }
       return JSON.stringify({ __previewError: String((err as Error)?.message ?? err) }, null, 2)
     }
-  }, [activeNodes, activeEdges, activeProjectWs, activeProjectEnvVars, commonDataModules, rememberSelectSelection, setScriptLogsForNode])
+  }, [activeNodes, activeEdges, activeProjectWs, activeProjectEnvVars, commonDataModules, language, rememberSelectSelection, setScriptLogsForNode, t])
 
   const handleNodeRun = useCallback(async (nodeId: string) => {
     const inputJson = await previewUpToNode(nodeId)
@@ -2363,6 +2411,7 @@ export default function App(): JSX.Element {
               input: scriptInput,
               output: selectedRows,
               envVars: envVarsForRun,
+              language,
             })
             selectedScriptLogs = { ...selectedScriptLogs, post: postResult.logs }
             setScriptLogsForNode(prevNodeId, 'post', postResult.logs)
@@ -2378,15 +2427,16 @@ export default function App(): JSX.Element {
             }
             const entry = exec.pendingLogEntryId ? localLogs.find(e => e.id === exec.pendingLogEntryId) : undefined
             if (exec.pendingLogEntryId) {
+              const message = t('runtime.error.postScript', { message: String((err as Error)?.message ?? err) })
               updateLog(exec.pendingLogEntryId, {
                 status: 'error',
-                error: `Post Response 스크립트 오류: ${String((err as Error)?.message ?? err)}`,
+                error: message,
                 duration: Date.now() - (entry?.startedAt ?? Date.now()),
                 scriptLogs: selectedScriptLogs,
               })
             }
             setNodeStatuses(prev => ({ ...prev, [prevNodeId]: 'error' }))
-            if (handleLoopFailure(prevNodeId, `Post Response 스크립트 오류: ${String((err as Error)?.message ?? err)}`)) return
+            if (handleLoopFailure(prevNodeId, t('runtime.error.postScript', { message: String((err as Error)?.message ?? err) }))) return
             setCanvasExecution(null)
             return
           }
@@ -2467,7 +2517,7 @@ export default function App(): JSX.Element {
 
       if (node.type === 'end') {
         let endStatus: NodeStatus = 'success'
-        let endErrorMessage = '리포트 생성 또는 저장 오류'
+        let endErrorMessage = t('runtime.error.reportCreateOrSave')
         const finalVariables = finalizeUsedVariables(usedVariables, envVarsForRun)
         let endCfg: Partial<EndNodeConfig> = {}
         try { endCfg = JSON.parse(node.config || '{}') as Partial<EndNodeConfig> } catch { endCfg = {} }
@@ -2529,6 +2579,7 @@ export default function App(): JSX.Element {
               nodes: reportNodes,
               selectedModuleIds: selectedSet,
               variables: finalVariables,
+              language,
             })
             const tpl = endCfg.filenameTemplate && endCfg.filenameTemplate.trim() ? endCfg.filenameTemplate : '{env}_{ws}_{project}_{ts}'
             const baseFilename = fillFilenameTemplate(tpl, { env: envName, ws: wsName, project: projectName, ts: executedAt })
@@ -2536,19 +2587,19 @@ export default function App(): JSX.Element {
             const ext = fmt === 'html' ? '.html' : '.md'
             const sep = endCfg.savePath.includes('/') && !endCfg.savePath.includes('\\') ? '/' : '\\'
             const fullPath = endCfg.savePath.replace(/[\\/]+$/, '') + sep + filename + ext
-            const writeResult = await window.api.file.write(fullPath, content)
+            const writeResult = await window.api.file.write(fullPath, content, language)
             if (writeResult.ok) {
               if (!loop) setSavedReport({ path: writeResult.path })
             } else {
               endStatus = 'error'
-              endErrorMessage = `리포트 저장 실패: ${writeResult.error}`
-              console.error('[리포트 저장 실패]', writeResult.error)
+              endErrorMessage = t('runtime.error.reportSaveFailed', { message: writeResult.error })
+              console.error('[Report save failed]', writeResult.error)
             }
           }
         } catch (err) {
           endStatus = 'error'
-          endErrorMessage = `리포트 생성 오류: ${String((err as Error)?.message ?? err)}`
-          console.error('[리포트 생성 오류]', err)
+          endErrorMessage = t('runtime.error.reportCreateFailed', { message: String((err as Error)?.message ?? err) })
+          console.error('[Report generation failed]', err)
         }
         setEndNodeDisplayValues(prev => {
           const next = { ...prev }
@@ -2608,7 +2659,7 @@ export default function App(): JSX.Element {
           const preScriptInput = buildRuntimeInputContext(rawInput, upstreamModuleVars)
           if (selCfg.preScript && selCfg.preScript.trim()) {
             try {
-              const preResult = await runPreRequest(selCfg.preScript, { input: preScriptInput, envVars: envVarsForRun })
+              const preResult = await runPreRequest(selCfg.preScript, { input: preScriptInput, envVars: envVarsForRun, language })
               recordScriptLogs('pre', preResult.logs)
               preInputVars = preResult.inputVars
               for (const [k, v] of Object.entries(preResult.envUpdates)) envVarsForRun[k] = v
@@ -2616,7 +2667,7 @@ export default function App(): JSX.Element {
               if (Object.keys(preResult.envUpdates).length > 0) await persistEnvUpdatesForRun(preResult.envUpdates)
             } catch (err) {
               if (isScriptRuntimeError(err)) recordScriptLogs('pre', err.logs)
-              throw new Error(`Pre Request 스크립트 오류: ${String((err as Error)?.message ?? err)}`)
+              throw new Error(t('runtime.error.preScript', { message: String((err as Error)?.message ?? err) }))
             }
           }
           moduleVars[nodeId] = { ...upstreamModuleVars, ...preInputVars }
@@ -2631,6 +2682,7 @@ export default function App(): JSX.Element {
                   input: postScriptInput,
                   output: selectedOutput,
                   envVars: envVarsForRun,
+                  language,
                 })
                 recordScriptLogs('post', postResult.logs)
                 postOutputVars = postResult.outputVars
@@ -2640,7 +2692,7 @@ export default function App(): JSX.Element {
                 if (Object.keys(postResult.envUpdates).length > 0) await persistEnvUpdatesForRun(postResult.envUpdates)
               } catch (err) {
                 if (isScriptRuntimeError(err)) recordScriptLogs('post', err.logs)
-                throw new Error(`Post Response 스크립트 오류: ${String((err as Error)?.message ?? err)}`)
+                throw new Error(t('runtime.error.postScript', { message: String((err as Error)?.message ?? err) }))
               }
             }
             moduleVars[nodeId] = { ...upstreamModuleVars, ...preInputVars, ...postOutputVars }
@@ -2740,7 +2792,7 @@ export default function App(): JSX.Element {
           if (branchCfg.mode !== 'manual') {
             recordUsedBranchVariables(usedVariables, branchCfg.expression, branchInput, loopRow ? { ...loopRow } : upstreamModuleVars)
           }
-          const result = evaluateBranch(branchCfg, branchInput, loopRow ? { ...loopRow } : upstreamModuleVars)
+          const result = evaluateBranch(branchCfg, branchInput, loopRow ? { ...loopRow } : upstreamModuleVars, language)
           branchRoutes[nodeId] = result.route
           setActiveBranchRoutes(prev => ({ ...prev, [nodeId]: result.route }))
           nodeOutputs[nodeId] = rawInput
@@ -2805,7 +2857,7 @@ export default function App(): JSX.Element {
           const preScriptInput = buildRuntimeInputContext(rawInput, upstreamModuleVars)
           if (cfg.preScript && cfg.preScript.trim()) {
             try {
-              const r = await runPreRequest(cfg.preScript, { input: preScriptInput, envVars: envVarsForExec })
+              const r = await runPreRequest(cfg.preScript, { input: preScriptInput, envVars: envVarsForExec, language })
               recordScriptLogs('pre', r.logs)
               preInputVars = r.inputVars
               for (const [k, v] of Object.entries(r.envUpdates)) envVarsForExec[k] = v
@@ -2813,7 +2865,7 @@ export default function App(): JSX.Element {
               if (Object.keys(r.envUpdates).length > 0) await persistEnvUpdates(r.envUpdates)
             } catch (err) {
               if (isScriptRuntimeError(err)) recordScriptLogs('pre', err.logs)
-              throw new Error(`Pre Request 스크립트 오류: ${String((err as Error)?.message ?? err)}`)
+              throw new Error(t('runtime.error.preScript', { message: String((err as Error)?.message ?? err) }))
             }
           }
 
@@ -2889,6 +2941,7 @@ export default function App(): JSX.Element {
                 input: postScriptInput,
                 output: responseOutput,
                 envVars: envVarsForExec,
+                language,
               })
               recordScriptLogs('post', r.logs)
               postOutputVars = r.outputVars
@@ -2898,7 +2951,7 @@ export default function App(): JSX.Element {
               if (Object.keys(r.envUpdates).length > 0) await persistEnvUpdates(r.envUpdates)
             } catch (err) {
               if (isScriptRuntimeError(err)) recordScriptLogs('post', err.logs)
-              throw new Error(`Post Response 스크립트 오류: ${String((err as Error)?.message ?? err)}`)
+              throw new Error(t('runtime.error.postScript', { message: String((err as Error)?.message ?? err) }))
             }
           }
 
@@ -2927,14 +2980,14 @@ export default function App(): JSX.Element {
 
     if (continueLoopIfNeeded()) return
     setCanvasExecution(null)
-  }, [activeNodes, activeEdges, activeProjectWs, activeProjectEnvVars, activeProjectEnvDisplayVars, activeProject?.name, rememberSelectSelection, setScriptLogsForNode])
+  }, [activeNodes, activeEdges, activeProjectWs, activeProjectEnvVars, activeProjectEnvDisplayVars, activeProject?.name, rememberSelectSelection, setScriptLogsForNode, t])
 
   const handleCanvasRun = useCallback(() => {
     if (!activeProject || canvasExecution) return
     const plan = buildExecutionPlan(activeNodes, activeEdges)
     if (plan.length === 0) return
     const startNode = activeNodes.find(n => n.id === plan[0] && n.type === 'start')
-    const repeatRowsResult = buildRepeatRows(startNode)
+    const repeatRowsResult = buildRepeatRows(startNode, t('runtime.error.startRepeatDataMissing'))
     if (!repeatRowsResult.ok) {
       alert(repeatRowsResult.error)
       return
@@ -2988,7 +3041,7 @@ export default function App(): JSX.Element {
       pendingBranchChoice: null,
     }
     advanceExecution(execution)
-  }, [activeNodes, activeEdges, activeProject, activeProjectEnvVars, advanceExecution, canvasExecution])
+  }, [activeNodes, activeEdges, activeProject, activeProjectEnvVars, advanceExecution, canvasExecution, t])
 
   const handleCanvasReset = useCallback(() => {
     setExecLogs([])
@@ -3006,11 +3059,11 @@ export default function App(): JSX.Element {
 
   const handleExportFailedRepeatRows = useCallback(async (nodeId: string): Promise<string> => {
     const startNode = activeNodes.find(node => node.id === nodeId && node.type === 'start')
-    if (!startNode) throw new Error('START 모듈을 찾을 수 없습니다.')
+    if (!startNode) throw new Error(t('runtime.error.startNotFound'))
 
     const repeat = parseStartConfig(startNode.config).repeat
     if (!repeat?.data || repeat.data.rows.length === 0) {
-      throw new Error('첨부된 반복 데이터가 없습니다.')
+      throw new Error(t('runtime.error.repeatDataMissing'))
     }
 
     const states = startRepeatRowStates[nodeId] ?? {}
@@ -3022,19 +3075,22 @@ export default function App(): JSX.Element {
       .filter(item => item.state?.status === 'failed')
 
     if (failedRows.length === 0) {
-      throw new Error('실패한 데이터가 없습니다.')
+      throw new Error(t('runtime.error.failedDataMissing'))
     }
 
     const nodeLabelById = new Map(activeNodes.map(node => [node.id, node.label]))
     const sourceColumns = repeat.data.columns.length > 0
       ? repeat.data.columns
       : Array.from(new Set(repeat.data.rows.flatMap(row => Object.keys(row))))
-    const exportColumns = Array.from(new Set(['no', ...sourceColumns, '실패상태', '실패모듈', '실패사유']))
+    const failedStatusColumn = t('runtime.export.failedStatusColumn')
+    const failedModuleColumn = t('runtime.export.failedModuleColumn')
+    const failedReasonColumn = t('runtime.export.failedReasonColumn')
+    const exportColumns = Array.from(new Set(['no', ...sourceColumns, failedStatusColumn, failedModuleColumn, failedReasonColumn]))
     const exportRows = failedRows.map(({ row, state }) => ({
       ...row,
-      실패상태: '실패',
-      실패모듈: state?.failedNodeId ? (nodeLabelById.get(state.failedNodeId) ?? state.failedNodeId) : '',
-      실패사유: state?.error ?? '',
+      [failedStatusColumn]: t('runtime.export.failedStatus'),
+      [failedModuleColumn]: state?.failedNodeId ? (nodeLabelById.get(state.failedNodeId) ?? state.failedNodeId) : '',
+      [failedReasonColumn]: state?.error ?? '',
     }))
 
     const workbookBase64 = await buildExcelWorkbookBase64(exportColumns, exportRows, 'failed')
@@ -3042,10 +3098,10 @@ export default function App(): JSX.Element {
     const projectName = safeDownloadFilePart(activeProject?.name ?? 'project')
     const nodeName = safeDownloadFilePart(startNode.label || 'START')
     const fileName = `a8a_failed_${projectName}_${nodeName}_${timestamp}.xlsx`
-    const result = await window.api.file.writeXlsxDownload(fileName, workbookBase64)
+    const result = await window.api.file.writeXlsxDownload(fileName, workbookBase64, language)
     if (!result.ok) throw new Error(result.error)
     return result.path
-  }, [activeNodes, activeProject?.name, startRepeatRowStates])
+  }, [activeNodes, activeProject?.name, language, startRepeatRowStates, t])
 
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent): void => {
@@ -3165,6 +3221,7 @@ export default function App(): JSX.Element {
         },
         nodes: reportNodes,
         selectedModuleIds: new Set(reportNodes.map(node => node.nodeId)),
+        language,
       })
       const dir = await window.api.file.downloadsDir()
       const filename = fillFilenameTemplate('execution-log_{env}_{ws}_{project}_{ts}', {
@@ -3174,26 +3231,26 @@ export default function App(): JSX.Element {
         ts: new Date(),
       })
       const sep = dir.includes('/') && !dir.includes('\\') ? '/' : '\\'
-      const result = await window.api.file.write(`${dir.replace(/[\\/]+$/, '')}${sep}${filename}.html`, content)
+      const result = await window.api.file.write(`${dir.replace(/[\\/]+$/, '')}${sep}${filename}.html`, content, language)
       if (!result.ok) {
-        alert(`HTML 리포트 저장 실패: ${result.error}`)
+        alert(t('report.alert.htmlSaveFailed', { message: result.error }))
         return
       }
       setSavedReport({ path: result.path })
     } catch (err) {
-      alert(`HTML 리포트 생성 실패: ${String((err as Error)?.message ?? err)}`)
+      alert(t('report.alert.htmlCreateFailed', { message: String((err as Error)?.message ?? err) }))
     } finally {
       setDownloadingReport(false)
     }
-  }, [activeNodes, activeProject, activeProjectEnv?.name, activeProjectWs?.name, execLogs])
+  }, [activeNodes, activeProject, activeProjectEnv?.name, activeProjectWs?.name, execLogs, language, t])
 
   const handleOpenSavedReport = useCallback(async (): Promise<void> => {
     if (!savedReport) return
     const reportPath = savedReport.path
     setSavedReport(null)
-    const result = await window.api.file.open(reportPath)
-    if (!result.ok) alert(`보고서 파일 열기 실패: ${result.error}`)
-  }, [savedReport])
+    const result = await window.api.file.open(reportPath, language)
+    if (!result.ok) alert(t('report.alert.openFailed', { message: result.error }))
+  }, [language, savedReport, t])
 
   const reloadWorkspaceTree = useCallback(async (preferredWsId?: string, preferredProjectId?: string): Promise<void> => {
     const [wsList] = await Promise.all([
@@ -3229,72 +3286,72 @@ export default function App(): JSX.Element {
 
   const handleExportWorkspace = useCallback(async (): Promise<void> => {
     if (!activeProjectWs) {
-      alert('내보낼 워크스페이스가 없습니다.')
+      alert(t('transfer.noWorkspaceToExport'))
       return
     }
     setTransferBusy(true)
     setTransferMenuOpen(false)
     try {
-      const result = await window.api.transfer.exportWorkspace(activeProjectWs.id)
-      if (result.ok) alert(`워크스페이스 내보내기 완료:\n${result.path}`)
-      else if (!result.canceled) alert(`워크스페이스 내보내기 실패: ${result.error ?? '알 수 없는 오류'}`)
+      const result = await window.api.transfer.exportWorkspace(activeProjectWs.id, language)
+      if (result.ok) alert(t('transfer.exportWorkspaceSuccess', { path: result.path }))
+      else if (!result.canceled) alert(t('transfer.exportWorkspaceFailed', { message: result.error ?? t('transfer.unknownError') }))
     } finally {
       setTransferBusy(false)
     }
-  }, [activeProjectWs])
+  }, [activeProjectWs, language, t])
 
   const handleExportProject = useCallback(async (): Promise<void> => {
     if (!activeProject) {
-      alert('내보낼 프로젝트가 없습니다.')
+      alert(t('transfer.noProjectToExport'))
       return
     }
     setTransferBusy(true)
     setTransferMenuOpen(false)
     try {
-      const result = await window.api.transfer.exportProject(activeProject.id)
-      if (result.ok) alert(`프로젝트 내보내기 완료:\n${result.path}`)
-      else if (!result.canceled) alert(`프로젝트 내보내기 실패: ${result.error ?? '알 수 없는 오류'}`)
+      const result = await window.api.transfer.exportProject(activeProject.id, language)
+      if (result.ok) alert(t('transfer.exportProjectSuccess', { path: result.path }))
+      else if (!result.canceled) alert(t('transfer.exportProjectFailed', { message: result.error ?? t('transfer.unknownError') }))
     } finally {
       setTransferBusy(false)
     }
-  }, [activeProject])
+  }, [activeProject, language, t])
 
   const handleImportWorkspace = useCallback(async (): Promise<void> => {
     setTransferBusy(true)
     setTransferMenuOpen(false)
     try {
-      const result = await window.api.transfer.importWorkspace()
+      const result = await window.api.transfer.importWorkspace(language)
       if (!result.ok) {
-        if (!result.canceled) alert(`워크스페이스 가져오기 실패: ${result.error ?? '알 수 없는 오류'}`)
+        if (!result.canceled) alert(t('transfer.importWorkspaceFailed', { message: result.error ?? t('transfer.unknownError') }))
         return
       }
       await reloadWorkspaceTree(result.result.workspaceId, result.result.projectId)
-      alert(`워크스페이스 가져오기 완료: ${result.result.workspaceName ?? '가져온 워크스페이스'}`)
+      alert(t('transfer.importWorkspaceSuccess', { name: result.result.workspaceName ?? t('transfer.importedWorkspaceFallback') }))
     } finally {
       setTransferBusy(false)
     }
-  }, [reloadWorkspaceTree])
+  }, [language, reloadWorkspaceTree, t])
 
   const handleImportProject = useCallback(async (): Promise<void> => {
     const targetWorkspace = activeProjectWs ?? workspaces.find(ws => ws.id === activeWsId) ?? workspaces[0]
     if (!targetWorkspace) {
-      alert('프로젝트를 가져올 워크스페이스가 없습니다. 먼저 워크스페이스를 생성하거나 워크스페이스 내보내기 파일을 가져오세요.')
+      alert(t('transfer.noWorkspaceToImportProject'))
       return
     }
     setTransferBusy(true)
     setTransferMenuOpen(false)
     try {
-      const result = await window.api.transfer.importProject(targetWorkspace.id)
+      const result = await window.api.transfer.importProject(targetWorkspace.id, language)
       if (!result.ok) {
-        if (!result.canceled) alert(`프로젝트 가져오기 실패: ${result.error ?? '알 수 없는 오류'}`)
+        if (!result.canceled) alert(t('transfer.importProjectFailed', { message: result.error ?? t('transfer.unknownError') }))
         return
       }
       await reloadWorkspaceTree(targetWorkspace.id, result.result.projectId)
-      alert(`프로젝트 가져오기 완료: ${result.result.projectName ?? '가져온 프로젝트'}`)
+      alert(t('transfer.importProjectSuccess', { name: result.result.projectName ?? t('transfer.importedProjectFallback') }))
     } finally {
       setTransferBusy(false)
     }
-  }, [activeProjectWs, activeWsId, reloadWorkspaceTree, workspaces])
+  }, [activeProjectWs, activeWsId, language, reloadWorkspaceTree, workspaces, t])
 
   const onNodeStatusClick = useCallback((nodeId: string) => {
     setLogState('fullscreen')
@@ -3320,6 +3377,13 @@ export default function App(): JSX.Element {
   const selectProject = (wsId: string, projectId: string): void => {
     setActiveWsId(wsId)
     setActiveProjectId(projectId)
+    setActiveView('canvas')
+  }
+
+  const openSettings = (): void => {
+    setCanvasFullscreen(false)
+    setIconTooltip(null)
+    setActiveView('settings')
   }
 
   const saveWorkspace = async (name: string, description: string): Promise<void> => {
@@ -3496,7 +3560,7 @@ export default function App(): JSX.Element {
     try {
       await window.api.project.reorder(wsId, orderedIds)
     } catch (err) {
-      console.error('프로젝트 순서 변경 실패:', err)
+      console.error('Failed to reorder projects:', err)
       setWorkspaces(prev => prev.map(w => (
         w.id === wsId ? { ...w, projects: workspace.projects } : w
       )))
@@ -3516,38 +3580,61 @@ export default function App(): JSX.Element {
     )
   const updateProgress = Math.round(updateState?.progress ?? 0)
   const updateDisplayTitle = updateState?.status === 'downloaded'
-    ? '업데이트 준비 완료'
+    ? t('topbar.update.ready')
     : updateState?.status === 'downloading'
-      ? '업데이트 다운로드 중'
+      ? t('topbar.update.downloadingTitle')
       : updateState?.status === 'checking'
-        ? '업데이트 확인 중'
+        ? t('topbar.update.checking')
         : updateState?.status === 'not-available'
-          ? '최신 버전'
+          ? t('topbar.update.latest')
           : updateState?.status === 'error'
-            ? '업데이트 확인 실패'
+            ? t('topbar.update.failed')
             : updateState?.status === 'disabled'
-              ? '업데이트 확인 비활성화'
-              : '새 업데이트 발견'
-  const updateDisplayMessage = updateState?.message
-    ?? (updateState?.availableVersion
-      ? `버전 ${updateState.availableVersion} 업데이트를 사용할 수 있습니다.`
-      : '새 버전 업데이트를 사용할 수 있습니다.')
+              ? t('topbar.update.disabled')
+              : t('topbar.update.available')
+  const updateDisplayMessage = (() => {
+    if (!updateState) return ''
+    if (updateState.messageKey && isTranslationKey(updateState.messageKey)) {
+      return t(updateState.messageKey, updateState.messageVars)
+    }
+    if (updateState.status === 'available') {
+      return updateState.availableVersion
+        ? t('topbar.update.message.availableVersion', { version: updateState.availableVersion })
+        : t('topbar.update.message.available')
+    }
+    if (updateState.status === 'downloading') return t('topbar.update.message.downloading')
+    if (updateState.status === 'downloaded') {
+      const isMac = document.documentElement.dataset.platform === 'darwin'
+      return t(isMac ? 'topbar.update.message.downloadedMac' : 'topbar.update.message.downloadedWin')
+    }
+    if (updateState.status === 'not-available') return t('topbar.update.message.latest')
+    if (updateState.status === 'disabled') return t('topbar.update.message.disabledDev')
+    if (updateState.status === 'error') return updateState.message ?? t('topbar.update.message.errorGeneric')
+    return updateState.message ?? t('topbar.update.message.available')
+  })()
   const updateActionBusy = updateState?.status === 'checking' || updateState?.status === 'downloading'
   const updateActionLabel = updateState?.status === 'downloaded'
-    ? '업데이트 적용'
+    ? t('topbar.update.apply')
     : updateState?.status === 'available'
-      ? '업데이트 다운로드'
+      ? t('topbar.update.download')
       : updateState?.status === 'downloading'
-        ? `다운로드 ${updateProgress}%`
+        ? t('topbar.update.downloading', { progress: updateProgress })
         : updateState?.status === 'checking'
-          ? '확인 중'
-          : '업데이트 확인'
+          ? t('topbar.update.checking')
+          : t('topbar.update.check')
 
   if (loading) {
-    return <div className="app" data-theme={theme} style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'var(--text-4)', fontSize: 13 }}>로드 중…</div>
+    return (
+      <I18nProvider value={i18nValue}>
+        <div className="app" data-theme={theme} style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'var(--text-4)', fontSize: 13 }}>
+          {t('app.loading')}
+        </div>
+      </I18nProvider>
+    )
   }
 
   return (
+    <I18nProvider value={i18nValue}>
     <div className={`app${isCanvasFullscreen ? ' app-canvas-fullscreen' : ''}`} data-theme={theme}>
       {updateNoticeVisible && updateState && (
         <div className="update-notice no-drag">
@@ -3557,12 +3644,12 @@ export default function App(): JSX.Element {
               {updateDisplayMessage}
               {updateState.availableVersion && (
                 <span className="update-notice-version">
-                  현재 {updateState.currentVersion} → 최신 {updateState.availableVersion}
+                  {t('topbar.update.versionLine', { current: updateState.currentVersion, latest: updateState.availableVersion })}
                 </span>
               )}
             </div>
             {updateState.status === 'downloading' && (
-              <div className="update-progress" aria-label={`업데이트 다운로드 ${updateProgress}%`}>
+              <div className="update-progress" aria-label={t('topbar.update.progressAria', { progress: updateProgress })}>
                 <div className="update-progress-bar" style={{ width: `${updateProgress}%` }} />
               </div>
             )}
@@ -3570,7 +3657,7 @@ export default function App(): JSX.Element {
           <div className="update-notice-actions">
             {updateState.status === 'available' && (
               <button className="btn" onClick={() => { void window.api.update.download() }}>
-                다운로드
+                {t('common.download')}
               </button>
             )}
             {updateState.status === 'downloaded' && (
@@ -3585,7 +3672,7 @@ export default function App(): JSX.Element {
                 setManualUpdateRequested(false)
               }}
             >
-              나중에
+              {t('common.later')}
             </button>
           </div>
         </div>
@@ -3609,7 +3696,7 @@ export default function App(): JSX.Element {
                 className="btn ghost icon"
                 style={{ width: 26, height: 26 }}
                 onClick={() => setSidebarLayout('icons')}
-                title="사이드바 접기"
+                title={t('sidebar.collapse')}
               >
                 <IcoPanelL size={14} />
               </button>
@@ -3618,7 +3705,7 @@ export default function App(): JSX.Element {
             <button
               className="btn ghost icon sidebar-expand-btn"
               onClick={() => setSidebarLayout('full')}
-              title="사이드바 펼치기"
+              title={t('sidebar.expand')}
             >
               <IcoPanelL size={15} />
             </button>
@@ -3641,7 +3728,7 @@ export default function App(): JSX.Element {
                       }}
                       onMouseLeave={() => setIconTooltip(null)}
                       onClick={() => selectProject(ws.id, proj.id)}
-                      aria-label={`${ws.name} ${proj.name} 프로젝트 열기`}
+                      aria-label={t('sidebar.project.openAria', { workspace: ws.name, project: proj.name })}
                     >
                       {projectIconLabels.get(proj.id) ?? proj.name.charAt(0).toUpperCase()}
                     </button>
@@ -3649,6 +3736,23 @@ export default function App(): JSX.Element {
                 </div>
               ) : null
             })}
+          </div>
+        )}
+
+        {!isFull && (
+          <div className="sidebar-icons-footer">
+            <button
+              className={`sidebar-proj-icon sidebar-settings-icon${activeView === 'settings' ? ' sidebar-proj-icon-active' : ''}`}
+              onMouseEnter={e => {
+                const rect = (e.currentTarget as HTMLButtonElement).getBoundingClientRect()
+                setIconTooltip({ text: t('settings.menu'), x: rect.right + 8, y: rect.top + rect.height / 2 })
+              }}
+              onMouseLeave={() => setIconTooltip(null)}
+              onClick={openSettings}
+              aria-label={t('settings.menu')}
+            >
+              <IcoSettings size={15} />
+            </button>
           </div>
         )}
 
@@ -3689,7 +3793,20 @@ export default function App(): JSX.Element {
                 )
               }}
             />
-            <ModulePaletteSection stateKey="common-module" title="공통 모듈" commonDataModules={commonDataModules} />
+            <ModulePaletteSection stateKey="common-module" title={t('sidebar.commonModules')} commonDataModules={commonDataModules} />
+          </div>
+        )}
+
+        {isFull && (
+          <div className="sidebar-footer">
+            <button
+              className={`sidebar-settings-btn${activeView === 'settings' ? ' sidebar-settings-btn-active' : ''}`}
+              onClick={openSettings}
+              title={t('settings.menu')}
+            >
+              <IcoSettings size={14} />
+              <span>{t('settings.menu')}</span>
+            </button>
           </div>
         )}
 
@@ -3709,7 +3826,11 @@ export default function App(): JSX.Element {
       <div className="workspace">
         <header className="topbar">
           <div className="topbar-left no-drag">
-            {activeProject && (
+            {activeView === 'settings' ? (
+              <div className="topbar-breadcrumb">
+                <span className="topbar-bc-proj">{t('settings.title')}</span>
+              </div>
+            ) : activeProject && (
               <div className="topbar-breadcrumb">
                 {activeProjectEnv && activeProjectWs && (
                   <div className="topbar-env-picker">
@@ -3721,7 +3842,7 @@ export default function App(): JSX.Element {
                         if (rect) setEnvDropdownPos({ top: rect.bottom + 6, left: rect.left })
                         setEnvDropdownOpen(o => !o)
                       }}
-                      title="환경 변경"
+                      title={t('topbar.environment.change')}
                     >
                       <span className="topbar-bc-env-dot" style={{ background: activeProjectEnv.color }} />
                       <span className="topbar-bc-env" style={{ color: activeProjectEnv.color }}>{activeProjectEnv.name}</span>
@@ -3741,12 +3862,12 @@ export default function App(): JSX.Element {
               className="btn topbar-update-btn"
               onClick={() => { void handleUpdateAction() }}
               disabled={updateActionBusy}
-              title="최신 버전 확인"
+              title={t('topbar.update.check')}
             >
               <IcoDownload size={13} />
               {updateActionLabel}
             </button>
-            <button className="btn ghost icon" onClick={toggleTheme} title={theme === 'dark' ? '라이트 테마' : '다크 테마'}>
+            <button className="btn ghost icon" onClick={toggleTheme} title={theme === 'dark' ? t('topbar.theme.light') : t('topbar.theme.dark')}>
               {theme === 'dark' ? <IcoSun size={15} /> : <IcoMoon size={15} />}
             </button>
             <div className="topbar-transfer" ref={transferMenuRef}>
@@ -3754,32 +3875,32 @@ export default function App(): JSX.Element {
                 className="btn topbar-transfer-btn"
                 onClick={() => setTransferMenuOpen(open => !open)}
                 disabled={transferBusy}
-                title="워크스페이스 또는 프로젝트 가져오기/내보내기"
+                title={t('topbar.transfer.title')}
               >
                 <IcoUpload size={13} />
-                {transferBusy ? '처리 중' : '가져오기/내보내기'}
+                {transferBusy ? t('common.processing') : t('topbar.transfer.label')}
                 <IcoChevD size={10} />
               </button>
               {transferMenuOpen && (
                 <div className="topbar-transfer-menu">
-                  <div className="topbar-transfer-group-label">내보내기</div>
+                  <div className="topbar-transfer-group-label">{t('topbar.transfer.export')}</div>
                   <button className="topbar-transfer-option" onClick={() => { void handleExportWorkspace() }} disabled={!activeProjectWs || transferBusy}>
                     <IcoDownload size={13} />
-                    현재 워크스페이스 내보내기
+                    {t('topbar.transfer.exportWorkspace')}
                   </button>
                   <button className="topbar-transfer-option" onClick={() => { void handleExportProject() }} disabled={!activeProject || transferBusy}>
                     <IcoDownload size={13} />
-                    현재 프로젝트 내보내기
+                    {t('topbar.transfer.exportProject')}
                   </button>
                   <div className="topbar-transfer-separator" />
-                  <div className="topbar-transfer-group-label">가져오기</div>
+                  <div className="topbar-transfer-group-label">{t('topbar.transfer.import')}</div>
                   <button className="topbar-transfer-option" onClick={() => { void handleImportWorkspace() }} disabled={transferBusy}>
                     <IcoUpload size={13} />
-                    워크스페이스 가져오기
+                    {t('topbar.transfer.importWorkspace')}
                   </button>
                   <button className="topbar-transfer-option" onClick={() => { void handleImportProject() }} disabled={transferBusy}>
                     <IcoUpload size={13} />
-                    프로젝트 가져오기
+                    {t('topbar.transfer.importProject')}
                   </button>
                 </div>
               )}
@@ -3788,7 +3909,9 @@ export default function App(): JSX.Element {
         </header>
 
         <div className="workspace-body">
-          {activeProject ? (
+          {activeView === 'settings' ? (
+            <SettingsPage />
+          ) : activeProject ? (
             <div className="canvas-wrap">
               <div className="canvas-bg" />
               <WorkflowCanvas
@@ -3831,15 +3954,16 @@ export default function App(): JSX.Element {
             </div>
           ) : (
             <div className="workspace-empty">
-              <span>프로젝트를 선택하거나 추가하세요</span>
+              <span>{t('workspace.empty')}</span>
             </div>
           )}
         </div>
 
+        {activeView === 'canvas' && (
         <div className={`log-panel ${logState === 'collapsed' ? 'log-panel-collapsed' : 'log-panel-fullscreen'}`}>
           <div className="log-hd" onClick={toggleLog}>
             <IcoPanelB size={13} style={{ color: 'var(--text-3)' }} />
-            <span className="log-title">실행 로그</span>
+            <span className="log-title">{t('log.title')}</span>
             <span className="log-spacer" />
             {execLogs.length > 0 && (
               <button
@@ -3849,10 +3973,10 @@ export default function App(): JSX.Element {
                   void handleDownloadExecutionReport()
                 }}
                 disabled={downloadingReport}
-                title="HTML 상세 리포트 다운로드"
+                title={t('report.downloadHtml')}
               >
                 <IcoSave size={12} />
-                HTML
+                {t('common.html')}
               </button>
             )}
             <IcoChevD
@@ -3867,7 +3991,7 @@ export default function App(): JSX.Element {
           {logState === 'fullscreen' && (
             <div className="log-body">
               {execLogs.length === 0 ? (
-                <span className="log-empty">실행하면 로그가 표시됩니다</span>
+                <span className="log-empty">{t('log.empty')}</span>
               ) : (
                 <div className="log-entries">
                   {execLogs.map(entry => (
@@ -3878,6 +4002,7 @@ export default function App(): JSX.Element {
             </div>
           )}
         </div>
+        )}
       </div>
 
       {/* ── Env Dropdown (fixed) ── */}
@@ -3904,23 +4029,23 @@ export default function App(): JSX.Element {
         <div className="modal-overlay" onClick={() => setSavedReport(null)}>
           <div className="report-saved-dialog" onClick={e => e.stopPropagation()}>
             <div className="confirm-hd">
-              <span className="confirm-title">보고서 생성 완료</span>
-              <button className="btn ghost icon" onClick={() => setSavedReport(null)} title="닫기">
+              <span className="confirm-title">{t('report.saved.title')}</span>
+              <button className="btn ghost icon" onClick={() => setSavedReport(null)} title={t('common.close')}>
                 <IcoX size={15} />
               </button>
             </div>
             <div className="report-saved-body">
-              <p className="confirm-message">보고서가 생성 되었습니다.</p>
-              <p className="confirm-message">파일을 여시겠습니까?</p>
+              <p className="confirm-message">{t('report.saved.message')}</p>
+              <p className="confirm-message">{t('report.saved.openQuestion')}</p>
               <div className="report-saved-path" title={savedReport.path}>{savedReport.path}</div>
             </div>
             <div className="confirm-ft">
-              <button className="btn" onClick={() => setSavedReport(null)}>취소</button>
+              <button className="btn" onClick={() => setSavedReport(null)}>{t('common.cancel')}</button>
               <button
                 className="btn primary"
                 onClick={() => { void handleOpenSavedReport() }}
               >
-                확인
+                {t('common.confirm')}
               </button>
             </div>
           </div>
@@ -3965,9 +4090,9 @@ export default function App(): JSX.Element {
         const ws = workspaces.find(w => w.id === confirmDeleteWsId)
         return ws ? (
           <ConfirmDialog
-            title="워크스페이스 삭제"
-            message={`"${ws.name}" 워크스페이스를 삭제하시겠습니까?`}
-            warning="이 작업은 되돌릴 수 없으며, 워크스페이스에 포함된 모든 Environment와 Project가 함께 삭제됩니다."
+            title={t('confirm.workspaceDelete.title')}
+            message={t('confirm.workspaceDelete.message', { name: ws.name })}
+            warning={t('confirm.workspaceDelete.warning')}
             onConfirm={deleteWorkspace}
             onCancel={() => setConfirmDeleteWsId(null)}
           />
@@ -3977,9 +4102,9 @@ export default function App(): JSX.Element {
       {/* ── Env Delete Confirm ── */}
       {confirmDeleteEnv && (
         <ConfirmDialog
-          title="환경 삭제"
-          message={`"${confirmDeleteEnv.env.name}" 환경을 삭제하시겠습니까?`}
-          warning="이 작업은 되돌릴 수 없으며, 환경에 포함된 모든 변수가 함께 삭제됩니다."
+          title={t('confirm.envDelete.title')}
+          message={t('confirm.envDelete.message', { name: confirmDeleteEnv.env.name })}
+          warning={t('confirm.envDelete.warning')}
           onConfirm={deleteEnv}
           onCancel={() => setConfirmDeleteEnv(null)}
         />
@@ -3988,14 +4113,14 @@ export default function App(): JSX.Element {
       {/* ── Project Delete Confirm ── */}
       {confirmDeleteCanvasNodes.length > 0 && (
         <ConfirmDialog
-          title="캔버스 모듈 삭제"
+          title={t('confirm.canvasNodeDelete.title')}
           message={
             confirmDeleteCanvasNodes.length === 1
-              ? `"${confirmDeleteCanvasNodes[0].label}" 모듈을 캔버스에서 삭제하시겠습니까?`
-              : `선택한 ${confirmDeleteCanvasNodes.length}개 모듈을 캔버스에서 삭제하시겠습니까?`
+              ? t('confirm.canvasNodeDelete.single', { name: confirmDeleteCanvasNodes[0].label })
+              : t('confirm.canvasNodeDelete.multiple', { count: confirmDeleteCanvasNodes.length })
           }
-          warning="현재 캔버스에 배치된 독립 모듈과 연결선만 삭제됩니다."
-          confirmLabel="삭제"
+          warning={t('confirm.canvasNodeDelete.warning')}
+          confirmLabel={t('common.delete')}
           onConfirm={async () => {
             const nodes = confirmDeleteCanvasNodes
             setConfirmDeleteCanvasNodes([])
@@ -4007,9 +4132,9 @@ export default function App(): JSX.Element {
 
       {confirmDeleteProject && (
         <ConfirmDialog
-          title="프로젝트 삭제"
-          message={`"${confirmDeleteProject.project.name}" 프로젝트를 삭제하시겠습니까?`}
-          warning="이 작업은 되돌릴 수 없으며, 프로젝트에 포함된 모든 데이터가 함께 삭제됩니다."
+          title={t('confirm.projectDelete.title')}
+          message={t('confirm.projectDelete.message', { name: confirmDeleteProject.project.name })}
+          warning={t('confirm.projectDelete.warning')}
           onConfirm={deleteProject}
           onCancel={() => setConfirmDeleteProject(null)}
         />
@@ -4216,9 +4341,9 @@ export default function App(): JSX.Element {
       {/* ── Edge Delete Confirm ── */}
       {confirmDeleteEdge && (
         <ConfirmDialog
-          title="연결 삭제"
-          message="이 연결선을 삭제하시겠습니까?"
-          warning="삭제된 연결은 복구할 수 없습니다."
+          title={t('confirm.edgeDelete.title')}
+          message={t('confirm.edgeDelete.message')}
+          warning={t('confirm.edgeDelete.warning')}
           onConfirm={deleteEdge}
           onCancel={() => setConfirmDeleteEdge(null)}
         />
@@ -4234,5 +4359,6 @@ export default function App(): JSX.Element {
         </div>
       )}
     </div>
+    </I18nProvider>
   )
 }

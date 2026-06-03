@@ -9,11 +9,13 @@ import {
   MONACO_OPTIONS,
   ScriptConsoleView,
   beforeApiScriptEditorMount,
+  useApiScriptAssistantLabels,
 } from './ApiNodeModal'
 import { useModalMaximize } from './useModalMaximize'
 import { isScriptRuntimeError, runPostResponse, runPreRequest } from '../../utils/scriptRuntime'
 import { useMonacoTheme } from '../../utils/useMonacoTheme'
 import type { ScriptConsoleEntry } from '../../utils/scriptRuntime'
+import { useI18n } from '../../i18n'
 
 interface Props {
   node: ApiNode
@@ -296,6 +298,8 @@ export default function SelectNodeModal({
   onDelete,
   onClose,
 }: Props): JSX.Element {
+  const { t, language } = useI18n()
+  useApiScriptAssistantLabels()
   const initial = parseConfig(node.config)
   const monacoTheme = useMonacoTheme()
   const [moduleName, setModuleName] = useState(node.label)
@@ -598,7 +602,7 @@ export default function SelectNodeModal({
 
       if (preScript.trim()) {
         runningPhase = 'pre'
-        const preResult = await runPreRequest(preScript, { input: scriptInput, envVars: testEnvVars })
+        const preResult = await runPreRequest(preScript, { input: scriptInput, envVars: testEnvVars, language })
         setPreConsoleLogs(preResult.logs)
         for (const [key, value] of Object.entries(preResult.envUpdates)) testEnvVars[key] = value
         if (activeSelectionType === 'script') selectedOutput = buildScriptSelectionOutput(preResult.inputVars)
@@ -611,6 +615,7 @@ export default function SelectNodeModal({
           input: scriptInput,
           output: selectedOutput,
           envVars: testEnvVars,
+          language,
         })
         setPostConsoleLogs(postResult.logs)
         if (postResult.hasOutputOverride) finalOutput = postResult.outputOverride
@@ -641,18 +646,18 @@ export default function SelectNodeModal({
           <div className="dm-hd" onMouseDown={onHeaderDown}>
             <div className="dm-hd-left">
               <div className="dm-hd-icon dm-hd-icon-select"><SelectIcon size={13} /></div>
-              <span className="dm-hd-title">{isNew ? 'Select 모듈 추가' : 'Select 모듈 설정'}</span>
+              <span className="dm-hd-title">{isNew ? t('module.select.titleAdd') : t('module.select.titleSettings')}</span>
             </div>
             <div className="dm-hd-window-actions">
               <button
                 className="btn ghost icon dm-window-btn"
                 onClick={toggleMaximized}
-                title={isMaximized ? '이전 크기로 복원' : '창 최대화'}
-                aria-label={isMaximized ? '이전 크기로 복원' : '창 최대화'}
+                title={isMaximized ? t('module.common.restoreWindow') : t('module.common.maximizeWindow')}
+                aria-label={isMaximized ? t('module.common.restoreWindow') : t('module.common.maximizeWindow')}
               >
                 {isMaximized ? <IcoRestore size={13} /> : <IcoMaximize size={13} />}
               </button>
-              <button className="btn ghost icon dm-close-btn" onClick={onClose} title="닫기" aria-label="닫기"><IcoX size={13} /></button>
+              <button className="btn ghost icon dm-close-btn" onClick={onClose} title={t('common.close')} aria-label={t('common.close')}><IcoX size={13} /></button>
             </div>
           </div>
 
@@ -683,18 +688,18 @@ export default function SelectNodeModal({
                     <button
                       className={`sm-view-btn${viewMode === 'table' ? ' active' : ''}`}
                       onClick={() => { setViewMode('table'); setScriptOutputOverride(null); setScriptError(null) }}
-                    >표</button>
+                    >{t('module.select.view.table')}</button>
                   </div>
                   {onRun && (
                     <button
                       className="btn ghost icon dm-format-btn dm-run-btn"
                       onClick={handleRunClick}
-                      title="실행 — 연결된 상류 노드 데이터 가져오기"
+                      title={t('module.common.runUpstream')}
                     >
                       <RunIcon />
                     </button>
                   )}
-                  <button className="btn ghost icon dm-format-btn" onClick={handleFormatInput} title="JSON 정렬">
+                  <button className="btn ghost icon dm-format-btn" onClick={handleFormatInput} title={t('module.common.formatJson')}>
                     <FormatIcon />
                   </button>
                 </div>
@@ -737,7 +742,7 @@ export default function SelectNodeModal({
                         </button>
                       )
                     }) : (
-                      <div className="sm-col-empty">표시할 JSON 데이터가 없습니다.</div>
+                      <div className="sm-col-empty">{t('module.select.noJsonData')}</div>
                     )}
                   </div>
                 ) : (
@@ -772,7 +777,7 @@ export default function SelectNodeModal({
                       </table>
                     ) : (
                       <div className="sm-col-empty">
-                        INPUT에 배열 데이터를 붙여넣거나 실행하세요
+                        {t('module.select.noArrayInput')}
                       </div>
                     )}
                   </div>
@@ -798,7 +803,7 @@ export default function SelectNodeModal({
                         className={`api-script-pane-tab${prePaneTab === 'console' ? ' api-script-pane-tab-active' : ''}`}
                         onClick={() => setPrePaneTab('console')}
                       >
-                        콘솔
+                        {t('module.common.console')}
                         {preConsoleLogs.length > 0 && <span className="api-script-log-count">{preConsoleLogs.length}</span>}
                       </button>
                     </div>
@@ -821,7 +826,7 @@ export default function SelectNodeModal({
                   </div>
                 ) : (
                   <div className="dm-pane-body api-script-console-body">
-                    <ScriptConsoleView logs={preConsoleLogs} emptyText="PRE REQUEST 콘솔 로그가 없습니다." />
+                    <ScriptConsoleView logs={preConsoleLogs} emptyText={t('module.select.consoleEmptyPre')} />
                   </div>
                 )}
               </div>
@@ -832,11 +837,11 @@ export default function SelectNodeModal({
             {/* Settings pane */}
             <div className="dm-pane dm-pane-settings" style={{ flex: '1 1 0', minWidth: 160 }}>
               <div className="dm-pane-hd">
-                <span className="dm-pane-label">설정</span>
+                <span className="dm-pane-label">{t('module.common.settings')}</span>
               </div>
               <div className="dm-pane-body dm-settings-body">
                 <div className="dm-field">
-                  <label className="dm-field-label">모듈 이름</label>
+                  <label className="dm-field-label">{t('module.common.moduleName')}</label>
                   <input
                     className="dm-input"
                     value={moduleName}
@@ -847,7 +852,7 @@ export default function SelectNodeModal({
                 </div>
 
                 <div className="dm-field">
-                  <label className="dm-field-label">선택 방식</label>
+                  <label className="dm-field-label">{t('module.select.selectionType')}</label>
                   <div className="sm-selection-type-tabs">
                     <button
                       type="button"
@@ -855,8 +860,8 @@ export default function SelectNodeModal({
                       onClick={() => setSelectionTypeMode('multiple')}
                       disabled={preRequestScriptEnabled}
                     >
-                      체크박스
-                      <span>여러 개 선택</span>
+                      {t('module.select.checkbox')}
+                      <span>{t('module.select.multiple')}</span>
                     </button>
                     <button
                       type="button"
@@ -864,8 +869,8 @@ export default function SelectNodeModal({
                       onClick={() => setSelectionTypeMode('single')}
                       disabled={preRequestScriptEnabled}
                     >
-                      라디오
-                      <span>한 개만 선택</span>
+                      {t('module.select.radio')}
+                      <span>{t('module.select.single')}</span>
                     </button>
                     <button
                       type="button"
@@ -873,26 +878,29 @@ export default function SelectNodeModal({
                       onClick={() => setSelectionTypeMode('script')}
                       disabled={!preRequestScriptEnabled}
                     >
-                      스크립트
-                      <span>PRE REQUEST SCRIPT 에서 결정</span>
+                      {t('module.select.script')}
+                      <span>{t('module.select.scriptDetermined')}</span>
                     </button>
                   </div>
                 </div>
 
                 <div className="dm-field">
-                  <label className="dm-field-label">선택 현황</label>
+                  <label className="dm-field-label">{t('module.select.selectionStatus')}</label>
                   <span style={{ fontSize: 12, color: 'var(--text-2)' }}>
                     {activeSelectionType === 'script'
-                      ? 'PRE REQUEST SCRIPT 에서 결정'
+                      ? t('module.select.scriptDetermined')
                       : viewMode !== 'table'
-                      ? selectedJsonPathIds.length > 0 ? `${selectedJsonPathIds.length}개 JSON 노드 선택됨` : '미선택'
-                      : `${selectedRowIndices.length > 0 ? `${selectedRowIndices.length}개 행 선택됨` : '미선택'} / 전체 ${totalRows}행`}
+                      ? selectedJsonPathIds.length > 0 ? t('module.select.jsonNodesSelected', { count: selectedJsonPathIds.length }) : t('module.selection.noneSelected')
+                      : t('module.select.rowsStatus', {
+                          selected: selectedRowIndices.length > 0 ? t('module.select.rowsSelectedCount', { count: selectedRowIndices.length }) : t('module.selection.noneSelected'),
+                          total: totalRows,
+                        })}
                   </span>
                 </div>
 
                 <div className="dm-field">
-                  <label className="dm-field-label">자동 선택</label>
-                  <label className="dm-toggle-row" title="캔버스 실행 시 팝업 없이 저장된 행을 자동으로 사용합니다">
+                  <label className="dm-field-label">{t('module.select.autoSelect')}</label>
+                  <label className="dm-toggle-row" title={t('module.select.autoSelectHint')}>
                     <input
                       type="checkbox"
                       checked={autoSelect}
@@ -900,7 +908,7 @@ export default function SelectNodeModal({
                       style={{ marginRight: 6 }}
                     />
                     <span style={{ fontSize: 12, color: 'var(--text-2)' }}>
-                      묻지 않고 선택
+                      {t('module.select.autoSelectLabel')}
                     </span>
                   </label>
                 </div>
@@ -910,13 +918,13 @@ export default function SelectNodeModal({
                     <button
                       className="sm-select-all-btn sm-select-all-btn-clear"
                       onClick={() => { setSelectedRowIndices([]); setScriptOutputOverride(null); setScriptError(null) }}
-                    >선택 해제</button>
+                    >{t('module.select.clearSelection')}</button>
                   </div>
                 )}
 
                 {(!inputRows || inputRows.length === 0) && (
                   <div className="sm-col-empty">
-                    INPUT에 배열 데이터를 붙여넣거나<br />실행하세요
+                    {t('module.select.noArrayInput')}
                   </div>
                 )}
               </div>
@@ -941,11 +949,11 @@ export default function SelectNodeModal({
                     className="btn ghost icon api-test-btn"
                     onClick={handleTestScripts}
                     disabled={scriptTesting || (!preScript.trim() && !postScript.trim())}
-                    title="SELECT 스크립트 테스트"
+                    title={t('module.select.scriptTest')}
                   >
                     {scriptTesting ? <span className="api-testing-dot" /> : <RunIcon />}
                   </button>
-                  <button className="btn ghost icon dm-format-btn" onClick={handleFormatOutput} title="JSON 정렬">
+                  <button className="btn ghost icon dm-format-btn" onClick={handleFormatOutput} title={t('module.common.formatJson')}>
                     <FormatIcon />
                   </button>
                 </div>
@@ -978,7 +986,7 @@ export default function SelectNodeModal({
                         className={`api-script-pane-tab${postPaneTab === 'console' ? ' api-script-pane-tab-active' : ''}`}
                         onClick={() => setPostPaneTab('console')}
                       >
-                        콘솔
+                        {t('module.common.console')}
                         {postConsoleLogs.length > 0 && <span className="api-script-log-count">{postConsoleLogs.length}</span>}
                       </button>
                     </div>
@@ -1001,7 +1009,7 @@ export default function SelectNodeModal({
                   </div>
                 ) : (
                   <div className="dm-pane-body api-script-console-body">
-                    <ScriptConsoleView logs={postConsoleLogs} emptyText="POST RESPONSE 콘솔 로그가 없습니다." />
+                    <ScriptConsoleView logs={postConsoleLogs} emptyText={t('module.select.consoleEmptyPost')} />
                   </div>
                 )}
               </div>
@@ -1011,16 +1019,16 @@ export default function SelectNodeModal({
 
           <div className="dm-ft">
             {onDelete && !confirmDelete && (
-              <button className="btn ghost dm-delete-btn" onClick={() => setConfirmDelete(true)} title="모듈 삭제">
+              <button className="btn ghost dm-delete-btn" onClick={() => setConfirmDelete(true)} title={t('module.common.deleteModule')}>
                 <IcoTrash size={13} />
-                삭제
+                {t('common.delete')}
               </button>
             )}
             {confirmDelete && (
               <>
-                <span className="dm-delete-warn">⚠ 이 모듈이 삭제됩니다.</span>
-                <button className="btn ghost" onClick={() => setConfirmDelete(false)}>취소</button>
-                <button className="btn dm-delete-confirm-btn" onClick={async () => { await onDelete!(); onClose() }}>삭제 확인</button>
+                <span className="dm-delete-warn">{t('module.common.deleteWarning')}</span>
+                <button className="btn ghost" onClick={() => setConfirmDelete(false)}>{t('common.cancel')}</button>
+                <button className="btn dm-delete-confirm-btn" onClick={async () => { await onDelete!(); onClose() }}>{t('module.common.deleteConfirm')}</button>
               </>
             )}
             {!confirmDelete && (
@@ -1029,10 +1037,10 @@ export default function SelectNodeModal({
                   className="btn ghost"
                   onClick={isNew && onDelete ? async () => { await onDelete(); onClose() } : onClose}
                 >
-                  취소
+                  {t('common.cancel')}
                 </button>
                 <button className="btn primary" onClick={handleSave} disabled={saving}>
-                  {saving ? '저장 중…' : '저장'}
+                  {saving ? t('common.saving') : t('common.save')}
                 </button>
               </>
             )}

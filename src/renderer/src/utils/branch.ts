@@ -1,6 +1,7 @@
 import { resolveInputExpression } from './interpolate'
 
 export type BranchRouteKey = 'true' | 'false'
+export type BranchLanguage = 'ko' | 'en'
 
 export interface BranchEvalResult {
   route: BranchRouteKey
@@ -98,7 +99,7 @@ export function parseBranchConfig(raw: string): BranchConfig {
   }
 }
 
-export function evaluateBranch(config: BranchConfig, input: unknown, dataVars?: Record<string, unknown>): BranchEvalResult {
+export function evaluateBranch(config: BranchConfig, input: unknown, dataVars?: Record<string, unknown>, language: BranchLanguage = 'ko'): BranchEvalResult {
   if (config.mode === 'manual') {
     const route: BranchRouteKey = config.selectedRoute === 'false' ? 'false' : 'true'
     return { route, matched: route === 'true', value: route === 'true' }
@@ -107,7 +108,12 @@ export function evaluateBranch(config: BranchConfig, input: unknown, dataVars?: 
   const expression = (config.expression || '').trim()
   const defaultRoute: BranchRouteKey = config.defaultRoute === 'true' ? 'true' : 'false'
   if (!expression) {
-    return { route: defaultRoute, matched: defaultRoute === 'true', value: null, error: '조건식이 비어 있습니다.' }
+    return {
+      route: defaultRoute,
+      matched: defaultRoute === 'true',
+      value: null,
+      error: language === 'ko' ? '조건식이 비어 있습니다.' : 'The condition expression is empty.',
+    }
   }
 
   try {

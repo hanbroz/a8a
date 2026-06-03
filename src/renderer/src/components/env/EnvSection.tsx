@@ -1,5 +1,6 @@
 import { IcoChevD, IcoPlus, IcoPencil, IcoTrash } from '../Icon'
 import { useSidebarOpen } from '../../hooks/useSidebarOpen'
+import { useI18n } from '../../i18n'
 
 export type EnvVar = {
   id: string
@@ -27,6 +28,7 @@ interface Props {
 
 export default function EnvSection({ environments, activeEnvId, onAdd, onEdit, onDelete }: Props): JSX.Element {
   const [open, toggleOpen] = useSidebarOpen('environment')
+  const { t } = useI18n()
 
   const baseEnv = environments.find(e => e.isBase)
   const customEnvs = environments.filter(e => !e.isBase)
@@ -43,11 +45,11 @@ export default function EnvSection({ environments, activeEnvId, onAdd, onEdit, o
             flexShrink: 0
           }}
         />
-        <span className="sidebar-section-title">Environment</span>
+        <span className="sidebar-section-title">{t('sidebar.environment')}</span>
         <button
           className="btn ghost icon sidebar-section-add"
           onClick={e => { e.stopPropagation(); onAdd() }}
-          title="환경 추가"
+          title={t('sidebar.environment.add')}
         >
           <IcoPlus size={13} />
         </button>
@@ -65,7 +67,7 @@ export default function EnvSection({ environments, activeEnvId, onAdd, onEdit, o
               <button
                 className="btn ghost icon env-item-edit"
                 onClick={e => { e.stopPropagation(); onEdit(baseEnv) }}
-                title="BASE 환경 편집"
+                title={t('sidebar.environment.baseEdit')}
               >
                 <IcoPencil size={12} />
               </button>
@@ -87,14 +89,14 @@ export default function EnvSection({ environments, activeEnvId, onAdd, onEdit, o
               <button
                 className="btn ghost icon env-item-edit"
                 onClick={e => { e.stopPropagation(); onEdit(env) }}
-                title="편집"
+                title={t('sidebar.environment.edit')}
               >
                 <IcoPencil size={12} />
               </button>
               <button
                 className="btn ghost icon env-item-edit"
                 onClick={e => { e.stopPropagation(); onDelete(env) }}
-                title="삭제"
+                title={t('sidebar.environment.delete')}
                 style={{ color: 'var(--state-danger, #f85149)' }}
               >
                 <IcoTrash size={12} />

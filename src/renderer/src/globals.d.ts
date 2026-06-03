@@ -202,6 +202,8 @@ declare global {
     availableVersion?: string
     progress?: number
     message?: string
+    messageKey?: string
+    messageVars?: Record<string, string | number | boolean | null | undefined>
   }
 
   type A8aTransferFileResult =
@@ -225,9 +227,9 @@ declare global {
       openDirectory: (defaultPath?: string) => Promise<string | null>
     }
     file: {
-      write: (path: string, content: string) => Promise<{ ok: true; path: string } | { ok: false; error: string }>
-      writeXlsxDownload: (fileName: string, base64Content: string) => Promise<{ ok: true; path: string } | { ok: false; error: string }>
-      open: (path: string) => Promise<{ ok: true } | { ok: false; error: string }>
+      write: (path: string, content: string, language?: string) => Promise<{ ok: true; path: string } | { ok: false; error: string }>
+      writeXlsxDownload: (fileName: string, base64Content: string, language?: string) => Promise<{ ok: true; path: string } | { ok: false; error: string }>
+      open: (path: string, language?: string) => Promise<{ ok: true } | { ok: false; error: string }>
       downloadsDir: () => Promise<string>
     }
     workspace: {
@@ -276,10 +278,10 @@ declare global {
       delete: (id: string) => Promise<void>
     }
     transfer: {
-      exportWorkspace: (workspaceId: string) => Promise<A8aTransferFileResult>
-      exportProject: (projectId: string) => Promise<A8aTransferFileResult>
-      importWorkspace: () => Promise<A8aTransferImportResult>
-      importProject: (workspaceId: string) => Promise<A8aTransferImportResult>
+      exportWorkspace: (workspaceId: string, language?: string) => Promise<A8aTransferFileResult>
+      exportProject: (projectId: string, language?: string) => Promise<A8aTransferFileResult>
+      importWorkspace: (language?: string) => Promise<A8aTransferImportResult>
+      importProject: (workspaceId: string, language?: string) => Promise<A8aTransferImportResult>
     }
     http: {
       fetch: (url: string, options: { method: string; headers: Record<string, string>; body?: string }) => Promise<{ status: number; statusText: string; text: string; ok: boolean }>

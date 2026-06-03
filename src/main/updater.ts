@@ -24,6 +24,8 @@ interface UpdateState {
   availableVersion?: string
   progress?: number
   message?: string
+  messageKey?: string
+  messageVars?: Record<string, string | number | boolean | null | undefined>
 }
 
 interface GitHubReleaseAsset {
@@ -63,6 +65,42 @@ let availableUpdate: AvailableUpdate | null = null
 let downloadedInstallerPath: string | null = null
 let downloadPromise: Promise<void> | null = null
 
+class UpdateError extends Error {
+  readonly messageKey: string
+  readonly messageVars?: UpdateState['messageVars']
+
+  constructor(messageKey: string, fallbackMessage: string, messageVars?: UpdateState['messageVars']) {
+    super(fallbackMessage)
+    this.name = 'UpdateError'
+    this.messageKey = messageKey
+    this.messageVars = messageVars
+  }
+}
+
+function updateMessage(messageKey: string, fallbackMessage: string, messageVars?: UpdateState['messageVars']): Pick<UpdateState, 'message' | 'messageKey' | 'messageVars'> {
+  return { message: fallbackMessage, messageKey, messageVars }
+}
+
+function updateError(messageKey: string, fallbackMessage: string, messageVars?: UpdateState['messageVars']): UpdateError {
+  return new UpdateError(messageKey, fallbackMessage, messageVars)
+}
+
+function updateErrorPayload(error: unknown, fallbackMessageKey = 'topbar.update.message.errorGeneric'): Pick<UpdateState, 'message' | 'messageKey' | 'messageVars'> {
+  if (error instanceof UpdateError) {
+    return {
+      message: error.message,
+      messageKey: error.messageKey,
+      messageVars: error.messageVars,
+    }
+  }
+
+  return {
+    message: String((error as Error)?.message ?? error),
+    messageKey: fallbackMessageKey,
+    messageVars: undefined,
+  }
+}
+
 function sendUpdateState(): void {
   for (const window of BrowserWindow.getAllWindows()) {
     window.webContents.send('update:status', updateState)
@@ -71,6 +109,13 @@ function sendUpdateState(): void {
 
 function setUpdateState(next: Partial<UpdateState>): UpdateState {
   Object.assign(updateState, next)
+  if ('message' in next && next.message === undefined) {
+    updateState.messageKey = undefined
+    updateState.messageVars = undefined
+  }
+  if ('messageKey' in next && next.messageKey === undefined) {
+    updateState.messageVars = undefined
+  }
   sendUpdateState()
   return { ...updateState }
 }
@@ -163,7 +208,7 @@ function parseSha256Checksum(content: string, assetName: string): string {
   const lines = content.split(/\r?\n/).map(line => line.trim()).filter(Boolean)
   const matchingLine = lines.find(line => line.includes(assetName)) ?? lines[0] ?? ''
   const checksum = matchingLine.match(/\b[a-fA-F0-9]{64}\b/)?.[0]?.toLowerCase()
-  if (!checksum) throw new Error('업데이트 체크섬 파일이 올바르지 않습니다.')
+  if (!checksum) throw updateError('topbar.update.error.invalidChecksum', '업데이트 체크섬 파일이 올바르지 않습니다.')
   return checksum
 }
 
@@ -174,7 +219,10 @@ async function fetchExpectedSha256(update: AvailableUpdate): Promise<string> {
     },
   })
   if (!response.ok) {
-    throw new Error(`업데이트 체크섬 다운로드 실패: ${response.status} ${response.statusText}`)
+    throw updateError('topbar.update.error.checksumDownloadFailed', `업데이트 체크섬 다운로드 실패: ${response.status} ${response.statusText}`, {
+      status: response.status,
+      statusText: response.statusText,
+    })
   }
   return parseSha256Checksum(await response.text(), update.assetName)
 }
@@ -184,7 +232,7 @@ async function fetchLatestRelease(): Promise<AvailableUpdate | null> {
   if (!repository) {
     setUpdateState({
       status: 'disabled',
-      message: '업데이트를 확인할 GitHub 저장소가 설정되지 않았습니다.',
+      ...updateMessage('topbar.update.message.disabledRepo', '업데이트를 확인할 GitHub 저장소가 설정되지 않았습니다.'),
     })
     return null
   }
@@ -200,13 +248,16 @@ async function fetchLatestRelease(): Promise<AvailableUpdate | null> {
     setUpdateState({
       status: 'not-available',
       progress: undefined,
-      message: '배포된 GitHub 릴리스를 찾지 못했습니다.',
+      ...updateMessage('topbar.update.message.notFound', '배포된 GitHub 릴리스를 찾지 못했습니다.'),
     })
     return null
   }
 
   if (!response.ok) {
-    throw new Error(`GitHub 업데이트 확인 실패: ${response.status} ${response.statusText}`)
+    throw updateError('topbar.update.error.checkFailed', `GitHub 업데이트 확인 실패: ${response.status} ${response.statusText}`, {
+      status: response.status,
+      statusText: response.statusText,
+    })
   }
 
   const release = await response.json() as GitHubRelease
@@ -217,11 +268,13 @@ async function fetchLatestRelease(): Promise<AvailableUpdate | null> {
 
   const asset = releaseAsset(release)
   if (!asset) {
-    throw new Error(`새 릴리스에 ${platformAssetDescription()}이 없습니다.`)
+    throw updateError('topbar.update.error.missingAsset', `새 릴리스에 ${platformAssetDescription()}이 없습니다.`)
   }
   const checksumAsset = releaseChecksumAsset(release, asset.name)
   if (!checksumAsset) {
-    throw new Error(`새 릴리스에 ${asset.name} 체크섬 파일(.sha256)이 없습니다.`)
+    throw updateError('topbar.update.error.missingChecksum', `새 릴리스에 ${asset.name} 체크섬 파일(.sha256)이 없습니다.`, {
+      assetName: asset.name,
+    })
   }
 
   return {
@@ -244,7 +297,7 @@ async function downloadUpdate(update: AvailableUpdate): Promise<void> {
       status: 'downloading',
       availableVersion: update.version,
       progress: 0,
-      message: 'GitHub에서 업데이트 설치 파일을 다운로드하고 있습니다.',
+      ...updateMessage('topbar.update.message.downloading', 'GitHub에서 업데이트 설치 파일을 다운로드하고 있습니다.'),
     })
 
     const dir = join(tmpdir(), 'a8a-updater')
@@ -256,7 +309,10 @@ async function downloadUpdate(update: AvailableUpdate): Promise<void> {
       },
     })
     if (!response.ok || !response.body) {
-      throw new Error(`업데이트 다운로드 실패: ${response.status} ${response.statusText}`)
+      throw updateError('topbar.update.error.downloadFailed', `업데이트 다운로드 실패: ${response.status} ${response.statusText}`, {
+        status: response.status,
+        statusText: response.statusText,
+      })
     }
 
     const total = Number(response.headers.get('content-length') ?? update.size)
@@ -292,7 +348,7 @@ async function downloadUpdate(update: AvailableUpdate): Promise<void> {
     const actualSha256 = hash.digest('hex').toLowerCase()
     if (actualSha256 !== expectedSha256) {
       await unlink(installerPath).catch(() => {})
-      throw new Error('업데이트 파일 체크섬이 일치하지 않습니다. 다운로드한 파일을 삭제했습니다.')
+      throw updateError('topbar.update.error.checksumMismatch', '업데이트 파일 체크섬이 일치하지 않습니다. 다운로드한 파일을 삭제했습니다.')
     }
 
     downloadedInstallerPath = installerPath
@@ -300,9 +356,9 @@ async function downloadUpdate(update: AvailableUpdate): Promise<void> {
       status: 'downloaded',
       availableVersion: update.version,
       progress: 100,
-      message: process.platform === 'darwin'
-        ? '업데이트 다운로드가 완료되었습니다. 적용하면 macOS 설치 파일을 엽니다.'
-        : '업데이트 다운로드가 완료되었습니다. 재시작하면 설치를 진행합니다.',
+      ...(process.platform === 'darwin'
+        ? updateMessage('topbar.update.message.downloadedMac', '업데이트 다운로드가 완료되었습니다. 적용하면 macOS 설치 파일을 엽니다.')
+        : updateMessage('topbar.update.message.downloadedWin', '업데이트 다운로드가 완료되었습니다. 재시작하면 설치를 진행합니다.')),
     })
   })().finally(() => {
     downloadPromise = null
@@ -315,11 +371,11 @@ async function checkForUpdates(autoDownload: boolean): Promise<UpdateState> {
   if (!isUpdaterEnabled()) {
     return setUpdateState({
       status: 'disabled',
-      message: '개발 모드에서는 자동 업데이트 확인을 건너뜁니다.',
+      ...updateMessage('topbar.update.message.disabledDev', '개발 모드에서는 자동 업데이트 확인을 건너뜁니다.'),
     })
   }
 
-  setUpdateState({ status: 'checking', progress: undefined, message: undefined })
+  setUpdateState({ status: 'checking', progress: undefined, message: undefined, messageKey: undefined, messageVars: undefined })
   availableUpdate = await fetchLatestRelease()
 
   if (!availableUpdate) {
@@ -327,7 +383,7 @@ async function checkForUpdates(autoDownload: boolean): Promise<UpdateState> {
       status: 'not-available',
       availableVersion: undefined,
       progress: undefined,
-      message: '최신 버전을 사용 중입니다.',
+      ...updateMessage('topbar.update.message.latest', '최신 버전을 사용 중입니다.'),
     })
   }
 
@@ -335,7 +391,7 @@ async function checkForUpdates(autoDownload: boolean): Promise<UpdateState> {
     status: 'available',
     availableVersion: availableUpdate.version,
     progress: undefined,
-    message: '새 버전이 GitHub에 배포되었습니다.',
+    ...updateMessage('topbar.update.message.available', '새 버전이 GitHub에 배포되었습니다.'),
   })
 
   if (autoDownload) {
@@ -355,7 +411,7 @@ export function registerUpdaterIpcHandlers(): void {
       return setUpdateState({
         status: 'error',
         progress: undefined,
-        message: String((error as Error)?.message ?? error),
+        ...updateErrorPayload(error),
       })
     }
   })
@@ -370,7 +426,7 @@ export function registerUpdaterIpcHandlers(): void {
       return setUpdateState({
         status: 'error',
         progress: undefined,
-        message: String((error as Error)?.message ?? error),
+        ...updateErrorPayload(error),
       })
     }
   })
@@ -382,7 +438,7 @@ export function registerUpdaterIpcHandlers(): void {
       if (errorMessage) throw new Error(errorMessage)
       return setUpdateState({
         status: 'downloaded',
-        message: 'macOS 설치 파일을 열었습니다. a8a를 종료한 뒤 새 앱으로 교체하세요.',
+        ...updateMessage('topbar.update.message.macInstallerOpened', 'macOS 설치 파일을 열었습니다. a8a를 종료한 뒤 새 앱으로 교체하세요.'),
       })
     }
 
@@ -391,7 +447,7 @@ export function registerUpdaterIpcHandlers(): void {
       if (errorMessage) throw new Error(errorMessage)
       return setUpdateState({
         status: 'downloaded',
-        message: '설치 파일을 열었습니다.',
+        ...updateMessage('topbar.update.message.installerOpened', '설치 파일을 열었습니다.'),
       })
     }
 
@@ -412,7 +468,7 @@ export function initializeAutoUpdater(): void {
   if (!isUpdaterEnabled()) {
     setUpdateState({
       status: 'disabled',
-      message: '개발 모드에서는 자동 업데이트 확인을 건너뜁니다.',
+      ...updateMessage('topbar.update.message.disabledDev', '개발 모드에서는 자동 업데이트 확인을 건너뜁니다.'),
     })
     return
   }
@@ -422,7 +478,7 @@ export function initializeAutoUpdater(): void {
       setUpdateState({
         status: 'error',
         progress: undefined,
-        message: error.message || '업데이트 확인 중 오류가 발생했습니다.',
+        ...updateErrorPayload(error),
       })
     })
   }, 5_000)

@@ -1,5 +1,6 @@
 import { useState, useRef } from 'react'
 import { IcoX, IcoPlus, IcoTrash } from '../Icon'
+import { useI18n } from '../../i18n'
 import type { Environment, EnvVar } from './EnvSection'
 
 interface Props {
@@ -29,6 +30,7 @@ const PRESET_COLORS: Record<string, string> = {
 }
 
 export default function EnvModal({ env, onSave, onClose }: Props): JSX.Element {
+  const { t } = useI18n()
   const isBase = env?.isBase === true
   const isNew = env === null
   const [step, setStep] = useState<'select' | 'edit'>(isNew ? 'select' : 'edit')
@@ -97,8 +99,8 @@ export default function EnvModal({ env, onSave, onClose }: Props): JSX.Element {
       <div className="modal-overlay" onClick={onClose}>
         <div className="env-preset-modal" onClick={e => e.stopPropagation()}>
           <div className="env-modal-hd">
-            <span className="env-modal-base-label">Environment 유형 선택</span>
-            <button className="btn ghost icon" onClick={onClose} title="닫기">
+            <span className="env-modal-base-label">{t('modal.env.selectType')}</span>
+            <button className="btn ghost icon" onClick={onClose} title={t('common.close')}>
               <IcoX size={15} />
             </button>
           </div>
@@ -133,9 +135,9 @@ export default function EnvModal({ env, onSave, onClose }: Props): JSX.Element {
             <div className="env-modal-base-title">
               <span className="env-item-badge">B</span>
               <span className="env-modal-base-label">BASE</span>
-              <span className="env-modal-base-hint">모든 Environment가 이 값을 기본으로 상속합니다</span>
+              <span className="env-modal-base-hint">{t('modal.env.baseHint')}</span>
             </div>
-            <button className="btn ghost icon" onClick={onClose} title="닫기">
+            <button className="btn ghost icon" onClick={onClose} title={t('common.close')}>
               <IcoX size={15} />
             </button>
           </div>
@@ -156,16 +158,16 @@ export default function EnvModal({ env, onSave, onClose }: Props): JSX.Element {
                   className="env-modal-name-input"
                   value={name}
                   onChange={e => setName(e.target.value)}
-                  placeholder="Environment 이름"
+                  placeholder={t('modal.env.namePlaceholder')}
                   autoFocus
                 />
-                <button className="btn ghost icon" onClick={onClose} title="닫기" style={{ flexShrink: 0 }}>
+                <button className="btn ghost icon" onClick={onClose} title={t('common.close')} style={{ flexShrink: 0 }}>
                   <IcoX size={15} />
                 </button>
               </div>
               <div className="env-identity-bottom">
                 <div className="env-initial-wrap">
-                  <span className="env-color-label">이니셜</span>
+                  <span className="env-color-label">{t('modal.env.initial')}</span>
                   <input
                     className="env-initial-input"
                     value={initial}
@@ -243,7 +245,7 @@ export default function EnvModal({ env, onSave, onClose }: Props): JSX.Element {
                 <button
                   className="btn ghost icon env-var-del-btn"
                   onClick={() => removeVar(v.id)}
-                  title="삭제"
+                  title={t('common.delete')}
                 >
                   <IcoTrash size={13} />
                 </button>
@@ -254,20 +256,20 @@ export default function EnvModal({ env, onSave, onClose }: Props): JSX.Element {
           <div className="env-add-row">
             <button className="env-add-btn" onClick={addVar}>
               <IcoPlus size={13} />
-              변수 추가
+              {t('modal.env.addVariable')}
             </button>
           </div>
         </div>
 
         {/* Footer */}
         <div className="env-modal-ft">
-          <button className="btn" onClick={onClose}>취소</button>
+          <button className="btn" onClick={onClose}>{t('common.cancel')}</button>
           <button
             className="btn primary"
             onClick={handleSave}
             disabled={!isBase && !name.trim()}
           >
-            저장
+            {t('common.save')}
           </button>
         </div>
       </div>

@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import { IcoX } from '../Icon'
+import { useI18n } from '../../i18n'
 import type { ProjectItem } from './ProjectModal'
 
 interface Props {
@@ -9,7 +10,8 @@ interface Props {
 }
 
 export default function ProjectCloneModal({ project, onConfirm, onClose }: Props): JSX.Element {
-  const [name, setName] = useState(`${project.name} 복사본`)
+  const { t } = useI18n()
+  const [name, setName] = useState(`${project.name} ${t('modal.projectClone.defaultSuffix')}`)
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const nameRef = useRef<HTMLInputElement>(null)
@@ -41,25 +43,25 @@ export default function ProjectCloneModal({ project, onConfirm, onClose }: Props
     <div className="modal-overlay" onClick={() => { if (!saving) onClose() }}>
       <div className="project-modal" onClick={e => e.stopPropagation()}>
         <div className="env-modal-hd">
-          <span className="env-modal-base-label">프로젝트 복제</span>
-          <button className="btn ghost icon" onClick={onClose} title="닫기" disabled={saving}>
+          <span className="env-modal-base-label">{t('modal.projectClone.title')}</span>
+          <button className="btn ghost icon" onClick={onClose} title={t('common.close')} disabled={saving}>
             <IcoX size={15} />
           </button>
         </div>
 
         <div className="project-modal-body">
           <div className="project-modal-hint">
-            원본 프로젝트 "{project.name}"의 캔버스와 연결선을 새 프로젝트로 복제합니다.
+            {t('modal.projectClone.hint', { name: project.name })}
           </div>
           <label className="project-field">
-            <span className="project-field-label">복제할 프로젝트 이름</span>
+            <span className="project-field-label">{t('modal.projectClone.name')}</span>
             <input
               ref={nameRef}
               className="project-field-input"
               value={name}
               onChange={e => setName(e.target.value)}
               onKeyDown={handleKeyDown}
-              placeholder="프로젝트 이름을 입력하세요"
+              placeholder={t('modal.project.namePlaceholder')}
               disabled={saving}
             />
           </label>
@@ -67,13 +69,13 @@ export default function ProjectCloneModal({ project, onConfirm, onClose }: Props
         </div>
 
         <div className="env-modal-ft">
-          <button className="btn" onClick={onClose} disabled={saving}>취소</button>
+          <button className="btn" onClick={onClose} disabled={saving}>{t('common.cancel')}</button>
           <button
             className="btn primary"
             onClick={() => { void submit() }}
             disabled={!name.trim() || saving}
           >
-            {saving ? '복제 중...' : '복제'}
+            {saving ? t('modal.projectClone.saving') : t('sidebar.project.duplicate')}
           </button>
         </div>
       </div>

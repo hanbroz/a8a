@@ -1,6 +1,7 @@
 import { useState, type DragEvent } from 'react'
 import { IcoChevD, IcoCopy, IcoPlus, IcoPencil, IcoTrash } from '../Icon'
 import { useSidebarOpen } from '../../hooks/useSidebarOpen'
+import { useI18n } from '../../i18n'
 import type { ProjectItem } from './ProjectModal'
 
 interface Props {
@@ -18,6 +19,7 @@ export default function ProjectSection({ projects, activeProjectId, onSelect, on
   const [open, toggleOpen] = useSidebarOpen('project')
   const [draggingId, setDraggingId] = useState<string | null>(null)
   const [dropTargetId, setDropTargetId] = useState<string | null>(null)
+  const { t } = useI18n()
 
   const endReorderDrag = (): void => {
     setDraggingId(null)
@@ -56,11 +58,11 @@ export default function ProjectSection({ projects, activeProjectId, onSelect, on
             flexShrink: 0
           }}
         />
-        <span className="sidebar-section-title">Project</span>
+        <span className="sidebar-section-title">{t('sidebar.project')}</span>
         <button
           className="btn ghost icon sidebar-section-add"
           onClick={e => { e.stopPropagation(); onAdd() }}
-          title="프로젝트 추가"
+          title={t('sidebar.project.add')}
         >
           <IcoPlus size={13} />
         </button>
@@ -69,7 +71,7 @@ export default function ProjectSection({ projects, activeProjectId, onSelect, on
       {open && (
         <div className="sidebar-section-body">
           {projects.length === 0 ? (
-            <div className="sidebar-empty-hint">프로젝트를 추가하세요</div>
+            <div className="sidebar-empty-hint">{t('sidebar.project.empty')}</div>
           ) : (
             projects.map(proj => (
               <div
@@ -98,21 +100,21 @@ export default function ProjectSection({ projects, activeProjectId, onSelect, on
                 <button
                   className="btn ghost icon env-item-edit"
                   onClick={e => { e.stopPropagation(); onDuplicate(proj) }}
-                  title="복제"
+                  title={t('sidebar.project.duplicate')}
                 >
                   <IcoCopy size={12} />
                 </button>
                 <button
                   className="btn ghost icon env-item-edit"
                   onClick={e => { e.stopPropagation(); onEdit(proj) }}
-                  title="수정"
+                  title={t('sidebar.project.edit')}
                 >
                   <IcoPencil size={12} />
                 </button>
                 <button
                   className="btn ghost icon env-item-edit"
                   onClick={e => { e.stopPropagation(); onDelete(proj) }}
-                  title="삭제"
+                  title={t('sidebar.project.delete')}
                   style={{ color: 'var(--state-danger, #f85149)' }}
                 >
                   <IcoTrash size={12} />

@@ -83,6 +83,16 @@ export const JSON_VIEWER_CSS = `
 export const JSON_VIEWER_JS = `
 (function(){
   var RENDER_LIMIT = 100 * 1024;
+  var L = window.__A8A_JSON_VIEWER_LABELS__ || {
+    copyValue: '값 복사',
+    copied: '복사됨',
+    copyFailed: '복사 실패',
+    noData: '데이터 없음',
+    jsonSerializeFailed: 'JSON 직렬화 실패',
+    jsonParseFailed: 'JSON 파싱 실패',
+    tooLargePrefix: 'JSON 크기 ',
+    tooLargeSuffix: 'KB — 100KB 이상이라 UI/Tree 뷰는 비활성. JSON 뷰만 표시됩니다.'
+  };
   function escapeHtml(s) { return String(s).replace(/[&<>"']/g, function(c){return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c];}); }
   function humanKey(k) {
     if (k === null || k === undefined || k === '') return k || '';
@@ -104,7 +114,7 @@ export const JSON_VIEWER_JS = `
     try { return JSON.stringify(value, null, 2); } catch(e) { return String(value); }
   }
   function copyButton(value) {
-    return '<button type="button" class="jv-copy" data-copy="'+escapeHtml(copyValueText(value))+'" title="값 복사" aria-label="값 복사"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2"></rect><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path></svg></button>';
+    return '<button type="button" class="jv-copy" data-copy="'+escapeHtml(copyValueText(value))+'" title="'+escapeHtml(L.copyValue)+'" aria-label="'+escapeHtml(L.copyValue)+'"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2"></rect><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path></svg></button>';
   }
   function copyText(text) {
     function fallback() {
@@ -129,12 +139,12 @@ export const JSON_VIEWER_JS = `
   function showCopyResult(button, ok) {
     button.classList.remove('copied', 'failed');
     button.classList.add(ok ? 'copied' : 'failed');
-    button.setAttribute('title', ok ? '복사됨' : '복사 실패');
-    button.setAttribute('aria-label', ok ? '복사됨' : '복사 실패');
+    button.setAttribute('title', ok ? L.copied : L.copyFailed);
+    button.setAttribute('aria-label', ok ? L.copied : L.copyFailed);
     window.setTimeout(function(){
       button.classList.remove('copied', 'failed');
-      button.setAttribute('title', '값 복사');
-      button.setAttribute('aria-label', '값 복사');
+      button.setAttribute('title', L.copyValue);
+      button.setAttribute('aria-label', L.copyValue);
     }, 1200);
   }
   function renderUiNode(key, value) {
@@ -170,7 +180,7 @@ export const JSON_VIEWER_JS = `
     return '<div class="jv-group"><div class="jv-group-hd" data-toggle="group"><span class="jv-toggle"></span><span class="jv-icon">'+iconStr+'</span><span class="jv-group-name">'+labelKey+'</span><span class="jv-count">('+count+')</span>'+copyButton(value)+'</div><div class="jv-group-body"><div class="jv-grid">'+inner+'</div></div></div>';
   }
   function renderUi(data) {
-    if (data === null || data === undefined) return '<div class="jv-note">데이터 없음</div>';
+    if (data === null || data === undefined) return '<div class="jv-note">'+escapeHtml(L.noData)+'</div>';
     var t = typeOf(data);
     if (t === 'object') {
       var ks = Object.keys(data);
@@ -214,7 +224,7 @@ export const JSON_VIEWER_JS = `
   }
   function renderJson(data) {
     var s;
-    try { s = JSON.stringify(data, null, 2); } catch(e) { return '<div class="jv-note">JSON 직렬화 실패</div>'; }
+    try { s = JSON.stringify(data, null, 2); } catch(e) { return '<div class="jv-note">'+escapeHtml(L.jsonSerializeFailed)+'</div>'; }
     s = escapeHtml(s);
     s = s.replace(/(&quot;(?:[^&]|&amp;|&#39;)*?&quot;)(\\s*:)/g, '<span class="k">$1</span>$2');
     s = s.replace(/:\\s(&quot;(?:[^&]|&amp;|&#39;)*?&quot;)/g, ': <span class="s">$1</span>');
@@ -229,7 +239,7 @@ export const JSON_VIEWER_JS = `
     var data;
     try { data = JSON.parse(raw); }
     catch(e) {
-      replaceContent(el, '<div class="jv-note">JSON 파싱 실패: '+escapeHtml(String(e.message||e))+'</div><pre class="jv-json">'+escapeHtml(raw.slice(0, 4000))+'</pre>');
+      replaceContent(el, '<div class="jv-note">'+escapeHtml(L.jsonParseFailed)+': '+escapeHtml(String(e.message||e))+'</div><pre class="jv-json">'+escapeHtml(raw.slice(0, 4000))+'</pre>');
       return;
     }
     var tooLarge = size > RENDER_LIMIT;
@@ -240,7 +250,7 @@ export const JSON_VIEWER_JS = `
       + '<span class="jv-tab'+(tooLarge?' disabled':(startTab==='tree'?' active':''))+'" data-tab="tree">Tree</span>'
       + '<span class="jv-tab'+(tooLarge?' disabled':(startTab==='ui'?' active':''))+'" data-tab="ui">UI</span>'
       + '</div>';
-    var note = tooLarge ? '<div class="jv-note">JSON 크기 '+(size/1024).toFixed(1)+'KB — 100KB 이상이라 UI/Tree 뷰는 비활성. JSON 뷰만 표시됩니다.</div>' : '';
+    var note = tooLarge ? '<div class="jv-note">'+escapeHtml(L.tooLargePrefix)+(size/1024).toFixed(1)+escapeHtml(L.tooLargeSuffix)+'</div>' : '';
     var ui = tooLarge ? '' : ('<div class="jv-pane'+(startTab==='ui'?' active':'')+'" data-pane="ui">'+renderUi(data)+'</div>');
     var tree = tooLarge ? '' : ('<div class="jv-pane'+(startTab==='tree'?' active':'')+'" data-pane="tree"><div class="jv-tree">'+renderTreeNode(data, null, 0)+'</div></div>');
     var json = '<div class="jv-pane'+(startTab==='json'?' active':'')+'" data-pane="json"><pre class="jv-json">'+renderJson(data)+'</pre></div>';

@@ -1,5 +1,6 @@
 import { IcoChevD } from '../Icon'
 import { useSidebarOpen } from '../../hooks/useSidebarOpen'
+import { useI18n } from '../../i18n'
 
 type CanvasModuleType = 'data' | 'select' | 'api' | 'branch'
 
@@ -67,7 +68,7 @@ function TypeIcon({ type }: { type: CanvasModuleType }): JSX.Element {
 
 export default function ModulePaletteSection({
   stateKey = 'module-palette',
-  title = '공통 모듈',
+  title,
   commonDataModules = [],
 }: {
   stateKey?: string
@@ -75,6 +76,8 @@ export default function ModulePaletteSection({
   commonDataModules?: ApiModule[]
 }): JSX.Element {
   const [open, toggleOpen] = useSidebarOpen(stateKey)
+  const { t } = useI18n()
+  const displayTitle = title ?? t('sidebar.commonModules')
 
   return (
     <div className="sidebar-section">
@@ -88,7 +91,7 @@ export default function ModulePaletteSection({
             flexShrink: 0,
           }}
         />
-        <span className="sidebar-section-title">{title}</span>
+        <span className="sidebar-section-title">{displayTitle}</span>
       </div>
 
       {open && (
@@ -102,7 +105,7 @@ export default function ModulePaletteSection({
                   e.dataTransfer.setData('moduleType', item.type)
                   e.dataTransfer.effectAllowed = 'copy'
                 }}
-                title="캔버스에 드래그하여 독립 모듈을 생성합니다."
+                title={t('sidebar.module.dragCreate')}
               >
                 <div className="module-item-icon" style={{ background: item.bg, color: item.color }}>
                   <TypeIcon type={item.type} />
@@ -124,14 +127,14 @@ export default function ModulePaletteSection({
                         e.dataTransfer.setData('moduleWsId', '')
                         e.dataTransfer.effectAllowed = 'copy'
                       }}
-                      title="캔버스에 드래그하여 공용 DATA를 참조하는 모듈을 생성합니다."
+                      title={t('sidebar.module.sharedDataDrag')}
                     >
                       <div className="module-item-icon" style={{ background: item.bg, color: item.color }}>
                         <TypeIcon type="data" />
                       </div>
                       <div className="module-item-info">
                         <span className="module-item-name">{mod.label}</span>
-                        <span className="module-item-meta" style={{ color: item.color, opacity: 0.8 }}>공용 DATA</span>
+                        <span className="module-item-meta" style={{ color: item.color, opacity: 0.8 }}>{t('sidebar.module.sharedData')}</span>
                       </div>
                     </div>
                   ))}

@@ -28,16 +28,63 @@ function safeExportFilePart(value: string): string {
   return cleaned || 'a8a'
 }
 
+function isKoreanLanguage(language?: string): boolean {
+  if (language === 'ko') return true
+  if (language === 'en') return false
+  return app.getLocale().toLowerCase().startsWith('ko')
+}
+
+function transferDialogTitle(kind: 'export' | 'import', language?: string): string {
+  if (kind === 'export') return isKoreanLanguage(language) ? 'a8a 내보내기' : 'Export a8a'
+  return isKoreanLanguage(language) ? 'a8a 가져오기' : 'Import a8a'
+}
+
+type IpcTextKey =
+  | 'reportExtension'
+  | 'writePathDenied'
+  | 'xlsxFileName'
+  | 'xlsxExtension'
+  | 'xlsxParse'
+  | 'xlsxSize'
+  | 'downloadsOnly'
+  | 'openReportExtension'
+  | 'openPathDenied'
+
+function ipcText(language: string | undefined, key: IpcTextKey): string {
+  const ko = isKoreanLanguage(language)
+  switch (key) {
+    case 'reportExtension':
+      return ko ? '리포트 파일은 .html 또는 .md 확장자만 저장할 수 있습니다.' : 'Report files can only be saved with .html or .md extensions.'
+    case 'writePathDenied':
+      return ko ? '선택한 저장 경로 또는 다운로드 폴더 안에만 저장할 수 있습니다.' : 'Files can only be saved inside the selected save path or downloads folder.'
+    case 'xlsxFileName':
+      return ko ? 'Excel 파일명만 지정할 수 있습니다.' : 'Only an Excel file name can be specified.'
+    case 'xlsxExtension':
+      return ko ? 'Excel 파일은 .xlsx 확장자만 저장할 수 있습니다.' : 'Excel files can only be saved with the .xlsx extension.'
+    case 'xlsxParse':
+      return ko ? 'Excel 파일 내용을 해석할 수 없습니다.' : 'The Excel file content could not be parsed.'
+    case 'xlsxSize':
+      return ko ? 'Excel 파일 크기가 허용 범위를 벗어났습니다.' : 'The Excel file size is outside the allowed range.'
+    case 'downloadsOnly':
+      return ko ? '다운로드 폴더 안에만 저장할 수 있습니다.' : 'Files can only be saved inside the downloads folder.'
+    case 'openReportExtension':
+      return ko ? '리포트 파일은 .html 또는 .md 확장자만 열 수 있습니다.' : 'Only .html or .md report files can be opened.'
+    case 'openPathDenied':
+      return ko ? '저장이 허용된 경로의 리포트만 열 수 있습니다.' : 'Only reports in an allowed save path can be opened.'
+  }
+}
+
 async function saveTransferPayload(
   sender: Electron.WebContents,
   payload: db.TransferPayload,
   defaultName: string,
+  language?: string,
 ): Promise<{ ok: true; path: string } | { ok: false; canceled?: boolean; error?: string }> {
   try {
     const win = BrowserWindow.fromWebContents(sender)
     const defaultPath = join(app.getPath('downloads'), `${safeExportFilePart(defaultName)}.json`)
     const opts: Electron.SaveDialogOptions = {
-      title: 'a8a 내보내기',
+      title: transferDialogTitle('export', language),
       defaultPath,
       filters: [{ name: 'a8a Export JSON', extensions: ['json'] }],
     }
@@ -54,11 +101,12 @@ async function saveTransferPayload(
 
 async function openTransferPayload(
   sender: Electron.WebContents,
+  language?: string,
 ): Promise<{ ok: true; payload: unknown } | { ok: false; canceled?: boolean; error?: string }> {
   try {
     const win = BrowserWindow.fromWebContents(sender)
     const opts: Electron.OpenDialogOptions = {
-      title: 'a8a 가져오기',
+      title: transferDialogTitle('import', language),
       properties: ['openFile'],
       filters: [{ name: 'a8a Export JSON', extensions: ['json'] }],
     }
@@ -121,18 +169,18 @@ export function registerIpcHandlers(): void {
   ipcMain.handle('edge:delete', (_, id: string) => db.deleteEdge(id))
 
   // ── Import / Export ──
-  ipcMain.handle('transfer:export-workspace', async (e, workspaceId: string) => {
+  ipcMain.handle('transfer:export-workspace', async (e, workspaceId: string, language?: string) => {
     const payload = db.exportWorkspaceData(workspaceId)
     const workspaceName = payload.workspace?.name ?? 'workspace'
-    return saveTransferPayload(e.sender, payload, `a8a_workspace_${workspaceName}`)
+    return saveTransferPayload(e.sender, payload, `a8a_workspace_${workspaceName}`, language)
   })
-  ipcMain.handle('transfer:export-project', async (e, projectId: string) => {
+  ipcMain.handle('transfer:export-project', async (e, projectId: string, language?: string) => {
     const payload = db.exportProjectData(projectId)
     const projectName = payload.project?.name ?? 'project'
-    return saveTransferPayload(e.sender, payload, `a8a_project_${projectName}`)
+    return saveTransferPayload(e.sender, payload, `a8a_project_${projectName}`, language)
   })
-  ipcMain.handle('transfer:import-workspace', async (e) => {
-    const opened = await openTransferPayload(e.sender)
+  ipcMain.handle('transfer:import-workspace', async (e, language?: string) => {
+    const opened = await openTransferPayload(e.sender, language)
     if (!opened.ok) return opened
     try {
       return { ok: true as const, result: db.importWorkspaceData(opened.payload) }
@@ -140,8 +188,8 @@ export function registerIpcHandlers(): void {
       return { ok: false as const, error: String((err as Error)?.message ?? err) }
     }
   })
-  ipcMain.handle('transfer:import-project', async (e, workspaceId: string) => {
-    const opened = await openTransferPayload(e.sender)
+  ipcMain.handle('transfer:import-project', async (e, workspaceId: string, language?: string) => {
+    const opened = await openTransferPayload(e.sender, language)
     if (!opened.ok) return opened
     try {
       return { ok: true as const, result: db.importProjectData(workspaceId, opened.payload) }
@@ -189,17 +237,17 @@ export function registerIpcHandlers(): void {
   })
 
   // ── File write ──
-  ipcMain.handle('file:write', async (_, path: string, content: string) => {
+  ipcMain.handle('file:write', async (_, path: string, content: string, language?: string) => {
     try {
       const targetPath = normalizePath(path)
       const ext = extname(targetPath).toLowerCase()
       if (ext !== '.html' && ext !== '.md') {
-        return { ok: false as const, error: '리포트 파일은 .html 또는 .md 확장자만 저장할 수 있습니다.' }
+        return { ok: false as const, error: ipcText(language, 'reportExtension') }
       }
       const targetDir = dirname(targetPath)
       const allowed = Array.from(allowedWriteDirs).some(dir => isInsideDir(targetDir, dir))
       if (!allowed) {
-        return { ok: false as const, error: '선택한 저장 경로 또는 다운로드 폴더 안에만 저장할 수 있습니다.' }
+        return { ok: false as const, error: ipcText(language, 'writePathDenied') }
       }
       await writeFile(targetPath, content, 'utf-8')
       return { ok: true as const, path: targetPath }
@@ -208,27 +256,27 @@ export function registerIpcHandlers(): void {
     }
   })
 
-  ipcMain.handle('file:write-xlsx-download', async (_, fileName: string, base64Content: string) => {
+  ipcMain.handle('file:write-xlsx-download', async (_, fileName: string, base64Content: string, language?: string) => {
     try {
       const requestedName = String(fileName ?? '')
       const safeName = basename(requestedName)
       if (!safeName || safeName !== requestedName || requestedName.includes('\0')) {
-        return { ok: false as const, error: 'Excel 파일명만 지정할 수 있습니다.' }
+        return { ok: false as const, error: ipcText(language, 'xlsxFileName') }
       }
       const ext = extname(safeName).toLowerCase()
       if (ext !== '.xlsx') {
-        return { ok: false as const, error: 'Excel 파일은 .xlsx 확장자만 저장할 수 있습니다.' }
+        return { ok: false as const, error: ipcText(language, 'xlsxExtension') }
       }
       if (typeof base64Content !== 'string' || !/^[A-Za-z0-9+/=\s]+$/.test(base64Content)) {
-        return { ok: false as const, error: 'Excel 파일 내용을 해석할 수 없습니다.' }
+        return { ok: false as const, error: ipcText(language, 'xlsxParse') }
       }
       const buffer = Buffer.from(base64Content, 'base64')
       if (buffer.length === 0 || buffer.length > 100 * 1024 * 1024) {
-        return { ok: false as const, error: 'Excel 파일 크기가 허용 범위를 벗어났습니다.' }
+        return { ok: false as const, error: ipcText(language, 'xlsxSize') }
       }
       const targetPath = normalizePath(join(app.getPath('downloads'), safeName))
       if (!isInsideDir(targetPath, app.getPath('downloads'))) {
-        return { ok: false as const, error: '다운로드 폴더 안에만 저장할 수 있습니다.' }
+        return { ok: false as const, error: ipcText(language, 'downloadsOnly') }
       }
       await writeFile(targetPath, buffer, { flag: 'wx' })
       return { ok: true as const, path: targetPath }
@@ -237,16 +285,16 @@ export function registerIpcHandlers(): void {
     }
   })
 
-  ipcMain.handle('file:open', async (_, path: string) => {
+  ipcMain.handle('file:open', async (_, path: string, language?: string) => {
     try {
       const targetPath = normalizePath(path)
       const ext = extname(targetPath).toLowerCase()
       if (ext !== '.html' && ext !== '.md') {
-        return { ok: false as const, error: '리포트 파일은 .html 또는 .md 확장자만 열 수 있습니다.' }
+        return { ok: false as const, error: ipcText(language, 'openReportExtension') }
       }
       const allowed = Array.from(allowedWriteDirs).some(dir => isInsideDir(targetPath, dir))
       if (!allowed) {
-        return { ok: false as const, error: '저장이 허용된 경로의 리포트만 열 수 있습니다.' }
+        return { ok: false as const, error: ipcText(language, 'openPathDenied') }
       }
       const error = await shell.openPath(targetPath)
       if (error) return { ok: false as const, error }

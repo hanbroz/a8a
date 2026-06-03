@@ -2,6 +2,7 @@ import { lazy, Suspense, useEffect, useMemo, useRef } from 'react'
 import type { BeforeMount, Monaco, OnMount } from '@monaco-editor/react'
 import type { editor } from 'monaco-editor'
 import { useMonacoTheme } from '../../utils/useMonacoTheme'
+import { useI18n } from '../../i18n'
 
 type JsonTemplateSuggestions = {
   envVarNames?: string[]
@@ -28,6 +29,10 @@ const A8A_JSON_TEMPLATE_LANGUAGE = 'a8a-json-template'
 const completionByUri = new Map<string, Required<JsonTemplateSuggestions>>()
 let jsonTemplateCompletionRegistered = false
 let jsonTemplateLanguageRegistered = false
+let completionLabels = {
+  envDetail: 'A8A environment variable',
+  inputDetail: 'A8A INPUT variable',
+}
 
 function detectTemplateTrigger(
   value: string,
@@ -109,7 +114,7 @@ function registerJsonTemplateCompletion(monaco: Monaco): void {
         suggestions: names.slice(0, 80).map(name => ({
           label: trigger?.type === 'env' ? `{{${name}}}` : `[[${name}]]`,
           kind,
-          detail: trigger?.type === 'env' ? 'A8A 환경변수' : 'A8A INPUT 변수',
+          detail: trigger?.type === 'env' ? completionLabels.envDetail : completionLabels.inputDetail,
           insertText: trigger?.type === 'env' ? `{{${name}}}` : `[[${name}]]`,
           range,
         })),
@@ -154,11 +159,17 @@ export default function JsonMonacoEditor({
   placeholder = 'JSON',
   templateSuggestions,
 }: Props): JSX.Element {
+  const { t } = useI18n()
   const editorRef = useRef<editor.IStandaloneCodeEditor | null>(null)
   const uri = useMemo(() => `a8a://json/${path}`, [path])
   const hasValue = value.trim().length > 0
   const language = templateSuggestions ? A8A_JSON_TEMPLATE_LANGUAGE : 'json'
   const monacoTheme = useMonacoTheme()
+
+  completionLabels = {
+    envDetail: t('module.monaco.envDetail'),
+    inputDetail: t('module.monaco.inputDetail'),
+  }
 
   useEffect(() => {
     if (!templateSuggestions) {
@@ -179,7 +190,7 @@ export default function JsonMonacoEditor({
   return (
     <div className={`json-monaco-wrap${error ? ' json-monaco-wrap-error' : ''}`}>
       {!hasValue && <div className="json-monaco-placeholder">{placeholder}</div>}
-      <Suspense fallback={<div className="dm-monaco-loading">에디터 로드 중...</div>}>
+      <Suspense fallback={<div className="dm-monaco-loading">{t('module.monaco.loading')}</div>}>
         <MonacoEditor
           height="100%"
           language={language}

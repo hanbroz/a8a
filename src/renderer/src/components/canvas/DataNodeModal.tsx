@@ -4,6 +4,7 @@ import { IcoMaximize, IcoRestore, IcoTrash, IcoX } from '../Icon'
 import JsonMonacoEditor from './JsonMonacoEditor'
 import JsonInspectorButton from './JsonInspector'
 import { useModalMaximize } from './useModalMaximize'
+import { useI18n } from '../../i18n'
 
 interface Props {
   node: ApiNode
@@ -105,6 +106,7 @@ interface ExcelInfo {
 }
 
 export default function DataNodeModal({ node, isNew, sharedDataModule, initialInput, onRun, onSave, onDelete, onClose }: Props): JSX.Element {
+  const { t } = useI18n()
   const initial = parseConfig(sharedDataModule?.config ?? node.config)
   const [moduleName, setModuleName] = useState(sharedDataModule?.label ?? node.label)
   const [outputJson, setOutputJson] = useState(initial.output)
@@ -246,11 +248,11 @@ export default function DataNodeModal({ node, isNew, sharedDataModule, initialIn
           applyExcelData(file.name, columns, rows)
         }
       } catch {
-        alert('파일을 파싱할 수 없습니다. .xlsx, .xls, .csv 파일을 사용해 주세요.')
+        alert(t('module.data.parseFailed'))
       }
     }
     reader.readAsArrayBuffer(file)
-  }, [])
+  }, [t])
 
   const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0]
@@ -310,18 +312,18 @@ export default function DataNodeModal({ node, isNew, sharedDataModule, initialIn
           <div className="dm-hd" onMouseDown={onHeaderDown}>
             <div className="dm-hd-left">
               <div className="dm-hd-icon"><DataIcon size={13} /></div>
-              <span className="dm-hd-title">{isNew ? 'Data 모듈 추가' : 'Data 모듈 설정'}</span>
+              <span className="dm-hd-title">{isNew ? t('module.data.titleAdd') : t('module.data.titleSettings')}</span>
             </div>
             <div className="dm-hd-window-actions">
               <button
                 className="btn ghost icon dm-window-btn"
                 onClick={toggleMaximized}
-                title={isMaximized ? '이전 크기로 복원' : '창 최대화'}
-                aria-label={isMaximized ? '이전 크기로 복원' : '창 최대화'}
+                title={isMaximized ? t('module.common.restoreWindow') : t('module.common.maximizeWindow')}
+                aria-label={isMaximized ? t('module.common.restoreWindow') : t('module.common.maximizeWindow')}
               >
                 {isMaximized ? <IcoRestore size={13} /> : <IcoMaximize size={13} />}
               </button>
-              <button className="btn ghost icon dm-close-btn" onClick={onClose} title="닫기" aria-label="닫기"><IcoX size={13} /></button>
+              <button className="btn ghost icon dm-close-btn" onClick={onClose} title={t('common.close')} aria-label={t('common.close')}><IcoX size={13} /></button>
             </div>
           </div>
 
@@ -348,12 +350,12 @@ export default function DataNodeModal({ node, isNew, sharedDataModule, initialIn
                         setInputJson(result)
                         setInputError(false)
                       }}
-                      title="실행 — 연결된 상류 노드 데이터 가져오기"
+                      title={t('module.common.runUpstream')}
                     >
                       <RunIcon />
                     </button>
                   )}
-                  <button className="btn ghost icon dm-format-btn" onClick={handleFormatInput} title="JSON 정렬">
+                  <button className="btn ghost icon dm-format-btn" onClick={handleFormatInput} title={t('module.common.formatJson')}>
                     <FormatIcon />
                   </button>
                 </div>
@@ -374,12 +376,12 @@ export default function DataNodeModal({ node, isNew, sharedDataModule, initialIn
             {/* Settings pane */}
             <div className="dm-pane dm-pane-settings" style={{ flex: '1 1 0', minWidth: 160 }}>
               <div className="dm-pane-hd">
-                <span className="dm-pane-label">설정</span>
+                <span className="dm-pane-label">{t('module.common.settings')}</span>
               </div>
               <div className="dm-pane-body dm-settings-body">
 
                 <div className="dm-field">
-                  <label className="dm-field-label">모듈 이름</label>
+                  <label className="dm-field-label">{t('module.common.moduleName')}</label>
                   <input className="dm-input" value={moduleName} onChange={e => setModuleName(e.target.value)} placeholder="DATA" autoFocus />
                 </div>
 
@@ -390,18 +392,18 @@ export default function DataNodeModal({ node, isNew, sharedDataModule, initialIn
                       checked={shareAsCommonData}
                       onChange={e => setShareAsCommonData(e.target.checked)}
                     />
-                    <span>공용 DATA로 공유</span>
+                    <span>{t('module.data.shareAsCommon')}</span>
                   </label>
                   <div className="dm-hint">
                     {shareAsCommonData
-                      ? '이 DATA를 사용하는 모든 프로젝트의 DATA 모듈이 같은 데이터를 사용합니다.'
-                      : '체크하지 않으면 이 캔버스의 DATA 모듈만 독립적으로 저장됩니다.'}
+                      ? t('module.data.shareOnHint')
+                      : t('module.data.shareOffHint')}
                   </div>
                 </div>
 
                 {/* Excel upload — populates OUTPUT on success; info chip is local-only */}
                 <div className="dm-field">
-                  <label className="dm-field-label">Excel 업로드</label>
+                  <label className="dm-field-label">{t('module.data.excelUpload')}</label>
                   {excelInfo ? (
                     <div className="dm-excel-info">
                       <div className="dm-excel-file-row">
@@ -409,14 +411,14 @@ export default function DataNodeModal({ node, isNew, sharedDataModule, initialIn
                         <div className="dm-excel-file-meta">
                           <span className="dm-excel-file-name">{excelInfo.fileName}</span>
                           <span className="dm-excel-file-stat">
-                            {excelInfo.columns.length}열 · {excelInfo.rowCount}행
+                            {t('module.data.excelStat', { columns: excelInfo.columns.length, rows: excelInfo.rowCount })}
                           </span>
                         </div>
                         <button
                           className="btn ghost icon dm-item-del"
                           style={{ width: 22, height: 22, marginLeft: 'auto' }}
                           onClick={() => setExcelInfo(null)}
-                          title="표시 제거 (OUTPUT 데이터는 유지)"
+                          title={t('module.data.clearDisplay')}
                         >
                           <IcoX size={11} />
                         </button>
@@ -438,8 +440,8 @@ export default function DataNodeModal({ node, isNew, sharedDataModule, initialIn
                       onDrop={handleDrop}
                     >
                       <div className="dm-upload-icon"><UploadIcon /></div>
-                      <span className="dm-upload-text">클릭하거나 파일을 드래그하세요</span>
-                      <span className="dm-upload-hint">.xlsx · .xls · .csv → OUTPUT에 자동 채움</span>
+                      <span className="dm-upload-text">{t('module.data.uploadText')}</span>
+                      <span className="dm-upload-hint">{t('module.data.uploadHint')}</span>
                     </div>
                   )}
                 </div>
@@ -464,7 +466,7 @@ export default function DataNodeModal({ node, isNew, sharedDataModule, initialIn
                   <button
                     className="btn ghost icon dm-format-btn"
                     onClick={handleFormatOutput}
-                    title="JSON 정렬"
+                    title={t('module.common.formatJson')}
                   >
                     <FormatIcon />
                   </button>
@@ -489,21 +491,21 @@ export default function DataNodeModal({ node, isNew, sharedDataModule, initialIn
               <button
                 className="btn ghost dm-delete-btn"
                 onClick={() => setConfirmDelete(true)}
-                title="모듈 삭제"
+                title={t('module.common.deleteModule')}
               >
                 <IcoTrash size={13} />
-                삭제
+                {t('common.delete')}
               </button>
             )}
             {confirmDelete && (
               <>
-                <span className="dm-delete-warn">⚠ 이 모듈이 삭제됩니다.</span>
-                <button className="btn ghost" onClick={() => setConfirmDelete(false)}>취소</button>
+                <span className="dm-delete-warn">{t('module.common.deleteWarning')}</span>
+                <button className="btn ghost" onClick={() => setConfirmDelete(false)}>{t('common.cancel')}</button>
                 <button
                   className="btn dm-delete-confirm-btn"
                   onClick={async () => { await onDelete!(); onClose() }}
                 >
-                  삭제 확인
+                  {t('module.common.deleteConfirm')}
                 </button>
               </>
             )}
@@ -513,9 +515,9 @@ export default function DataNodeModal({ node, isNew, sharedDataModule, initialIn
                   className="btn ghost"
                   onClick={isNew && onDelete ? async () => { await onDelete(); onClose() } : onClose}
                 >
-                  취소
+                  {t('common.cancel')}
                 </button>
-                <button className="btn primary" onClick={handleSave} disabled={saving}>{saving ? '저장 중…' : '저장'}</button>
+                <button className="btn primary" onClick={handleSave} disabled={saving}>{saving ? t('common.saving') : t('common.save')}</button>
               </>
             )}
           </div>

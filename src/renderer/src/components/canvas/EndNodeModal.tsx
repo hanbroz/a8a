@@ -2,6 +2,7 @@ import { useState, useRef, useCallback, useEffect, useMemo } from 'react'
 import { IcoMaximize, IcoRestore, IcoX } from '../Icon'
 import { useModalMaximize } from './useModalMaximize'
 import { resolveEndReportSelectedModuleIds } from '../../utils/endReportSelection'
+import { useI18n } from '../../i18n'
 
 interface Props {
   node: ApiNode
@@ -40,6 +41,7 @@ function parseConfig(raw: string): ParsedEndConfig {
 }
 
 export default function EndNodeModal({ node, moduleNodes, envVarKeys, onSave, onClose }: Props): JSX.Element {
+  const { t } = useI18n()
   const initial = parseConfig(node.config)
   const [label, setLabel] = useState(node.label)
   const [reportFormat, setReportFormat] = useState<EndNodeConfig['reportFormat']>(initial.reportFormat)
@@ -176,18 +178,18 @@ export default function EndNodeModal({ node, moduleNodes, envVarKeys, onSave, on
           <div className="dm-hd" onMouseDown={onHeaderDown}>
             <div className="dm-hd-left">
               <div className="dm-hd-icon" style={{ background: '#6e778122', color: '#6e7781' }}>■</div>
-              <span className="dm-hd-title">End 노드 설정</span>
+              <span className="dm-hd-title">{t('module.end.title')}</span>
             </div>
             <div className="dm-hd-window-actions">
               <button
                 className="btn ghost icon dm-window-btn"
                 onClick={toggleMaximized}
-                title={isMaximized ? '이전 크기로 복원' : '창 최대화'}
-                aria-label={isMaximized ? '이전 크기로 복원' : '창 최대화'}
+                title={isMaximized ? t('module.common.restoreWindow') : t('module.common.maximizeWindow')}
+                aria-label={isMaximized ? t('module.common.restoreWindow') : t('module.common.maximizeWindow')}
               >
                 {isMaximized ? <IcoRestore size={13} /> : <IcoMaximize size={13} />}
               </button>
-              <button className="btn ghost icon dm-close-btn" onClick={onClose} title="닫기" aria-label="닫기"><IcoX size={13} /></button>
+              <button className="btn ghost icon dm-close-btn" onClick={onClose} title={t('common.close')} aria-label={t('common.close')}><IcoX size={13} /></button>
             </div>
           </div>
 
@@ -196,12 +198,12 @@ export default function EndNodeModal({ node, moduleNodes, envVarKeys, onSave, on
               <div className="dm-pane-body dm-settings-body">
 
                 <div className="dm-field">
-                  <label className="dm-field-label">모듈 이름</label>
+                  <label className="dm-field-label">{t('module.common.moduleName')}</label>
                   <input className="dm-input" value={label} onChange={e => setLabel(e.target.value)} placeholder="End" />
                 </div>
 
                 <div className="dm-field">
-                  <label className="dm-field-label">리포트 형식</label>
+                  <label className="dm-field-label">{t('module.end.reportFormat')}</label>
                   <div className="end-radio-row">
                     {(['none', 'html', 'markdown'] as const).map(fmt => (
                       <label key={fmt} className={`end-radio${reportFormat === fmt ? ' end-radio-on' : ''}`}>
@@ -211,14 +213,14 @@ export default function EndNodeModal({ node, moduleNodes, envVarKeys, onSave, on
                           checked={reportFormat === fmt}
                           onChange={() => setReportFormat(fmt)}
                         />
-                        <span>{fmt === 'none' ? '없음' : fmt === 'html' ? 'HTML' : 'MARKDOWN + MERMAID'}</span>
+                        <span>{fmt === 'none' ? t('common.none') : fmt === 'html' ? 'HTML' : 'MARKDOWN + MERMAID'}</span>
                       </label>
                     ))}
                   </div>
                 </div>
 
                 <div className="dm-field">
-                  <label className="dm-field-label">저장 경로</label>
+                  <label className="dm-field-label">{t('module.end.savePath')}</label>
                   <div className="end-path-row">
                     <input
                       className="dm-input"
@@ -229,16 +231,16 @@ export default function EndNodeModal({ node, moduleNodes, envVarKeys, onSave, on
                       style={{ flex: 1 }}
                     />
                     <button className="btn ghost end-browse-btn" onClick={handleBrowse} disabled={disabled}>
-                      📁 찾아보기
+                      📁 {t('module.end.browse')}
                     </button>
                   </div>
                 </div>
 
                 <div className="dm-field">
                   <label className="dm-field-label">
-                    파일명{' '}
+                    {t('module.end.filename')}{' '}
                     <span className="end-field-hint">
-                      변수: <code>{'{env}'}</code> <code>{'{ws}'}</code> <code>{'{project}'}</code> <code>{'{ts}'}</code>
+                      {t('module.end.filenameVars')} <code>{'{env}'}</code> <code>{'{ws}'}</code> <code>{'{project}'}</code> <code>{'{ts}'}</code>
                     </span>
                   </label>
                   <div className="end-path-row">
@@ -250,20 +252,20 @@ export default function EndNodeModal({ node, moduleNodes, envVarKeys, onSave, on
                       placeholder={DEFAULT_TEMPLATE}
                       style={{ flex: 1, fontFamily: 'monospace' }}
                     />
-                    {ext && <span className="end-ext-hint">{ext} 자동 부여</span>}
+                    {ext && <span className="end-ext-hint">{t('module.end.autoExt', { ext })}</span>}
                   </div>
                 </div>
 
                 <div className="dm-field dm-field-grow">
                   <div className="dm-field-hd">
-                    <label className="dm-field-label">출력을 저장할 모듈 ({selectedIds.size}/{moduleNodes.length})</label>
+                    <label className="dm-field-label">{t('module.end.modulesToSave', { selected: selectedIds.size, total: moduleNodes.length })}</label>
                     <button className="btn ghost end-toggle-all-btn" onClick={handleToggleAll} disabled={disabled || moduleNodes.length === 0}>
-                      {selectedIds.size === moduleNodes.length ? '모두 해제' : '모두 선택'}
+                      {selectedIds.size === moduleNodes.length ? t('module.end.deselectAll') : t('module.end.selectAll')}
                     </button>
                   </div>
                   <div className="end-module-list">
                     {moduleNodes.length === 0 ? (
-                      <div className="dm-empty-hint">캔버스에 모듈이 없습니다.</div>
+                      <div className="dm-empty-hint">{t('module.end.noModules')}</div>
                     ) : (
                       moduleNodes.map(m => {
                         const meta = moduleColors[m.type] ?? { color: '#6e7781', bg: 'rgba(110,119,129,0.15)', label: m.type.toUpperCase() }
@@ -283,10 +285,10 @@ export default function EndNodeModal({ node, moduleNodes, envVarKeys, onSave, on
                 </div>
 
                 <div className="dm-field">
-                  <label className="dm-field-label">END 모듈에 표시할 환경 변수</label>
+                  <label className="dm-field-label">{t('module.end.displayEnvVars')}</label>
                   <div className="end-env-key-list">
                     {envVarKeys.length === 0 ? (
-                      <div className="dm-empty-hint">선택할 환경 변수가 없습니다.</div>
+                      <div className="dm-empty-hint">{t('module.end.noEnvVars')}</div>
                     ) : (
                       envVarKeys.map(key => (
                         <label key={key} className="end-env-key-item">
@@ -301,7 +303,7 @@ export default function EndNodeModal({ node, moduleNodes, envVarKeys, onSave, on
                     )}
                   </div>
                   <div className="end-field-hint">
-                    선택한 값은 실행 완료 후 END 모듈 안에 표시되고 복사할 수 있습니다.
+                    {t('module.end.envHint')}
                   </div>
                 </div>
 
@@ -310,9 +312,9 @@ export default function EndNodeModal({ node, moduleNodes, envVarKeys, onSave, on
           </div>
 
           <div className="dm-ft">
-            <button className="btn ghost" onClick={onClose}>취소</button>
+            <button className="btn ghost" onClick={onClose}>{t('common.cancel')}</button>
             <button className="btn primary" onClick={handleSave} disabled={saving}>
-              {saving ? '저장 중…' : '저장'}
+              {saving ? t('common.saving') : t('common.save')}
             </button>
           </div>
 

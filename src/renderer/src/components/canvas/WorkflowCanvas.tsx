@@ -3,6 +3,7 @@ import type { CSSProperties } from 'react'
 import { IcoChevD, IcoCopy, IcoPlay, IcoRedo, IcoReset, IcoUndo, IcoX } from '../Icon'
 import { parseBranchConfig } from '../../utils/branch'
 import { applyInputMappings, resolveTemplate } from '../../utils/interpolate'
+import { useI18n, type TranslationKey } from '../../i18n'
 
 const NODE_W = 160
 const NODE_H = 52
@@ -379,14 +380,16 @@ function findCommonDataModule(modules: ApiModule[], config: string): ApiModule |
   return modules.find(mod => mod.id === moduleId && mod.type === 'data' && mod.isCommon) ?? null
 }
 
-function describeDataOutput(cfg: DataConfig): string {
-  if (!cfg.output.trim()) return '비어있음'
+type CanvasTranslate = (key: TranslationKey, vars?: Record<string, string | number | boolean | null | undefined>) => string
+
+function describeDataOutput(cfg: DataConfig, t: CanvasTranslate): string {
+  if (!cfg.output.trim()) return t('workflow.data.empty')
   try {
     const v = JSON.parse(cfg.output)
-    if (Array.isArray(v)) return `${v.length}개`
-    if (v && typeof v === 'object') return `${Object.keys(v).length}필드`
-    return '단일 값'
-  } catch { return 'JSON 오류' }
+    if (Array.isArray(v)) return t('workflow.data.arrayCount', { count: v.length })
+    if (v && typeof v === 'object') return t('workflow.data.fieldCount', { count: Object.keys(v).length })
+    return t('workflow.data.single')
+  } catch { return t('workflow.data.jsonError') }
 }
 
 function parseSelectConfig(config: string): SelectConfig {
@@ -411,9 +414,9 @@ function parseApiConfig(config: string): ApiConfig {
   try { return JSON.parse(config) as ApiConfig } catch { return { method: 'GET', url: '', headers: [], params: [], body: '', bodyType: 'json' } }
 }
 
-function displayApiUrl(url: string): string {
+function displayApiUrl(url: string, unsetLabel = 'Not set'): string {
   const trimmed = url.trim()
-  if (!trimmed) return '미설정'
+  if (!trimmed) return unsetLabel
   const withoutFirstEnv = trimmed.replace(/\{\{\s*[^{}[\]]+?\s*\}\}/, '').trim()
   if (!withoutFirstEnv && withoutFirstEnv !== trimmed) return '/'
   return withoutFirstEnv || trimmed
@@ -436,13 +439,13 @@ function parseDisplayInputData(raw?: string): Record<string, unknown> {
   return {}
 }
 
-function resolvedDisplayApiUrl(config: ApiConfig, nodeId: string, context: ApiUrlDisplayContext): string {
+function resolvedDisplayApiUrl(config: ApiConfig, nodeId: string, context: ApiUrlDisplayContext, unsetLabel?: string): string {
   const inputData = parseDisplayInputData(context.nodeRunInputs[nodeId])
   const mappedInputData = applyInputMappings(inputData, config.inputMappings ?? {})
   const displayUrlTemplate = config.url.replace(/\{\{\s*[^{}[\]]+?\s*\}\}/, '')
   if (!displayUrlTemplate.trim() && config.url.trim()) return '/'
   const resolvedUrl = resolveTemplate(displayUrlTemplate, context.envVars, mappedInputData, context.dataVars)
-  return displayApiUrl(resolvedUrl)
+  return displayApiUrl(resolvedUrl, unsetLabel)
 }
 
 function ApiIcon(): JSX.Element {
@@ -554,7 +557,7 @@ function buildAutoArrangeOrder(nodes: ApiNode[], edges: ApiEdge[]): ApiNode[] {
   return orderedIds.map(id => nodeById.get(id)).filter((node): node is ApiNode => !!node)
 }
 
-function buildApiFlowItems(nodes: ApiNode[], edges: ApiEdge[], context: ApiUrlDisplayContext): ApiFlowItem[] {
+function buildApiFlowItems(nodes: ApiNode[], edges: ApiEdge[], context: ApiUrlDisplayContext, unsetLabel: string): ApiFlowItem[] {
   const nodeById = new Map(nodes.map(node => [node.id, node]))
   const { orderedIds, reachableIds } = buildExecutionOrderedIds(nodes, edges)
   return orderedIds
@@ -567,7 +570,7 @@ function buildApiFlowItems(nodes: ApiNode[], edges: ApiEdge[], context: ApiUrlDi
         index: index + 1,
         label: node.label || 'API',
         method: cfg.method || 'GET',
-        url: resolvedDisplayApiUrl(cfg, node.id, context),
+        url: resolvedDisplayApiUrl(cfg, node.id, context, unsetLabel),
         rawUrl: cfg.url,
       }
     })
@@ -585,6 +588,7 @@ export default function WorkflowCanvas({
   onCanvasRun, onCanvasReset, onCanvasUndo, onCanvasRedo, canCanvasUndo = false, canCanvasRedo = false, showCanvasReset = false, canvasRunDisabled = false,
   isCanvasFullscreen = false, onCanvasFullscreenChange,
 }: Props): JSX.Element {
+  const { t } = useI18n()
   const canvasRef = useRef<HTMLDivElement>(null)
   const nodeDragRef = useRef<NodeDrag | null>(null)
   const nodeResizeRef = useRef<NodeResizeDrag | null>(null)
@@ -1165,7 +1169,8 @@ export default function WorkflowCanvas({
     }
   })
   const apiUrlDisplayContext = { envVars, dataVars, nodeRunInputs }
-  const apiFlowItems = buildApiFlowItems(liveNodes, edges, apiUrlDisplayContext)
+  const apiUnsetLabel = t('workflow.unset')
+  const apiFlowItems = buildApiFlowItems(liveNodes, edges, apiUrlDisplayContext, apiUnsetLabel)
   const liveNodeById = new Map(liveNodes.map(node => [node.id, node]))
   const selectedNodeIdSet = new Set(selectedNodeIds)
   const draggingNodeIdSet = new Set(draggingNodeIds)
@@ -1319,8 +1324,8 @@ export default function WorkflowCanvas({
         className={`wf-node-resize-handle${resizingNodeId === node.id ? ' active' : ''}`}
         onMouseDown={e => onNodeResizeDown(e, node)}
         onDoubleClick={e => e.stopPropagation()}
-        title="모듈 크기 조정 (10px 단위)"
-        aria-label="모듈 크기 조정"
+        title={t('workflow.resizeModule')}
+        aria-label={t('workflow.resizeModule')}
       />
     )
   }
@@ -1367,8 +1372,8 @@ export default function WorkflowCanvas({
               className="wf-floating-tool-btn wf-floating-icon-btn"
               disabled={!canCanvasUndo}
               onClick={onCanvasUndo}
-              title="되돌리기 (Ctrl+Z)"
-              aria-label="되돌리기"
+              title={t('workflow.undoTitle')}
+              aria-label={t('workflow.undo')}
             >
               <IcoUndo size={13} />
             </button>
@@ -1379,8 +1384,8 @@ export default function WorkflowCanvas({
               className="wf-floating-tool-btn wf-floating-icon-btn"
               disabled={!canCanvasRedo}
               onClick={onCanvasRedo}
-              title="다시 실행 (Ctrl+Y / Ctrl+Shift+Z)"
-              aria-label="다시 실행"
+              title={t('workflow.redoTitle')}
+              aria-label={t('workflow.redo')}
             >
               <IcoRedo size={13} />
             </button>
@@ -1391,9 +1396,9 @@ export default function WorkflowCanvas({
               className="wf-floating-tool-btn"
               disabled={selectedCopyableNodeIds.length === 0}
               onClick={() => { if (selectedCopyableNodeIds.length > 0) onNodeCopy(selectedCopyableNodeIds) }}
-              title="선택한 모듈 복사 (Ctrl+C)"
+              title={t('workflow.copyTitle')}
             >
-              복사
+              {t('workflow.copy')}
             </button>
           )}
           {onNodePaste && (
@@ -1405,13 +1410,13 @@ export default function WorkflowCanvas({
                 const center = canvasCenterWorld()
                 if (canPasteNode && center) onNodePaste(center)
               }}
-              title="복사한 모듈 붙여넣기 (Ctrl+V)"
+              title={t('workflow.pasteTitle')}
             >
-              붙여넣기
+              {t('workflow.paste')}
             </button>
           )}
-          <button type="button" className="wf-floating-tool-btn" onClick={autoArrangeNodes} title="연결 순서 기준 자동정렬">
-            자동정렬
+          <button type="button" className="wf-floating-tool-btn" onClick={autoArrangeNodes} title={t('workflow.autoArrangeTitle')}>
+            {t('workflow.autoArrange')}
           </button>
           <button
             type="button"
@@ -1420,26 +1425,26 @@ export default function WorkflowCanvas({
               setApiListOpen(open => !open)
               setZoomMenuOpen(false)
             }}
-            title="연결선 실행 순서에 따른 API 목록"
+            title={t('workflow.apiListTitle')}
           >
-            API 목록
+            {t('workflow.apiList')}
           </button>
-          <div className="wf-line-style-toggle" role="group" aria-label="연결선 형태">
+          <div className="wf-line-style-toggle" role="group" aria-label={t('workflow.lineStyle')}>
             <button
               type="button"
               className={`wf-line-style-btn${lineStyle === 'curve' ? ' active' : ''}`}
               onClick={() => setLineStyle('curve')}
-              title="곡선 연결선"
+              title={t('workflow.lineCurveTitle')}
             >
-              곡선
+              {t('workflow.lineCurve')}
             </button>
             <button
               type="button"
               className={`wf-line-style-btn${lineStyle === 'straight' ? ' active' : ''}`}
               onClick={() => setLineStyle('straight')}
-              title="직선 연결선"
+              title={t('workflow.lineStraightTitle')}
             >
-              직선
+              {t('workflow.lineStraight')}
             </button>
           </div>
           <div className="wf-zoom-menu-wrap">
@@ -1450,7 +1455,7 @@ export default function WorkflowCanvas({
                 setZoomMenuOpen(open => !open)
                 setApiListOpen(false)
               }}
-              title="캔버스 확대비율"
+              title={t('workflow.zoomTitle')}
               aria-haspopup="menu"
               aria-expanded={zoomMenuOpen}
             >
@@ -1462,7 +1467,7 @@ export default function WorkflowCanvas({
                 {onCanvasFullscreenChange && (
                   <>
                     <button type="button" className="wf-zoom-menu-option" role="menuitem" onClick={toggleCanvasFullscreen}>
-                      {isCanvasFullscreen ? '닫기' : '전체화면'}
+                      {isCanvasFullscreen ? t('workflow.exitFullscreen') : t('workflow.fullscreen')}
                     </button>
                     <div className="wf-zoom-menu-divider" />
                   </>
@@ -1492,10 +1497,10 @@ export default function WorkflowCanvas({
                   type="button"
                   className="wf-floating-tool-btn wf-floating-reset-btn"
                   onClick={onCanvasReset}
-                  title="실행 결과 초기화"
+                  title={t('workflow.resetTitle')}
                 >
                   <IcoReset size={13} />
-                  초기화
+                  {t('workflow.reset')}
                 </button>
               ) : onCanvasRun ? (
                 <button
@@ -1503,10 +1508,10 @@ export default function WorkflowCanvas({
                   className="wf-floating-tool-btn wf-floating-run-btn"
                   onClick={onCanvasRun}
                   disabled={canvasRunDisabled}
-                  title="실행 (Ctrl+Enter)"
+                  title={t('workflow.runTitle')}
                 >
                   <IcoPlay size={13} />
-                  실행
+                  {t('workflow.run')}
                   <kbd className="wf-floating-run-shortcut">Ctrl+Enter</kbd>
                 </button>
               ) : null}
@@ -1516,12 +1521,12 @@ export default function WorkflowCanvas({
         {apiListOpen && (
           <div className="wf-api-flow-list">
             {apiFlowItems.length === 0 ? (
-              <div className="wf-api-flow-empty">연결된 API가 없습니다.</div>
+              <div className="wf-api-flow-empty">{t('workflow.apiEmpty')}</div>
             ) : (
               <>
                 <div className="wf-api-flow-header">
                   <span>#</span>
-                  <span>모듈</span>
+                  <span>{t('workflow.module')}</span>
                   <span>Method</span>
                   <span>URL</span>
                 </div>
@@ -1533,7 +1538,7 @@ export default function WorkflowCanvas({
                       key={item.id}
                       type="button"
                       className={`wf-api-flow-item${selected ? ' active' : ''}`}
-                      title={`${item.label} ${item.method} ${item.url}${item.url !== displayApiUrl(item.rawUrl) ? `\n원본: ${item.rawUrl}` : ''}`}
+                      title={`${item.label} ${item.method} ${item.url}${item.url !== displayApiUrl(item.rawUrl, apiUnsetLabel) ? `\n${t('workflow.original')}: ${item.rawUrl}` : ''}`}
                       onClick={() => focusNodeOnCanvas(item.id)}
                     >
                       <span className="wf-api-flow-index">{item.index}</span>
@@ -1693,7 +1698,7 @@ export default function WorkflowCanvas({
               onMouseEnter={() => setEdgeHover(edge.id)}
               onMouseLeave={() => setEdgeHover(null)}
               onMouseDown={e => onEndpointDown(e, edge, 'source', tgt.id, tgtX, tgtY)}
-              title="연결 시작점 이동"
+              title={t('workflow.edgeSourceMove')}
             />
             {/* Target endpoint handle */}
             <div
@@ -1702,7 +1707,7 @@ export default function WorkflowCanvas({
               onMouseEnter={() => setEdgeHover(edge.id)}
               onMouseLeave={() => setEdgeHover(null)}
               onMouseDown={e => onEndpointDown(e, edge, 'target', src.id, srcX, srcY)}
-              title="연결 끝점 이동"
+              title={t('workflow.edgeTargetMove')}
             />
             {/* Delete button */}
             <button
@@ -1711,7 +1716,7 @@ export default function WorkflowCanvas({
               onMouseEnter={() => setEdgeHover(edge.id)}
               onMouseLeave={() => setEdgeHover(null)}
               onClick={() => onEdgeDelete(edge.id)}
-              title="연결 삭제"
+              title={t('workflow.edgeDelete')}
             >
               <IcoX size={10} />
             </button>
@@ -1727,14 +1732,14 @@ export default function WorkflowCanvas({
             onMouseDown={e => e.stopPropagation()}
             onClick={e => { e.stopPropagation(); onNodeStatusClick?.(node.id) }}
           >
-            {ns === 'running' ? '실행중' : ns === 'success' ? '완료' : ns === 'skip' ? '건너뜀' : '오류'}
+            {ns === 'running' ? t('workflow.status.running') : ns === 'success' ? t('workflow.status.success') : ns === 'skip' ? t('workflow.status.skip') : t('workflow.status.error')}
           </div>
         ) : null
 
         if (node.type === 'data') {
           const sharedDataModule = findCommonDataModule(commonDataModules, node.config)
           const cfg = parseDataConfig(sharedDataModule?.config ?? node.config)
-          const countLabel = describeDataOutput(cfg)
+          const countLabel = describeDataOutput(cfg, t)
           const label = sharedDataModule?.label ?? node.label
           return (
             <div
@@ -1764,8 +1769,8 @@ export default function WorkflowCanvas({
           const cfg = parseSelectConfig(node.config)
           const rowCount = (cfg.selectedRowIndices ?? []).length
           const countLabel = cfg.selectionType === 'script'
-            ? '스크립트'
-            : rowCount > 0 ? `${rowCount}행 선택됨` : '미설정'
+            ? t('workflow.select.script')
+            : rowCount > 0 ? t('workflow.select.rowSelected', { count: rowCount }) : t('workflow.unset')
           return (
             <div
               key={node.id}
@@ -1793,11 +1798,11 @@ export default function WorkflowCanvas({
         if (node.type === 'api') {
           const cfg = parseApiConfig(node.config)
           const mc = apiMethodColor(cfg.method)
-          const displayUrl = resolvedDisplayApiUrl(cfg, node.id, apiUrlDisplayContext)
-          const rawDisplayUrl = displayApiUrl(cfg.url)
+          const displayUrl = resolvedDisplayApiUrl(cfg, node.id, apiUrlDisplayContext, apiUnsetLabel)
+          const rawDisplayUrl = displayApiUrl(cfg.url, apiUnsetLabel)
           const displayTitle = cfg.url
             ? displayUrl !== rawDisplayUrl
-              ? `${displayUrl}\n원본: ${cfg.url}`
+              ? `${displayUrl}\n${t('workflow.original')}: ${cfg.url}`
               : cfg.url
             : undefined
           return (
@@ -1827,7 +1832,7 @@ export default function WorkflowCanvas({
 
         if (node.type === 'branch') {
           const cfg = parseBranchConfig(node.config)
-          const modeLabel = cfg.mode === 'manual' ? '직접선택' : '조건식'
+          const modeLabel = cfg.mode === 'manual' ? t('workflow.branch.manual') : t('workflow.branch.condition')
           return (
             <div
               key={node.id}
@@ -1870,7 +1875,7 @@ export default function WorkflowCanvas({
               {startProgress ? (
                 <div className="wf-node-start-title">
                   <span className="wf-node-label">{node.label}</span>
-                  <span className="wf-node-start-progress" title={`반복 실행 ${startProgress.current}/${startProgress.total}`}>
+                  <span className="wf-node-start-progress" title={t('workflow.repeatProgress', { current: startProgress.current, total: startProgress.total })}>
                     {startProgress.current}/{startProgress.total}
                   </span>
                 </div>
@@ -1896,8 +1901,8 @@ export default function WorkflowCanvas({
                           onMouseDown={e => e.stopPropagation()}
                           onDoubleClick={e => e.stopPropagation()}
                           onClick={e => onEndValueCopy(e, valueKey, item.value)}
-                          title={copied ? '복사됨' : `${item.name} 복사`}
-                          aria-label={`${item.name} 값 복사`}
+                          title={copied ? t('workflow.copied') : t('workflow.copyName', { name: item.name })}
+                          aria-label={t('workflow.copyNamedValue', { name: item.name })}
                         >
                           <IcoCopy size={11} />
                         </button>

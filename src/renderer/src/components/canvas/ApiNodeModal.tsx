@@ -10,6 +10,7 @@ import { API_AUTH_TYPES, DEFAULT_API_AUTH, applyApiAuth, getApiAuthTemplateValue
 import { isScriptRuntimeError, runPostResponse, runPreRequest } from '../../utils/scriptRuntime'
 import { useMonacoTheme } from '../../utils/useMonacoTheme'
 import { DEFAULT_POST_RESPONSE_SCRIPT, DEFAULT_PRE_REQUEST_SCRIPT } from '../../utils/scriptTemplates'
+import { useI18n } from '../../i18n'
 import type { Token } from '../../utils/interpolate'
 import type { ScriptConsoleEntry } from '../../utils/scriptRuntime'
 import type { BeforeMount, Monaco } from '@monaco-editor/react'
@@ -23,10 +24,39 @@ export const MonacoEditor = lazy(async () => {
 })
 
 export function MonacoFallback(): JSX.Element {
-  return <div className="dm-monaco-loading">에디터 로드 중...</div>
+  const { t } = useI18n()
+  return <div className="dm-monaco-loading">{t('module.monaco.loading')}</div>
 }
 
 let apiScriptAssistantRegistered = false
+let apiScriptAssistantLabels = {
+  getInput: 'Returns the input value passed to the current module.',
+  setEnv: 'Sets an environment variable in the current execution context.',
+  env: 'The currently applied environment variable object.',
+  consoleLog: 'Writes a log to the Console tab.',
+  consoleWarn: 'Writes a warning log to the Console tab.',
+  consoleError: 'Writes an error log to the Console tab.',
+  setInput: 'Sets an INPUT variable for API request templates.',
+  getOutput: 'Returns the API response value.',
+  setOutput: 'Replaces this API module OUTPUT with the specified value.',
+  output: 'Builds an OUTPUT object with add(name, value).',
+}
+
+export function useApiScriptAssistantLabels(): void {
+  const { t } = useI18n()
+  apiScriptAssistantLabels = {
+    getInput: t('module.api.scriptDoc.getInput'),
+    setEnv: t('module.api.scriptDoc.setEnv'),
+    env: t('module.api.scriptDoc.env'),
+    consoleLog: t('module.api.scriptDoc.consoleLog'),
+    consoleWarn: t('module.api.scriptDoc.consoleWarn'),
+    consoleError: t('module.api.scriptDoc.consoleError'),
+    setInput: t('module.api.scriptDoc.setInput'),
+    getOutput: t('module.api.scriptDoc.getOutput'),
+    setOutput: t('module.api.scriptDoc.setOutput'),
+    output: t('module.api.scriptDoc.output'),
+  }
+}
 
 function getScriptPhaseFromUri(uri: string): 'pre' | 'post' | null {
   if (uri.includes('/pre-request.')) return 'pre'
@@ -58,7 +88,7 @@ function registerApiScriptAssistant(monaco: Monaco): void {
           label: 'getInput',
           kind: fn,
           detail: 'A8A Runtime API',
-          documentation: '현재 모듈로 전달된 입력 값을 반환합니다.',
+          documentation: apiScriptAssistantLabels.getInput,
           insertText: 'getInput()',
           range,
         },
@@ -66,7 +96,7 @@ function registerApiScriptAssistant(monaco: Monaco): void {
           label: 'setEnv',
           kind: fn,
           detail: 'A8A Runtime API',
-          documentation: '환경변수를 현재 실행 컨텍스트에 설정합니다. 캔버스 실행에서는 워크스페이스 BASE 환경에도 저장됩니다.',
+          documentation: apiScriptAssistantLabels.setEnv,
           insertText: "setEnv('${1:name}', ${2:value})",
           insertTextRules: snippet,
           range,
@@ -75,7 +105,7 @@ function registerApiScriptAssistant(monaco: Monaco): void {
           label: 'env',
           kind: variable,
           detail: 'A8A Runtime API',
-          documentation: '현재 적용된 환경변수 객체입니다.',
+          documentation: apiScriptAssistantLabels.env,
           insertText: 'env',
           range,
         },
@@ -83,7 +113,7 @@ function registerApiScriptAssistant(monaco: Monaco): void {
           label: 'console.log',
           kind: fn,
           detail: 'A8A Console',
-          documentation: '콘솔 탭에 로그를 출력합니다.',
+          documentation: apiScriptAssistantLabels.consoleLog,
           insertText: 'console.log(${1:value})',
           insertTextRules: snippet,
           range,
@@ -92,7 +122,7 @@ function registerApiScriptAssistant(monaco: Monaco): void {
           label: 'console.warn',
           kind: fn,
           detail: 'A8A Console',
-          documentation: '콘솔 탭에 경고 로그를 출력합니다.',
+          documentation: apiScriptAssistantLabels.consoleWarn,
           insertText: 'console.warn(${1:value})',
           insertTextRules: snippet,
           range,
@@ -101,7 +131,7 @@ function registerApiScriptAssistant(monaco: Monaco): void {
           label: 'console.error',
           kind: fn,
           detail: 'A8A Console',
-          documentation: '콘솔 탭에 오류 로그를 출력합니다.',
+          documentation: apiScriptAssistantLabels.consoleError,
           insertText: 'console.error(${1:value})',
           insertTextRules: snippet,
           range,
@@ -113,7 +143,7 @@ function registerApiScriptAssistant(monaco: Monaco): void {
           label: 'setInput',
           kind: fn,
           detail: 'A8A Pre Request API',
-          documentation: 'API 호출 템플릿에서 사용할 INPUT 변수를 설정합니다.',
+          documentation: apiScriptAssistantLabels.setInput,
           insertText: "setInput('${1:name}', ${2:value})",
           insertTextRules: snippet,
           range,
@@ -124,7 +154,7 @@ function registerApiScriptAssistant(monaco: Monaco): void {
             label: 'getOutput',
             kind: fn,
             detail: 'A8A Post Response API',
-            documentation: 'API 응답 값을 반환합니다.',
+            documentation: apiScriptAssistantLabels.getOutput,
             insertText: 'getOutput()',
             range,
           },
@@ -132,7 +162,7 @@ function registerApiScriptAssistant(monaco: Monaco): void {
             label: 'setOutput',
             kind: fn,
             detail: 'A8A Post Response API',
-            documentation: '현재 API 모듈의 OUTPUT을 지정한 값으로 교체합니다.',
+            documentation: apiScriptAssistantLabels.setOutput,
             insertText: 'setOutput(${1:value})',
             insertTextRules: snippet,
             range,
@@ -141,7 +171,7 @@ function registerApiScriptAssistant(monaco: Monaco): void {
             label: 'Output',
             kind: variable,
             detail: 'A8A Post Response API',
-            documentation: 'OUTPUT 객체를 구성합니다. add(name, value)로 값을 추가한 뒤 setOutput(output)으로 적용합니다.',
+            documentation: apiScriptAssistantLabels.output,
             insertText: 'new Output()',
             range,
           },
@@ -263,10 +293,10 @@ function formatTooltipValue(value: string): string {
   }
 }
 
-function getUsedVariableTooltipText(value: string, mappedPath?: string): string {
+function getUsedVariableTooltipText(value: string, mappedPath: string | undefined, mappedFormatter: (path: string, value: string) => string): string {
   const formattedValue = formatTooltipValue(value)
   if (!mappedPath) return formattedValue
-  return `매핑 경로: ${mappedPath}\n\n적용 값:\n${formattedValue}`
+  return mappedFormatter(mappedPath, formattedValue)
 }
 
 function loadExpandedIds(storageKey: string): Set<string> {
@@ -496,6 +526,7 @@ function JsonPathPicker({
   onConfirm: (path: string) => void
   onClose: () => void
 }): JSX.Element {
+  const { t } = useI18n()
   const nodes = useMemo(() => flattenJsonViewer(data), [data])
   const [selectedPath, setSelectedPath] = useState<string>(initialPath ?? '')
   const visibleNodes = useMemo(() => getVisibleJsonViewerNodes(nodes, expandedIds), [nodes, expandedIds])
@@ -524,12 +555,12 @@ function JsonPathPicker({
       <div className="api-input-picker-dialog" onClick={e => e.stopPropagation()}>
         <div className="api-input-picker-hd">
           <div>
-            <div className="api-input-picker-title">INPUT 변수 값 선택</div>
+            <div className="api-input-picker-title">{t('module.api.inputPickerTitle')}</div>
             <div className="api-input-picker-subtitle">
-              <code>[[{variableName}]]</code> 변수에 매핑할 JSON 노드를 선택하세요.
+              {t('module.api.inputPickerSubtitle', { name: variableName })}
             </div>
           </div>
-          <button className="btn ghost icon" onClick={onClose} title="닫기">
+          <button className="btn ghost icon" onClick={onClose} title={t('common.close')} aria-label={t('common.close')}>
             <IcoX size={13} />
           </button>
         </div>
@@ -563,20 +594,20 @@ function JsonPathPicker({
             })}
           </div>
           <div className="api-input-picker-preview">
-            <div className="api-input-picker-preview-label">선택 경로</div>
-            <code>{selectedPath || '미선택'}</code>
-            <div className="api-input-picker-preview-label">적용 값</div>
-            <pre>{selectedPreview || '선택한 값이 없습니다.'}</pre>
+            <div className="api-input-picker-preview-label">{t('module.api.selectedPath')}</div>
+            <code>{selectedPath || t('module.api.notSelected')}</code>
+            <div className="api-input-picker-preview-label">{t('module.api.appliedValue')}</div>
+            <pre>{selectedPreview || t('module.api.noSelectedValue')}</pre>
           </div>
         </div>
         <div className="api-input-picker-ft">
-          <button className="btn ghost" onClick={onClose}>취소</button>
+          <button className="btn ghost" onClick={onClose}>{t('common.cancel')}</button>
           <button
             className="btn primary"
             onClick={() => selectedPath && onConfirm(selectedPath)}
             disabled={!selectedPath}
           >
-            선택 적용
+            {t('module.api.applySelection')}
           </button>
         </div>
       </div>
@@ -774,6 +805,7 @@ function TokenDisplay({
   tokens: Token[]
   onHover: (text: string | null, rect?: DOMRect) => void
 }): JSX.Element {
+  const { t } = useI18n()
   return (
     <span className="api-url-preview-text">
       {tokens.map((tok, i) => {
@@ -782,7 +814,7 @@ function TokenDisplay({
           <span
             key={i}
             className={`api-var-token${tok.resolved !== null ? ' api-var-ok' : ' api-var-err'}`}
-            onMouseEnter={e => onHover(tok.resolved !== null ? `= ${tok.resolved}` : '환경변수 없음', e.currentTarget.getBoundingClientRect())}
+            onMouseEnter={e => onHover(tok.resolved !== null ? `= ${tok.resolved}` : t('module.api.envNoValue'), e.currentTarget.getBoundingClientRect())}
             onMouseLeave={() => onHover(null)}
           >{`{{${tok.name}}}`}</span>
         )
@@ -790,7 +822,7 @@ function TokenDisplay({
           <span
             key={i}
             className={`api-var-token api-data-token${tok.resolved !== null ? ' api-var-ok' : ' api-var-err'}`}
-            onMouseEnter={e => onHover(tok.resolved !== null ? `= ${tok.resolved}` : 'DATA 값 없음', e.currentTarget.getBoundingClientRect())}
+            onMouseEnter={e => onHover(tok.resolved !== null ? `= ${tok.resolved}` : t('module.api.dataNoValue'), e.currentTarget.getBoundingClientRect())}
             onMouseLeave={() => onHover(null)}
           >{`<<${tok.key}>>`}</span>
         )
@@ -798,7 +830,7 @@ function TokenDisplay({
           <span
             key={i}
             className={`api-var-token api-input-token${tok.resolved !== null ? ' api-var-ok' : ' api-var-err'}`}
-            onMouseEnter={e => onHover(tok.resolved !== null ? `= ${tok.resolved}` : 'INPUT 키 없음', e.currentTarget.getBoundingClientRect())}
+            onMouseEnter={e => onHover(tok.resolved !== null ? `= ${tok.resolved}` : t('module.api.inputNoKey'), e.currentTarget.getBoundingClientRect())}
             onMouseLeave={() => onHover(null)}
           >{`[[${tok.key}]]`}</span>
         )
@@ -820,6 +852,7 @@ function KvRow({
   dataVars: Record<string, unknown>
   onHover: (text: string | null, rect?: DOMRect) => void
 }): JSX.Element {
+  const { t } = useI18n()
   const envVarNames = useMemo(() => Object.keys(envVars), [envVars])
   const inputKeys = useMemo(() => getInputPathSuggestions(inputData), [inputData])
   const showPreview = hasVars(item.value)
@@ -834,7 +867,7 @@ function KvRow({
         <button
           className={`api-kv-check${item.enabled ? ' api-kv-check-on' : ''}`}
           onClick={() => onChange(item.id, 'enabled', !item.enabled)}
-          title={item.enabled ? '비활성화' : '활성화'}
+          title={item.enabled ? t('common.disabled') : t('common.enabled')}
         />
         <input
           className="dm-input api-kv-input"
@@ -855,7 +888,7 @@ function KvRow({
           className="btn ghost icon dm-item-del"
           style={{ width: 22, height: 22, flexShrink: 0 }}
           onClick={() => onRemove(item.id)}
-          title="삭제"
+          title={t('common.delete')}
         >
           <IcoTrash size={11} />
         </button>
@@ -870,6 +903,8 @@ export default function ApiNodeModal({
   node, isNew, initialInput, initialOutput, initialPreConsoleLogs, initialPostConsoleLogs,
   envVars = {}, dataVars, onRun, onSave, onDelete, onClose,
 }: Props): JSX.Element {
+  const { t, language } = useI18n()
+  useApiScriptAssistantLabels()
   const initial = parseConfig(node.config)
   const monacoTheme = useMonacoTheme()
   const inputPickerExpandedStorageKey = `api-input-picker-expanded-${node.id}`
@@ -1236,7 +1271,7 @@ export default function ApiNodeModal({
 
       if (preScript.trim()) {
         scriptPhase = 'pre'
-        const preResult = await runPreRequest(preScript, { input: scriptInput, envVars: requestEnvVars })
+        const preResult = await runPreRequest(preScript, { input: scriptInput, envVars: requestEnvVars, language })
         setPreConsoleLogs(preResult.logs)
         Object.assign(requestEnvVars, preResult.envUpdates)
         requestInputData = { ...requestInputData, ...preResult.inputVars }
@@ -1278,6 +1313,7 @@ export default function ApiNodeModal({
           input: scriptInput,
           output: runtimeOutput,
           envVars: requestEnvVars,
+          language,
         })
         setPostConsoleLogs(postResult.logs)
         Object.assign(requestEnvVars, postResult.envUpdates)
@@ -1374,18 +1410,18 @@ export default function ApiNodeModal({
           <div className="dm-hd" onMouseDown={onHeaderDown}>
             <div className="dm-hd-left">
               <div className="dm-hd-icon api-hd-icon"><ApiIcon size={13} /></div>
-              <span className="dm-hd-title">{isNew ? 'API 모듈 추가' : 'API 모듈 설정'}</span>
+              <span className="dm-hd-title">{isNew ? t('module.api.titleAdd') : t('module.api.titleSettings')}</span>
             </div>
             <div className="dm-hd-window-actions">
               <button
                 className="btn ghost icon dm-window-btn"
                 onClick={toggleMaximized}
-                title={isMaximized ? '이전 크기로 복원' : '창 최대화'}
-                aria-label={isMaximized ? '이전 크기로 복원' : '창 최대화'}
+                title={isMaximized ? t('module.common.restoreWindow') : t('module.common.maximizeWindow')}
+                aria-label={isMaximized ? t('module.common.restoreWindow') : t('module.common.maximizeWindow')}
               >
                 {isMaximized ? <IcoRestore size={13} /> : <IcoMaximize size={13} />}
               </button>
-              <button className="btn ghost icon dm-close-btn" onClick={onClose} title="닫기" aria-label="닫기"><IcoX size={13} /></button>
+              <button className="btn ghost icon dm-close-btn" onClick={onClose} title={t('common.close')} aria-label={t('common.close')}><IcoX size={13} /></button>
             </div>
           </div>
 
@@ -1414,19 +1450,19 @@ export default function ApiNodeModal({
                           setInputError(false)
                           setInputViewMode(canShowJsonTree(out) ? 'tree' : 'raw')
                         }}
-                        title="상위 노드를 실행해 데이터를 미리보기"
+                        title={t('module.common.runInputPreview')}
                       >
                         <RunIcon />
                       </button>
                     )}
-                    <button className="btn ghost icon dm-format-btn" onClick={handleFormatInput} title="JSON 정렬">
+                    <button className="btn ghost icon dm-format-btn" onClick={handleFormatInput} title={t('module.common.formatJson')}>
                       <FormatIcon />
                     </button>
                     <button
                       className="btn ghost icon api-test-btn"
                       onClick={handleTest}
                       disabled={testing || !url.trim()}
-                      title="API 테스트 실행"
+                      title={t('module.api.testRun')}
                     >
                       {testing ? <span className="api-testing-dot" /> : <SendIcon />}
                     </button>
@@ -1461,7 +1497,7 @@ export default function ApiNodeModal({
                         className={`api-script-pane-tab${prePaneTab === 'console' ? ' api-script-pane-tab-active' : ''}`}
                         onClick={() => setPrePaneTab('console')}
                       >
-                        콘솔
+                        {t('module.common.console')}
                         {preConsoleLogs.length > 0 && <span className="api-script-log-count">{preConsoleLogs.length}</span>}
                       </button>
                     </div>
@@ -1484,7 +1520,7 @@ export default function ApiNodeModal({
                   </div>
                 ) : (
                   <div className="dm-pane-body api-script-console-body">
-                    <ScriptConsoleView logs={preConsoleLogs} emptyText="PRE REQUEST 콘솔 로그가 없습니다." />
+                    <ScriptConsoleView logs={preConsoleLogs} emptyText={t('module.api.consoleEmptyPre')} />
                   </div>
                 )}
               </div>
@@ -1495,13 +1531,13 @@ export default function ApiNodeModal({
             {/* Settings pane */}
             <div className="dm-pane dm-pane-settings" style={{ flex: '1 1 0', minWidth: 200 }}>
               <div className="dm-pane-hd">
-                <span className="dm-pane-label">설정</span>
+                <span className="dm-pane-label">{t('module.common.settings')}</span>
               </div>
               <div className="dm-pane-body dm-settings-body">
 
                 {/* Module name */}
                 <div className="dm-field">
-                  <label className="dm-field-label">모듈 이름</label>
+                  <label className="dm-field-label">{t('module.common.moduleName')}</label>
                   <input
                     className="dm-input"
                     value={moduleName}
@@ -1513,7 +1549,7 @@ export default function ApiNodeModal({
 
                 {/* Method + URL */}
                 <div className="dm-field">
-                  <label className="dm-field-label">엔드포인트</label>
+                  <label className="dm-field-label">{t('module.api.endpoint')}</label>
                   <div className="api-endpoint-row">
                     <select
                       className="api-method-select"
@@ -1628,13 +1664,13 @@ export default function ApiNodeModal({
                   <div className="dm-field dm-field-grow">
                     <div className="dm-field-hd">
                       <label className="dm-field-label">
-                        {activeTab === 'headers' ? `헤더 (${headers.length})` : `쿼리 파라미터 (${params.length})`}
+                        {activeTab === 'headers' ? t('module.api.headersCount', { count: headers.length }) : t('module.api.paramsCount', { count: params.length })}
                       </label>
                       <button
                         className="btn ghost icon"
                         style={{ width: 20, height: 20 }}
                         onClick={() => addKv(activeTab === 'headers' ? setHeaders : setParams)}
-                        title="항목 추가"
+                        title={t('module.api.addItem')}
                       >
                         <IcoPlus size={11} />
                       </button>
@@ -1642,7 +1678,7 @@ export default function ApiNodeModal({
                     <div className="api-kv-list">
                       {activeTab === 'headers' && (
                         headers.length === 0
-                          ? <div className="dm-empty-hint">+ 버튼으로 헤더를 추가하세요</div>
+                          ? <div className="dm-empty-hint">{t('module.api.addHeaderHint')}</div>
                           : headers.map(h => (
                             <KvRow
                               key={h.id}
@@ -1658,7 +1694,7 @@ export default function ApiNodeModal({
                       )}
                       {activeTab === 'params' && (
                         params.length === 0
-                          ? <div className="dm-empty-hint">+ 버튼으로 파라미터를 추가하세요</div>
+                          ? <div className="dm-empty-hint">{t('module.api.addParamHint')}</div>
                           : params.map(p => (
                             <KvRow
                               key={p.id}
@@ -1684,16 +1720,16 @@ export default function ApiNodeModal({
                         <button
                           className="btn ghost icon dm-format-btn"
                           onClick={() => setIsBodyFullscreen(true)}
-                          title="Body 전체화면 편집"
-                          aria-label="Body 전체화면 편집"
+                          title={t('module.api.bodyFullscreenEdit')}
+                          aria-label={t('module.api.bodyFullscreenEdit')}
                         >
                           <IcoMaximize size={13} />
                         </button>
                         <button
                           className="btn ghost icon dm-format-btn"
                           onClick={handleFormatBody}
-                          title="JSON 정렬"
-                          aria-label="JSON 정렬"
+                          title={t('module.common.formatJson')}
+                          aria-label={t('module.common.formatJson')}
                         >
                           <FormatIcon />
                         </button>
@@ -1711,13 +1747,13 @@ export default function ApiNodeModal({
 
                 {usedVariables.length > 0 && (
                   <div className="dm-field">
-                    <label className="dm-field-label">사용된 환경변수 / INPUT / DATA</label>
+                    <label className="dm-field-label">{t('module.api.usedVars')}</label>
                     <table className="api-env-vars-table">
                       <thead>
                         <tr>
-                          <th>구분</th>
-                          <th>변수</th>
-                          <th>적용 값</th>
+                          <th>{t('module.api.kind')}</th>
+                          <th>{t('module.api.variable')}</th>
+                          <th>{t('module.api.appliedValue')}</th>
                         </tr>
                       </thead>
                       <tbody>
@@ -1727,13 +1763,13 @@ export default function ApiNodeModal({
                           const valueText = resolved !== null
                             ? resolved
                             : isInput
-                              ? '클릭하여 INPUT JSON에서 선택'
+                              ? t('module.api.inputPick')
                               : isData
-                                ? 'DATA 값 없음'
-                                : '환경변수 없음'
-                          const valueTooltipText = getUsedVariableTooltipText(valueText, mappedPath)
+                                ? t('module.api.dataNoValue')
+                                : t('module.api.envNoValue')
+                          const valueTooltipText = getUsedVariableTooltipText(valueText, mappedPath, (path, value) => t('module.api.mappingTooltip', { path, value }))
                           const tokenText = isInput ? `[[${name}]]` : isData ? `<<${name}>>` : `{{${name}}}`
-                          const kindLabel = isInput ? 'INPUT' : isData ? 'DATA' : '환경'
+                          const kindLabel = isInput ? 'INPUT' : isData ? 'DATA' : t('module.api.kindEnv')
                           return (
                             <tr
                               key={`${kind}:${name}`}
@@ -1799,7 +1835,7 @@ export default function ApiNodeModal({
                       value={outputRaw}
                       disabled={!outputRaw.trim()}
                     />
-                    <button className="btn ghost icon dm-format-btn" onClick={handleFormatOutput} title="JSON 정렬">
+                    <button className="btn ghost icon dm-format-btn" onClick={handleFormatOutput} title={t('module.common.formatJson')}>
                       <FormatIcon />
                     </button>
                   </div>
@@ -1810,7 +1846,7 @@ export default function ApiNodeModal({
                     value={outputRaw}
                     readOnly
                     error={outputError}
-                    placeholder={url.trim() ? 'INPUT 패널의 실행 버튼으로 API를 실행하세요' : 'URL을 입력하세요'}
+                    placeholder={url.trim() ? t('module.api.outputPlaceholderRun') : t('module.api.outputPlaceholderUrl')}
                   />
                 </div>
               </div>
@@ -1833,7 +1869,7 @@ export default function ApiNodeModal({
                         className={`api-script-pane-tab${postPaneTab === 'console' ? ' api-script-pane-tab-active' : ''}`}
                         onClick={() => setPostPaneTab('console')}
                       >
-                        콘솔
+                        {t('module.common.console')}
                         {postConsoleLogs.length > 0 && <span className="api-script-log-count">{postConsoleLogs.length}</span>}
                       </button>
                     </div>
@@ -1856,7 +1892,7 @@ export default function ApiNodeModal({
                   </div>
                 ) : (
                   <div className="dm-pane-body api-script-console-body">
-                    <ScriptConsoleView logs={postConsoleLogs} emptyText="POST RESPONSE 콘솔 로그가 없습니다." />
+                    <ScriptConsoleView logs={postConsoleLogs} emptyText={t('module.api.consoleEmptyPost')} />
                   </div>
                 )}
               </div>
@@ -1869,18 +1905,18 @@ export default function ApiNodeModal({
             {onDelete && !confirmDelete && (
               <button className="btn ghost dm-delete-btn" onClick={() => setConfirmDelete(true)}>
                 <IcoTrash size={13} />
-                삭제
+                {t('common.delete')}
               </button>
             )}
             {confirmDelete && (
               <>
-                <span className="dm-delete-warn">주의: 이 모듈이 삭제됩니다.</span>
-                <button className="btn ghost" onClick={() => setConfirmDelete(false)}>취소</button>
+                <span className="dm-delete-warn">{t('module.common.deleteWarningCaution')}</span>
+                <button className="btn ghost" onClick={() => setConfirmDelete(false)}>{t('common.cancel')}</button>
                 <button
                   className="btn dm-delete-confirm-btn"
                   onClick={async () => { await onDelete!(); onClose() }}
                 >
-                  삭제 확인
+                  {t('module.common.deleteConfirm')}
                 </button>
               </>
             )}
@@ -1890,10 +1926,10 @@ export default function ApiNodeModal({
                   className="btn ghost"
                   onClick={isNew && onDelete ? async () => { await onDelete(); onClose() } : onClose}
                 >
-                  취소
+                  {t('common.cancel')}
                 </button>
                 <button className="btn primary api-save-btn" onClick={handleSave} disabled={saving}>
-                  {saving ? '저장 중...' : '저장'}
+                  {saving ? t('common.saving') : t('common.save')}
                 </button>
               </>
             )}
@@ -1914,15 +1950,15 @@ export default function ApiNodeModal({
             <div className="api-body-fullscreen-hd">
               <div className="api-body-fullscreen-title-wrap">
                 <div id="api-body-fullscreen-title" className="api-body-fullscreen-title">Body (JSON)</div>
-                <div className="api-body-fullscreen-meta">{method} 요청 Body</div>
+                <div className="api-body-fullscreen-meta">{t('module.api.bodyMeta', { method })}</div>
               </div>
               <div className="api-body-fullscreen-actions">
-                <button className="btn ghost" onClick={handleFormatBody}>JSON 정렬</button>
+                <button className="btn ghost" onClick={handleFormatBody}>{t('module.common.formatJson')}</button>
                 <button
                   className="btn ghost icon api-body-fullscreen-close"
                   onClick={() => setIsBodyFullscreen(false)}
-                  title="닫기"
-                  aria-label="닫기"
+                  title={t('common.close')}
+                  aria-label={t('common.close')}
                 >
                   <IcoX size={14} />
                 </button>
@@ -1973,20 +2009,21 @@ export default function ApiNodeModal({
           <div className="api-test-error-dialog">
             <div className="api-test-error-hd">
               <div>
-                <div id="api-test-error-title" className="api-test-error-title">API 테스트 실패</div>
-                <div className="api-test-error-subtitle">아래 값으로 호출을 시도했습니다.</div>
+                <div id="api-test-error-title" className="api-test-error-title">{t('module.api.testFailed')}</div>
+                <div className="api-test-error-subtitle">{t('module.api.testSubtitle')}</div>
               </div>
               <button
                 className="btn ghost icon api-test-error-close"
                 onClick={() => setTestErrorDetail(null)}
-                title="닫기"
+                title={t('common.close')}
+                aria-label={t('common.close')}
               >
                 <IcoX size={13} />
               </button>
             </div>
             <div className="api-test-error-body">
               <div className="api-test-error-section">
-                <div className="api-test-error-label">오류</div>
+                <div className="api-test-error-label">{t('module.api.error')}</div>
                 <pre>{testErrorDetail.error}</pre>
               </div>
               <div className="api-test-error-grid">
@@ -2005,7 +2042,7 @@ export default function ApiNodeModal({
               </div>
               <div className="api-test-error-section">
                 <div className="api-test-error-label">Body</div>
-                <pre>{testErrorDetail.request.body ?? '없음'}</pre>
+                <pre>{testErrorDetail.request.body ?? t('common.none')}</pre>
               </div>
             </div>
           </div>

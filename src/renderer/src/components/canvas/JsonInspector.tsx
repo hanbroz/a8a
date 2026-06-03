@@ -1,6 +1,7 @@
 import { Component, useEffect, useMemo, useRef, useState } from 'react'
 import type { ErrorInfo, MouseEvent, ReactNode } from 'react'
 import { IcoCopy, IcoMaximize, IcoX } from '../Icon'
+import { useI18n } from '../../i18n'
 
 type JsonInspectorMode = 'json' | 'tree' | 'ui'
 type JsonPathPart = string | number
@@ -264,6 +265,7 @@ async function copyText(text: string): Promise<void> {
 }
 
 function JsonCopyButton({ value }: { value: unknown }): JSX.Element {
+  const { t } = useI18n()
   const [state, setState] = useState<'idle' | 'copied' | 'failed'>('idle')
 
   const handleCopy = async (e: MouseEvent): Promise<void> => {
@@ -277,7 +279,7 @@ function JsonCopyButton({ value }: { value: unknown }): JSX.Element {
     window.setTimeout(() => setState('idle'), 1100)
   }
 
-  const label = state === 'copied' ? '복사됨' : state === 'failed' ? '복사 실패' : '값 복사'
+  const label = state === 'copied' ? t('common.copied') : state === 'failed' ? t('common.copyFailed') : t('module.common.copyValue')
 
   return (
     <button
@@ -469,6 +471,7 @@ function JsonInspectorModal({
   defaultMode?: JsonInspectorMode
   onClose: () => void
 }): JSX.Element {
+  const { t } = useI18n()
   const parsed = useMemo(() => parseJsonSource(value), [value])
   const [mode, setMode] = useState<JsonInspectorMode>(() => parsed.status === 'valid' ? defaultMode : 'json')
   const [searchQuery, setSearchQuery] = useState('')
@@ -482,7 +485,7 @@ function JsonInspectorModal({
 
   const canRenderStructured = parsed.status === 'valid'
   const normalizedSearchQuery = normalizeSearchQuery(searchQuery)
-  const rawSearchText = parsed.raw || '값이 없습니다.'
+  const rawSearchText = parsed.raw || t('module.common.noValue')
   const rawMatches = useMemo(
     () => collectRawSearchMatches(rawSearchText, normalizedSearchQuery),
     [normalizedSearchQuery, rawSearchText],
@@ -555,13 +558,13 @@ function JsonInspectorModal({
             <div id="json-inspector-title" className="json-inspector-title">{title}</div>
             <div className="json-inspector-subtitle">
               {parsed.status === 'invalid'
-                ? 'JSON으로 해석할 수 없는 원본 값입니다.'
+                ? t('module.common.rawJsonInvalid')
                 : parsed.raw
-                  ? `${parsed.raw.length.toLocaleString()}자`
-                  : '값 없음'}
+                  ? t('module.common.charCount', { count: parsed.raw.length.toLocaleString() })
+                  : t('common.empty')}
             </div>
           </div>
-          <button type="button" className="btn ghost icon json-inspector-close" onClick={onClose} title="닫기" aria-label="닫기">
+          <button type="button" className="btn ghost icon json-inspector-close" onClick={onClose} title={t('common.close')} aria-label={t('common.close')}>
             <IcoX size={15} />
           </button>
         </div>
@@ -576,7 +579,7 @@ function JsonInspectorModal({
                 onClick={() => setMode(tab)}
                 disabled={tab !== 'json' && !canRenderStructured}
               >
-                {tab === 'json' ? 'JSON' : tab === 'tree' ? 'Tree' : 'UI'}
+                {tab === 'json' ? t('module.inspector.tab.json') : tab === 'tree' ? t('module.inspector.tab.tree') : t('module.inspector.tab.ui')}
               </button>
             ))}
           </div>
@@ -595,13 +598,13 @@ function JsonInspectorModal({
                   setSearchQuery('')
                 }
               }}
-              placeholder="key, value 검색"
-              aria-label="key, value 검색"
+              placeholder={t('module.common.searchPlaceholder')}
+              aria-label={t('module.common.searchPlaceholder')}
             />
             <span className="json-inspector-search-count">{currentSearchLabel}</span>
-            <button type="button" onClick={() => moveSearch(-1)} disabled={currentSearchCount === 0} title="이전 검색 결과" aria-label="이전 검색 결과">&lt;</button>
-            <button type="button" onClick={() => moveSearch(1)} disabled={currentSearchCount === 0} title="다음 검색 결과" aria-label="다음 검색 결과">&gt;</button>
-            <button type="button" onClick={() => setSearchQuery('')} disabled={!searchQuery} title="검색 지우기" aria-label="검색 지우기">
+            <button type="button" onClick={() => moveSearch(-1)} disabled={currentSearchCount === 0} title={t('module.common.searchPrev')} aria-label={t('module.common.searchPrev')}>&lt;</button>
+            <button type="button" onClick={() => moveSearch(1)} disabled={currentSearchCount === 0} title={t('module.common.searchNext')} aria-label={t('module.common.searchNext')}>&gt;</button>
+            <button type="button" onClick={() => setSearchQuery('')} disabled={!searchQuery} title={t('module.common.searchClear')} aria-label={t('module.common.searchClear')}>
               <IcoX size={11} />
             </button>
           </div>
@@ -652,6 +655,7 @@ export default function JsonInspectorButton({
   defaultMode = 'json',
   disabled = false,
 }: JsonInspectorButtonProps): JSX.Element {
+  const { t } = useI18n()
   const [open, setOpen] = useState(false)
 
   return (
@@ -664,8 +668,8 @@ export default function JsonInspectorButton({
           setOpen(true)
         }}
         disabled={disabled}
-        title="전체 화면으로 보기"
-        aria-label={`${title} 전체 화면으로 보기`}
+        title={t('module.common.fullscreenView')}
+        aria-label={t('module.common.fullscreenAria', { title })}
       >
         <IcoMaximize size={12} />
       </button>

@@ -5,12 +5,12 @@ const api = {
     openDirectory: (defaultPath?: string): Promise<string | null> => ipcRenderer.invoke('dialog:open-directory', defaultPath)
   },
   file: {
-    write: (path: string, content: string): Promise<{ ok: true; path: string } | { ok: false; error: string }> =>
-      ipcRenderer.invoke('file:write', path, content),
-    writeXlsxDownload: (fileName: string, base64Content: string): Promise<{ ok: true; path: string } | { ok: false; error: string }> =>
-      ipcRenderer.invoke('file:write-xlsx-download', fileName, base64Content),
-    open: (path: string): Promise<{ ok: true } | { ok: false; error: string }> =>
-      ipcRenderer.invoke('file:open', path),
+    write: (path: string, content: string, language?: string): Promise<{ ok: true; path: string } | { ok: false; error: string }> =>
+      ipcRenderer.invoke('file:write', path, content, language),
+    writeXlsxDownload: (fileName: string, base64Content: string, language?: string): Promise<{ ok: true; path: string } | { ok: false; error: string }> =>
+      ipcRenderer.invoke('file:write-xlsx-download', fileName, base64Content, language),
+    open: (path: string, language?: string): Promise<{ ok: true } | { ok: false; error: string }> =>
+      ipcRenderer.invoke('file:open', path, language),
     downloadsDir: (): Promise<string> => ipcRenderer.invoke('file:downloads-dir')
   },
   workspace: {
@@ -59,10 +59,10 @@ const api = {
     delete: (id: string): Promise<void> => ipcRenderer.invoke('edge:delete', id)
   },
   transfer: {
-    exportWorkspace: (workspaceId: string): Promise<A8aTransferFileResult> => ipcRenderer.invoke('transfer:export-workspace', workspaceId),
-    exportProject: (projectId: string): Promise<A8aTransferFileResult> => ipcRenderer.invoke('transfer:export-project', projectId),
-    importWorkspace: (): Promise<A8aTransferImportResult> => ipcRenderer.invoke('transfer:import-workspace'),
-    importProject: (workspaceId: string): Promise<A8aTransferImportResult> => ipcRenderer.invoke('transfer:import-project', workspaceId)
+    exportWorkspace: (workspaceId: string, language?: string): Promise<A8aTransferFileResult> => ipcRenderer.invoke('transfer:export-workspace', workspaceId, language),
+    exportProject: (projectId: string, language?: string): Promise<A8aTransferFileResult> => ipcRenderer.invoke('transfer:export-project', projectId, language),
+    importWorkspace: (language?: string): Promise<A8aTransferImportResult> => ipcRenderer.invoke('transfer:import-workspace', language),
+    importProject: (workspaceId: string, language?: string): Promise<A8aTransferImportResult> => ipcRenderer.invoke('transfer:import-project', workspaceId, language)
   },
   http: {
     fetch: (url: string, options: { method: string; headers: Record<string, string>; body?: string }): Promise<{ status: number; statusText: string; text: string; ok: boolean }> =>

@@ -3,6 +3,7 @@
 // helper throws with a clear message so users don't silently misuse the API.
 
 type AnyValue = unknown
+export type ScriptRuntimeLanguage = 'ko' | 'en'
 export type ScriptConsoleLevel = 'log' | 'info' | 'warn' | 'error' | 'debug'
 
 export interface ScriptConsoleEntry {
@@ -29,6 +30,7 @@ const AsyncFunction = Object.getPrototypeOf(async function () {}).constructor as
 export interface PreScriptContext {
   input: AnyValue
   envVars: Record<string, string>
+  language?: ScriptRuntimeLanguage
 }
 
 export interface PreScriptResult {
@@ -41,6 +43,7 @@ export interface PostScriptContext {
   input: AnyValue
   output: AnyValue
   envVars: Record<string, string>
+  language?: ScriptRuntimeLanguage
 }
 
 export interface PostScriptResult {
@@ -54,8 +57,10 @@ export interface PostScriptResult {
 class OutputObject {
   private values: Record<string, AnyValue> = {}
 
+  constructor(private readonly language: ScriptRuntimeLanguage = 'ko') {}
+
   add(name: string, value: AnyValue): OutputObject {
-    if (typeof name !== 'string' || !name) throw new Error('Output.add: 이름은 비어있지 않은 문자열이어야 합니다.')
+    if (typeof name !== 'string' || !name) throw new Error(runtimeMessage(this.language, 'outputAddName'))
     this.values[name] = value
     return this
   }
@@ -115,19 +120,38 @@ export function isScriptRuntimeError(error: unknown): error is ScriptRuntimeErro
   return error instanceof ScriptRuntimeError
 }
 
-function blockedSetter(phase: 'Pre Request' | 'Post Response', name: string): (...args: unknown[]) => never {
-  return () => {
-    throw new Error(`${phase}에서는 ${name}() 사용 불가`)
+function runtimeMessage(language: ScriptRuntimeLanguage, key: 'outputAddName' | 'unavailable' | 'setInputName' | 'setEnvName' | 'setOutputName' | 'setOutputCall', vars?: { phase?: string; name?: string }): string {
+  const ko = language === 'ko'
+  switch (key) {
+    case 'outputAddName':
+      return ko ? 'Output.add: 이름은 비어있지 않은 문자열이어야 합니다.' : 'Output.add: name must be a non-empty string.'
+    case 'unavailable':
+      return ko ? `${vars?.phase}에서는 ${vars?.name}() 사용 불가` : `${vars?.name}() cannot be used during ${vars?.phase}.`
+    case 'setInputName':
+      return ko ? 'setInput: 변수명은 비어있지 않은 문자열이어야 합니다.' : 'setInput: variable name must be a non-empty string.'
+    case 'setEnvName':
+      return ko ? 'setEnv: 변수명은 비어있지 않은 문자열이어야 합니다.' : 'setEnv: variable name must be a non-empty string.'
+    case 'setOutputName':
+      return ko ? 'setOutput: 이름은 비어있지 않은 문자열이어야 합니다.' : 'setOutput: name must be a non-empty string.'
+    case 'setOutputCall':
+      return ko ? 'setOutput: setOutput(value) 또는 setOutput(name, value) 형식으로 호출해야 합니다.' : 'setOutput: call setOutput(value) or setOutput(name, value).'
   }
 }
 
-function blockedGetter(phase: 'Pre Request' | 'Post Response', name: string): (...args: unknown[]) => never {
+function blockedSetter(phase: 'Pre Request' | 'Post Response', name: string, language: ScriptRuntimeLanguage): (...args: unknown[]) => never {
   return () => {
-    throw new Error(`${phase}에서는 ${name}() 사용 불가`)
+    throw new Error(runtimeMessage(language, 'unavailable', { phase, name }))
+  }
+}
+
+function blockedGetter(phase: 'Pre Request' | 'Post Response', name: string, language: ScriptRuntimeLanguage): (...args: unknown[]) => never {
+  return () => {
+    throw new Error(runtimeMessage(language, 'unavailable', { phase, name }))
   }
 }
 
 export async function runPreRequest(code: string, ctx: PreScriptContext): Promise<PreScriptResult> {
+  const language = ctx.language ?? 'ko'
   const inputVars: Record<string, AnyValue> = {}
   const envUpdates: Record<string, string> = {}
   const logs: ScriptConsoleEntry[] = []
@@ -135,17 +159,17 @@ export async function runPreRequest(code: string, ctx: PreScriptContext): Promis
 
   const getInput = (): AnyValue => ctx.input
   const setInput = (name: string, value: AnyValue): void => {
-    if (typeof name !== 'string' || !name) throw new Error('setInput: 변수명은 비어있지 않은 문자열이어야 합니다.')
+    if (typeof name !== 'string' || !name) throw new Error(runtimeMessage(language, 'setInputName'))
     inputVars[name] = value
   }
   const setEnv = (name: string, value: AnyValue): void => {
-    if (typeof name !== 'string' || !name) throw new Error('setEnv: 변수명은 비어있지 않은 문자열이어야 합니다.')
+    if (typeof name !== 'string' || !name) throw new Error(runtimeMessage(language, 'setEnvName'))
     const envValue = toEnvString(value)
     envUpdates[name] = envValue
     ctx.envVars[name] = envValue
   }
-  const getOutput = blockedGetter('Pre Request', 'getOutput')
-  const setOutput = blockedSetter('Pre Request', 'setOutput')
+  const getOutput = blockedGetter('Pre Request', 'getOutput', language)
+  const setOutput = blockedSetter('Pre Request', 'setOutput', language)
 
   const fn = new AsyncFunction(
     'getInput', 'getOutput', 'setEnv', 'setInput', 'setOutput', 'console', 'env',
@@ -161,6 +185,7 @@ export async function runPreRequest(code: string, ctx: PreScriptContext): Promis
 }
 
 export async function runPostResponse(code: string, ctx: PostScriptContext): Promise<PostScriptResult> {
+  const language = ctx.language ?? 'ko'
   const outputVars: Record<string, AnyValue> = {}
   let outputOverride: AnyValue
   let hasOutputOverride = false
@@ -178,7 +203,7 @@ export async function runPostResponse(code: string, ctx: PostScriptContext): Pro
     }
     if (args.length === 2) {
       const [name, value] = args
-      if (typeof name !== 'string' || !name) throw new Error('setOutput: 이름은 비어있지 않은 문자열이어야 합니다.')
+      if (typeof name !== 'string' || !name) throw new Error(runtimeMessage(language, 'setOutputName'))
       outputVars[name] = value
       const current = outputOverride && typeof outputOverride === 'object' && !Array.isArray(outputOverride)
         ? outputOverride as Record<string, AnyValue>
@@ -187,22 +212,27 @@ export async function runPostResponse(code: string, ctx: PostScriptContext): Pro
       hasOutputOverride = true
       return
     }
-    throw new Error('setOutput: setOutput(value) 또는 setOutput(name, value) 형식으로 호출해야 합니다.')
+    throw new Error(runtimeMessage(language, 'setOutputCall'))
   }
   const setEnv = (name: string, value: AnyValue): void => {
-    if (typeof name !== 'string' || !name) throw new Error('setEnv: 변수명은 비어있지 않은 문자열이어야 합니다.')
+    if (typeof name !== 'string' || !name) throw new Error(runtimeMessage(language, 'setEnvName'))
     const envValue = toEnvString(value)
     envUpdates[name] = envValue
     ctx.envVars[name] = envValue
   }
-  const setInput = blockedSetter('Post Response', 'setInput')
+  const setInput = blockedSetter('Post Response', 'setInput', language)
+  const RuntimeOutputObject = class extends OutputObject {
+    constructor() {
+      super(language)
+    }
+  }
 
   const fn = new AsyncFunction(
     'getInput', 'getOutput', 'setEnv', 'setInput', 'setOutput', 'Output', 'console', 'env',
     code,
   )
   try {
-    await fn(getInput, getOutput, setEnv, setInput, setOutput, OutputObject, scriptConsole, ctx.envVars)
+    await fn(getInput, getOutput, setEnv, setInput, setOutput, RuntimeOutputObject, scriptConsole, ctx.envVars)
   } catch (err) {
     throw new ScriptRuntimeError(String((err as Error)?.message ?? err), logs)
   }

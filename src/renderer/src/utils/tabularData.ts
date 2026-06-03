@@ -1,5 +1,7 @@
 import ExcelJS from 'exceljs'
 
+type TableDataLanguage = 'ko' | 'en'
+
 export interface ParsedTableData {
   fileName: string
   columns: string[]
@@ -51,6 +53,23 @@ function dedupeColumns(columns: string[]): string[] {
   })
 }
 
+function tableMessage(language: TableDataLanguage, key: 'emptyRows' | 'noColumns' | 'csvRows' | 'jsonParse' | 'jsonArray' | 'jsonObjects' | 'excelSheet' | 'excelHeader' | 'excelParse' | 'fileRead' | 'unsupported'): string {
+  const ko = language === 'ko'
+  switch (key) {
+    case 'emptyRows': return ko ? '반복 데이터가 없습니다.' : 'No repeat data rows were found.'
+    case 'noColumns': return ko ? '테이블 형식의 컬럼을 찾을 수 없습니다.' : 'No table columns were found.'
+    case 'csvRows': return ko ? 'CSV는 헤더와 최소 1개 이상의 데이터 행이 필요합니다.' : 'CSV requires a header and at least one data row.'
+    case 'jsonParse': return ko ? 'JSON 파일을 해석할 수 없습니다.' : 'The JSON file could not be parsed.'
+    case 'jsonArray': return ko ? 'JSON 반복 데이터는 객체 배열이어야 합니다.' : 'JSON repeat data must be an array of objects.'
+    case 'jsonObjects': return ko ? 'JSON 배열의 모든 항목은 객체여야 합니다.' : 'Every item in the JSON array must be an object.'
+    case 'excelSheet': return ko ? 'Excel 시트를 찾을 수 없습니다.' : 'No Excel sheet was found.'
+    case 'excelHeader': return ko ? 'Excel 첫 행에 헤더가 필요합니다.' : 'The first Excel row must contain headers.'
+    case 'excelParse': return ko ? 'Excel 파일을 해석할 수 없습니다.' : 'The Excel file could not be parsed.'
+    case 'fileRead': return ko ? '파일을 읽을 수 없습니다.' : 'The file could not be read.'
+    case 'unsupported': return ko ? 'Excel(.xlsx), CSV, JSON 파일만 첨부할 수 있습니다.' : 'Only Excel(.xlsx), CSV, and JSON files can be attached.'
+  }
+}
+
 function withNoColumn(rows: Record<string, unknown>[]): ParsedTableData['rows'] {
   return rows.map((row, index) => {
     const { no: _reservedNo, ...rest } = row
@@ -58,13 +77,13 @@ function withNoColumn(rows: Record<string, unknown>[]): ParsedTableData['rows'] 
   })
 }
 
-function finalize(fileName: string, columns: string[], rows: Record<string, unknown>[]): ParseTableFileResult {
-  if (rows.length === 0) return { ok: false, error: '반복 데이터가 없습니다.' }
+function finalize(fileName: string, columns: string[], rows: Record<string, unknown>[], language: TableDataLanguage): ParseTableFileResult {
+  if (rows.length === 0) return { ok: false, error: tableMessage(language, 'emptyRows') }
   const normalizedColumns = dedupeColumns(columns).filter(column => column !== 'no')
   const dataColumns = normalizedColumns.length > 0
     ? normalizedColumns
     : Array.from(new Set(rows.flatMap(row => Object.keys(row).filter(key => key !== 'no'))))
-  if (dataColumns.length === 0) return { ok: false, error: '테이블 형식의 컬럼을 찾을 수 없습니다.' }
+  if (dataColumns.length === 0) return { ok: false, error: tableMessage(language, 'noColumns') }
   return {
     ok: true,
     data: {
@@ -118,10 +137,10 @@ function parseCsvRows(text: string): string[][] {
   return rows
 }
 
-function parseCsv(fileName: string, text: string): ParseTableFileResult {
+function parseCsv(fileName: string, text: string, language: TableDataLanguage): ParseTableFileResult {
   const clean = text.replace(/^\uFEFF/, '')
   const rows = parseCsvRows(clean)
-  if (rows.length < 2) return { ok: false, error: 'CSV는 헤더와 최소 1개 이상의 데이터 행이 필요합니다.' }
+  if (rows.length < 2) return { ok: false, error: tableMessage(language, 'csvRows') }
   const columns = dedupeColumns(rows[0])
   const dataRows = rows.slice(1).map(values => {
     const row: Record<string, unknown> = {}
@@ -130,34 +149,34 @@ function parseCsv(fileName: string, text: string): ParseTableFileResult {
     })
     return row
   })
-  return finalize(fileName, columns, dataRows)
+  return finalize(fileName, columns, dataRows, language)
 }
 
-function parseJson(fileName: string, text: string): ParseTableFileResult {
+function parseJson(fileName: string, text: string, language: TableDataLanguage): ParseTableFileResult {
   let parsed: unknown
   try {
     parsed = JSON.parse(text.replace(/^\uFEFF/, ''))
   } catch {
-    return { ok: false, error: 'JSON 파일을 해석할 수 없습니다.' }
+    return { ok: false, error: tableMessage(language, 'jsonParse') }
   }
 
   if (!Array.isArray(parsed)) {
-    return { ok: false, error: 'JSON 반복 데이터는 객체 배열이어야 합니다.' }
+    return { ok: false, error: tableMessage(language, 'jsonArray') }
   }
   if (!parsed.every(isPlainRecord)) {
-    return { ok: false, error: 'JSON 배열의 모든 항목은 객체여야 합니다.' }
+    return { ok: false, error: tableMessage(language, 'jsonObjects') }
   }
   const rows = parsed as Record<string, unknown>[]
   const columns = Array.from(new Set(rows.flatMap(row => Object.keys(row))))
-  return finalize(fileName, columns, rows)
+  return finalize(fileName, columns, rows, language)
 }
 
-async function parseWorkbook(fileName: string, buffer: ArrayBuffer): Promise<ParseTableFileResult> {
+async function parseWorkbook(fileName: string, buffer: ArrayBuffer, language: TableDataLanguage): Promise<ParseTableFileResult> {
   try {
     const workbook = new ExcelJS.Workbook()
     await workbook.xlsx.load(buffer)
     const sheet = workbook.worksheets[0]
-    if (!sheet) return { ok: false, error: 'Excel 시트를 찾을 수 없습니다.' }
+    if (!sheet) return { ok: false, error: tableMessage(language, 'excelSheet') }
 
     const headerRow = sheet.getRow(1)
     let columnCount = headerRow.cellCount
@@ -168,7 +187,7 @@ async function parseWorkbook(fileName: string, buffer: ArrayBuffer): Promise<Par
       normalizeHeader(headerRow.getCell(index + 1).value, index),
     )
     const dedupedColumns = dedupeColumns(columns)
-    if (dedupedColumns.length === 0) return { ok: false, error: 'Excel 첫 행에 헤더가 필요합니다.' }
+    if (dedupedColumns.length === 0) return { ok: false, error: tableMessage(language, 'excelHeader') }
 
     const rows: Record<string, unknown>[] = []
     sheet.eachRow((row, rowNumber) => {
@@ -184,40 +203,40 @@ async function parseWorkbook(fileName: string, buffer: ArrayBuffer): Promise<Par
       if (hasValue) rows.push(item)
     })
 
-    return finalize(fileName, dedupedColumns, rows)
+    return finalize(fileName, dedupedColumns, rows, language)
   } catch {
-    return { ok: false, error: 'Excel 파일을 해석할 수 없습니다.' }
+    return { ok: false, error: tableMessage(language, 'excelParse') }
   }
 }
 
-function readAsArrayBuffer(file: File): Promise<ArrayBuffer> {
+function readAsArrayBuffer(file: File, language: TableDataLanguage): Promise<ArrayBuffer> {
   return new Promise((resolve, reject) => {
     const reader = new FileReader()
     reader.onload = () => resolve(reader.result as ArrayBuffer)
-    reader.onerror = () => reject(reader.error ?? new Error('파일을 읽을 수 없습니다.'))
+    reader.onerror = () => reject(reader.error ?? new Error(tableMessage(language, 'fileRead')))
     reader.readAsArrayBuffer(file)
   })
 }
 
-function readAsText(file: File): Promise<string> {
+function readAsText(file: File, language: TableDataLanguage): Promise<string> {
   return new Promise((resolve, reject) => {
     const reader = new FileReader()
     reader.onload = () => resolve(String(reader.result ?? ''))
-    reader.onerror = () => reject(reader.error ?? new Error('파일을 읽을 수 없습니다.'))
+    reader.onerror = () => reject(reader.error ?? new Error(tableMessage(language, 'fileRead')))
     reader.readAsText(file, 'utf-8')
   })
 }
 
-export async function parseTableFile(file: File): Promise<ParseTableFileResult> {
+export async function parseTableFile(file: File, language: TableDataLanguage = 'ko'): Promise<ParseTableFileResult> {
   const name = file.name
   const lower = name.toLowerCase()
   try {
-    if (lower.endsWith('.csv')) return parseCsv(name, await readAsText(file))
-    if (lower.endsWith('.json')) return parseJson(name, await readAsText(file))
-    if (lower.endsWith('.xlsx')) return parseWorkbook(name, await readAsArrayBuffer(file))
-    return { ok: false, error: 'Excel(.xlsx), CSV, JSON 파일만 첨부할 수 있습니다.' }
+    if (lower.endsWith('.csv')) return parseCsv(name, await readAsText(file, language), language)
+    if (lower.endsWith('.json')) return parseJson(name, await readAsText(file, language), language)
+    if (lower.endsWith('.xlsx')) return parseWorkbook(name, await readAsArrayBuffer(file, language), language)
+    return { ok: false, error: tableMessage(language, 'unsupported') }
   } catch {
-    return { ok: false, error: '파일을 읽을 수 없습니다.' }
+    return { ok: false, error: tableMessage(language, 'fileRead') }
   }
 }
 

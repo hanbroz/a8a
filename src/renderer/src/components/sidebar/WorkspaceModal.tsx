@@ -1,5 +1,6 @@
 import { useState, useRef, useEffect } from 'react'
 import { IcoX } from '../Icon'
+import { useI18n } from '../../i18n'
 import type { Environment } from '../env/EnvSection'
 import type { ProjectItem } from './ProjectModal'
 
@@ -21,6 +22,7 @@ export default function WorkspaceModal({ workspace, environments, projects, onSa
   const [name, setName] = useState(workspace?.name ?? '')
   const [description, setDescription] = useState(workspace?.description ?? '')
   const nameRef = useRef<HTMLInputElement>(null)
+  const { t } = useI18n()
 
   useEffect(() => { nameRef.current?.focus() }, [])
 
@@ -42,32 +44,32 @@ export default function WorkspaceModal({ workspace, environments, projects, onSa
       <div className="ws-modal" onClick={e => e.stopPropagation()}>
         <div className="ws-modal-hd">
           <span className="ws-modal-title">
-            {isEdit ? '워크스페이스 수정' : '새 워크스페이스'}
+            {isEdit ? t('modal.workspace.editTitle') : t('modal.workspace.newTitle')}
           </span>
-          <button className="btn ghost icon" onClick={onClose} title="닫기">
+          <button className="btn ghost icon" onClick={onClose} title={t('common.close')}>
             <IcoX size={15} />
           </button>
         </div>
 
         <div className="ws-modal-body">
           <label className="ws-modal-field">
-            <span className="ws-modal-field-label">워크스페이스 이름</span>
+            <span className="ws-modal-field-label">{t('modal.workspace.name')}</span>
             <input
               ref={nameRef}
               className="ws-modal-input"
               value={name}
               onChange={e => setName(e.target.value)}
               onKeyDown={handleKeyDown}
-              placeholder="워크스페이스 이름을 입력하세요"
+              placeholder={t('modal.workspace.namePlaceholder')}
             />
           </label>
           <label className="ws-modal-field">
-            <span className="ws-modal-field-label">설명 (선택)</span>
+            <span className="ws-modal-field-label">{t('modal.workspace.description')}</span>
             <textarea
               className="ws-modal-input ws-modal-textarea"
               value={description}
               onChange={e => setDescription(e.target.value)}
-              placeholder="워크스페이스에 대한 설명을 입력하세요"
+              placeholder={t('modal.workspace.descriptionPlaceholder')}
               rows={3}
             />
           </label>
@@ -76,7 +78,7 @@ export default function WorkspaceModal({ workspace, environments, projects, onSa
             <div className="ws-modal-summary">
               {environments && environments.length > 0 && (
                 <div className="ws-modal-summary-section">
-                  <span className="ws-modal-summary-label">환경</span>
+                  <span className="ws-modal-summary-label">{t('modal.workspace.environments')}</span>
                   <div className="ws-modal-summary-list">
                     {environments.map(env => (
                       <span key={env.id} className="ws-modal-summary-badge">
@@ -89,7 +91,7 @@ export default function WorkspaceModal({ workspace, environments, projects, onSa
               )}
               {projects && projects.length > 0 && (
                 <div className="ws-modal-summary-section">
-                  <span className="ws-modal-summary-label">프로젝트</span>
+                  <span className="ws-modal-summary-label">{t('modal.workspace.projects')}</span>
                   <div className="ws-modal-summary-list">
                     {projects.map(proj => (
                       <span key={proj.id} className="ws-modal-summary-badge ws-modal-summary-badge-proj">
@@ -100,20 +102,20 @@ export default function WorkspaceModal({ workspace, environments, projects, onSa
                 </div>
               )}
               {environments?.length === 0 && projects?.length === 0 && (
-                <p className="ws-modal-summary-empty">아직 환경과 프로젝트가 없습니다.</p>
+                <p className="ws-modal-summary-empty">{t('modal.workspace.empty')}</p>
               )}
             </div>
           )}
         </div>
 
         <div className="ws-modal-ft">
-          <button className="btn" onClick={onClose}>취소</button>
+          <button className="btn" onClick={onClose}>{t('common.cancel')}</button>
           <button
             className="btn primary"
             onClick={handleSave}
             disabled={!name.trim()}
           >
-            {isEdit ? '수정' : '추가'}
+            {isEdit ? t('common.edit') : t('common.add')}
           </button>
         </div>
       </div>

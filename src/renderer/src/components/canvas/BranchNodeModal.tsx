@@ -5,6 +5,7 @@ import JsonInspectorButton from './JsonInspector'
 import { useModalMaximize } from './useModalMaximize'
 import { evaluateBranch, parseBranchConfig } from '../../utils/branch'
 import { getInputPathSuggestions, parseTemplate, resolveInputExpression } from '../../utils/interpolate'
+import { useI18n } from '../../i18n'
 
 interface Props {
   node: ApiNode
@@ -91,6 +92,7 @@ function isEmptyBranchConfig(raw: string): boolean {
 }
 
 export default function BranchNodeModal({ node, isNew, initialInput, dataVars, onRun, onSave, onDelete, onClose }: Props): JSX.Element {
+  const { t, language } = useI18n()
   const initial = parseBranchConfig(node.config)
   const emptyConfig = isEmptyBranchConfig(node.config)
   const [moduleName, setModuleName] = useState(node.label)
@@ -145,7 +147,7 @@ export default function BranchNodeModal({ node, isNew, initialInput, dataVars, o
     falseLabel,
     defaultRoute,
     selectedRoute,
-  }, inputValue, dataInputRecord), [dataInputRecord, defaultRoute, expression, falseLabel, inputValue, mode, selectedRoute, trueLabel])
+  }, inputValue, dataInputRecord, language), [dataInputRecord, defaultRoute, expression, falseLabel, inputValue, language, mode, selectedRoute, trueLabel])
 
   const variableRows = useMemo<BranchVariableRow[]>(() => {
     const rows: BranchVariableRow[] = []
@@ -331,18 +333,18 @@ export default function BranchNodeModal({ node, isNew, initialInput, dataVars, o
           <div className="dm-hd" onMouseDown={onHeaderDown}>
             <div className="dm-hd-left">
               <div className="dm-hd-icon branch-modal-icon"><BranchIcon size={13} /></div>
-              <span className="dm-hd-title">{isNew ? 'Branch 모듈 추가' : 'Branch 모듈 설정'}</span>
+              <span className="dm-hd-title">{isNew ? t('module.branch.titleAdd') : t('module.branch.titleSettings')}</span>
             </div>
             <div className="dm-hd-window-actions">
               <button
                 className="btn ghost icon dm-window-btn"
                 onClick={toggleMaximized}
-                title={isMaximized ? '이전 크기로 복원' : '창 최대화'}
-                aria-label={isMaximized ? '이전 크기로 복원' : '창 최대화'}
+                title={isMaximized ? t('module.common.restoreWindow') : t('module.common.maximizeWindow')}
+                aria-label={isMaximized ? t('module.common.restoreWindow') : t('module.common.maximizeWindow')}
               >
                 {isMaximized ? <IcoRestore size={13} /> : <IcoMaximize size={13} />}
               </button>
-              <button className="btn ghost icon dm-close-btn" onClick={onClose} title="닫기" aria-label="닫기">
+              <button className="btn ghost icon dm-close-btn" onClick={onClose} title={t('common.close')} aria-label={t('common.close')}>
                 <IcoX size={15} />
               </button>
             </div>
@@ -362,7 +364,7 @@ export default function BranchNodeModal({ node, isNew, initialInput, dataVars, o
                     className="btn ghost icon dm-format-btn dm-run-btn"
                     onClick={handleRun}
                     disabled={running}
-                    title="상위 모듈을 실행하여 INPUT 데이터 가져오기"
+                    title={t('module.common.runUpstream')}
                   >
                     <RunIcon />
                   </button>
@@ -373,7 +375,7 @@ export default function BranchNodeModal({ node, isNew, initialInput, dataVars, o
                   path={`${node.id}/branch-input.json`}
                   value={inputJson}
                   readOnly
-                  placeholder="상위 모듈 INPUT이 없습니다."
+                  placeholder={t('module.branch.inputPlaceholder')}
                 />
               </div>
             </div>
@@ -382,7 +384,7 @@ export default function BranchNodeModal({ node, isNew, initialInput, dataVars, o
 
             <div className="branch-settings-pane">
               <div className="dm-field">
-                <label className="dm-field-label">모듈 이름</label>
+                <label className="dm-field-label">{t('module.common.moduleName')}</label>
                 <input
                   className="dm-input"
                   value={moduleName}
@@ -393,21 +395,21 @@ export default function BranchNodeModal({ node, isNew, initialInput, dataVars, o
               </div>
 
               <div className="dm-field">
-                <label className="dm-field-label">분기 방식</label>
+                <label className="dm-field-label">{t('module.branch.mode')}</label>
                 <div className="branch-mode-tabs">
                   <button
                     type="button"
                     className={`branch-mode-tab${mode === 'manual' ? ' branch-mode-tab-active' : ''}`}
                     onClick={() => setMode('manual')}
                   >
-                    직접 선택
+                    {t('module.branch.manualMode')}
                   </button>
                   <button
                     type="button"
                     className={`branch-mode-tab${mode === 'condition' ? ' branch-mode-tab-active' : ''}`}
                     onClick={() => setMode('condition')}
                   >
-                    조건식
+                    {t('module.branch.conditionMode')}
                   </button>
                 </div>
 
@@ -435,21 +437,21 @@ export default function BranchNodeModal({ node, isNew, initialInput, dataVars, o
                       onClick={() => setManualSource('runtime')}
                     >
                       <span className="branch-manual-radio" />
-                      <span>사용자선택</span>
+                      <span>{t('module.branch.userSelect')}</span>
                     </button>
                   </div>
                 )}
               </div>
 
               <div className="dm-field">
-                <label className="dm-field-label">라벨</label>
+                <label className="dm-field-label">{t('module.branch.labels')}</label>
                 <div className="branch-route-grid">
                   <div className="module-name-cell">
-                    <span>TRUE 라벨</span>
+                    <span>{t('module.branch.trueLabel')}</span>
                     <input className="dm-input" value={trueLabel} onChange={e => setTrueLabel(e.target.value)} placeholder="TRUE" />
                   </div>
                   <div className="module-name-cell">
-                    <span>FALSE 라벨</span>
+                    <span>{t('module.branch.falseLabel')}</span>
                     <input className="dm-input" value={falseLabel} onChange={e => setFalseLabel(e.target.value)} placeholder="FALSE" />
                   </div>
                 </div>
@@ -458,7 +460,7 @@ export default function BranchNodeModal({ node, isNew, initialInput, dataVars, o
               {mode === 'condition' && (
                 <>
                   <div className="dm-field">
-                    <label className="dm-field-label">조건식</label>
+                    <label className="dm-field-label">{t('module.branch.expression')}</label>
                     <input
                       className="dm-input branch-expression-input"
                       value={expression}
@@ -466,19 +468,19 @@ export default function BranchNodeModal({ node, isNew, initialInput, dataVars, o
                       placeholder="[[0.value]] == true"
                     />
                     <div className="branch-help">
-                      예: <code>[[0.value]] == true</code>, <code>[[0.type]] == "seat"</code>
+                      {t('module.branch.example')} <code>[[0.value]] == true</code>, <code>[[0.type]] == "seat"</code>
                     </div>
                   </div>
 
                   <div className="dm-field">
-                    <label className="dm-field-label">사용된 환경변수 / INPUT / DATA</label>
+                    <label className="dm-field-label">{t('module.branch.usedVars')}</label>
                     {variableRows.length > 0 ? (
                       <table className="api-env-vars-table branch-vars-table">
                         <thead>
                           <tr>
-                            <th>구분</th>
-                            <th>변수</th>
-                            <th>적용 값</th>
+                            <th>{t('module.branch.kind')}</th>
+                            <th>{t('module.branch.variable')}</th>
+                            <th>{t('module.branch.appliedValue')}</th>
                           </tr>
                         </thead>
                         <tbody>
@@ -489,18 +491,18 @@ export default function BranchNodeModal({ node, isNew, initialInput, dataVars, o
                             const valueText = row.resolved !== null
                               ? row.resolved
                               : isInput
-                                ? 'INPUT 값 없음'
+                                ? t('module.branch.inputNoValue')
                                 : isData
-                                  ? 'DATA 값 없음'
-                                  : 'BRANCH 조건식은 INPUT 변수를 사용합니다'
+                                  ? t('module.branch.dataNoValue')
+                                  : t('module.branch.envNoValue')
                             const tokenText = isInput ? `[[${row.name}]]` : isData ? `<<${row.name}>>` : `{{${row.name}}}`
-                            const kindLabel = isInput ? 'INPUT' : isData ? 'DATA' : '환경'
+                            const kindLabel = isInput ? 'INPUT' : isData ? 'DATA' : t('module.branch.kindEnv')
                             return (
                               <tr
                                 key={`${row.kind}:${row.name}`}
                                 className={isClickable ? 'api-var-row-clickable' : undefined}
                                 onClick={() => handleUseVariable(row)}
-                                title={isClickable ? '클릭하면 조건식에 적용됩니다' : undefined}
+                                title={isClickable ? t('module.branch.clickToApply') : undefined}
                               >
                                 <td>
                                   <span className={`api-var-kind api-var-kind-${row.kind}`}>
@@ -522,16 +524,16 @@ export default function BranchNodeModal({ node, isNew, initialInput, dataVars, o
                       </table>
                     ) : (
                       <div className="branch-vars-empty">
-                        INPUT 실행 후 조건식에 사용할 수 있는 값이 표시됩니다.
+                        {t('module.branch.varsEmpty')}
                       </div>
                     )}
                   </div>
 
                   <div className="dm-field">
-                    <label className="dm-field-label">조건식 오류 시 기본 경로</label>
+                    <label className="dm-field-label">{t('module.branch.errorDefaultRoute')}</label>
                     <select className="dm-input" value={defaultRoute} onChange={e => setDefaultRoute(e.target.value === 'true' ? 'true' : 'false')}>
-                      <option value="false">FALSE 경로</option>
-                      <option value="true">TRUE 경로</option>
+                      <option value="false">{t('module.branch.falseRoute')}</option>
+                      <option value="true">{t('module.branch.trueRoute')}</option>
                     </select>
                   </div>
                 </>
@@ -539,14 +541,14 @@ export default function BranchNodeModal({ node, isNew, initialInput, dataVars, o
 
               <div className={`branch-preview branch-preview-${evalResult.route}`}>
                 <div className="branch-preview-hd">
-                  <div className="branch-preview-title">미리보기</div>
+                  <div className="branch-preview-title">{t('module.branch.preview')}</div>
                   <JsonInspectorButton
                     title={`${moduleName || 'BRANCH'} OUTPUT`}
                     value={evalResult.value}
                   />
                 </div>
                 <div className="branch-preview-route">
-                  선택 경로: <strong>{evalResult.route === 'true' ? trueLabel || 'TRUE' : falseLabel || 'FALSE'}</strong>
+                  {t('module.branch.selectedRoute')} <strong>{evalResult.route === 'true' ? trueLabel || 'TRUE' : falseLabel || 'FALSE'}</strong>
                 </div>
                 <pre className="branch-preview-value">{formatJson(evalResult.value)}</pre>
                 {evalResult.error && <div className="branch-preview-error">{evalResult.error}</div>}
@@ -558,19 +560,19 @@ export default function BranchNodeModal({ node, isNew, initialInput, dataVars, o
             {onDelete && !confirmDelete && (
               <button className="btn ghost dm-delete-btn" onClick={() => setConfirmDelete(true)}>
                 <IcoTrash size={13} />
-                삭제
+                {t('common.delete')}
               </button>
             )}
             {confirmDelete ? (
               <>
-                <span className="dm-delete-warn">이 모듈이 삭제됩니다.</span>
-                <button className="btn ghost" onClick={() => setConfirmDelete(false)}>취소</button>
-                <button className="btn dm-delete-confirm-btn" onClick={async () => { await onDelete?.(); onClose() }}>삭제 확인</button>
+                <span className="dm-delete-warn">{t('module.common.deleteWarning')}</span>
+                <button className="btn ghost" onClick={() => setConfirmDelete(false)}>{t('common.cancel')}</button>
+                <button className="btn dm-delete-confirm-btn" onClick={async () => { await onDelete?.(); onClose() }}>{t('module.common.deleteConfirm')}</button>
               </>
             ) : (
               <>
-                <button className="btn ghost" onClick={onClose}>취소</button>
-                <button className="btn primary" onClick={handleSave} disabled={saving}>{saving ? '저장 중...' : '저장'}</button>
+                <button className="btn ghost" onClick={onClose}>{t('common.cancel')}</button>
+                <button className="btn primary" onClick={handleSave} disabled={saving}>{saving ? t('common.saving') : t('common.save')}</button>
               </>
             )}
           </div>

@@ -1,5 +1,7 @@
 import { JSON_VIEWER_CSS, JSON_VIEWER_JS, jsonViewerBlock } from './jsonViewerTemplate'
 
+export type ReportLanguage = 'ko' | 'en'
+
 export interface ReportMeta {
   environment: string
   workspace: string
@@ -58,6 +60,124 @@ export interface ReportInput {
   nodes: ReportNode[]
   selectedModuleIds: Set<string>
   variables?: ReportVariable[]
+  language?: ReportLanguage
+}
+
+const REPORT_LABELS = {
+  ko: {
+    reportTitle: '실행 리포트',
+    environment: '환경',
+    workspace: '워크스페이스',
+    project: '프로젝트',
+    executedAt: '실행 시각',
+    totalDuration: '총 소요',
+    success: '성공',
+    error: '실패',
+    partial: '일부 성공',
+    skipped: '건너뜀',
+    running: '실행 중',
+    empty: '(없음)',
+    requestHeaders: '요청 헤더',
+    requestBody: '요청 바디',
+    responseBody: '응답 바디',
+    preScript: 'Pre Request 스크립트',
+    postScript: 'Post Response 스크립트',
+    errorLabel: '오류',
+    usedVariables: '사용된 변수',
+    countSuffix: '개',
+    kind: '구분',
+    variableName: '변수명',
+    finalValue: '최종 값',
+    status: '상태',
+    duration: '소요',
+    response: '응답',
+    key: '키',
+    value: '값',
+    executionFlow: '실행 흐름',
+  },
+  en: {
+    reportTitle: 'Execution Report',
+    environment: 'Environment',
+    workspace: 'Workspace',
+    project: 'Project',
+    executedAt: 'Executed at',
+    totalDuration: 'Total duration',
+    success: 'Success',
+    error: 'Failed',
+    partial: 'Partially successful',
+    skipped: 'Skipped',
+    running: 'Running',
+    empty: '(none)',
+    requestHeaders: 'Request headers',
+    requestBody: 'Request body',
+    responseBody: 'Response body',
+    preScript: 'Pre Request script',
+    postScript: 'Post Response script',
+    errorLabel: 'Error',
+    usedVariables: 'Used variables',
+    countSuffix: '',
+    kind: 'Kind',
+    variableName: 'Variable',
+    finalValue: 'Final value',
+    status: 'Status',
+    duration: 'Duration',
+    response: 'Response',
+    key: 'Key',
+    value: 'Value',
+    executionFlow: 'Execution flow',
+  },
+} as const
+
+type ReportLabels = typeof REPORT_LABELS[ReportLanguage]
+
+function reportLabels(language?: ReportLanguage): ReportLabels {
+  return REPORT_LABELS[language ?? 'ko']
+}
+
+function jsonViewerLabels(language: ReportLanguage): Record<string, string> {
+  return language === 'en'
+    ? {
+        copyValue: 'Copy value',
+        copied: 'Copied',
+        copyFailed: 'Copy failed',
+        noData: 'No data',
+        jsonSerializeFailed: 'Failed to serialize JSON',
+        jsonParseFailed: 'Failed to parse JSON',
+        tooLargePrefix: 'JSON size ',
+        tooLargeSuffix: 'KB - UI/Tree views are disabled above 100KB. Only the JSON view is shown.',
+      }
+    : {
+        copyValue: '값 복사',
+        copied: '복사됨',
+        copyFailed: '복사 실패',
+        noData: '데이터 없음',
+        jsonSerializeFailed: 'JSON 직렬화 실패',
+        jsonParseFailed: 'JSON 파싱 실패',
+        tooLargePrefix: 'JSON 크기 ',
+        tooLargeSuffix: 'KB — 100KB 이상이라 UI/Tree 뷰는 비활성. JSON 뷰만 표시됩니다.',
+      }
+}
+
+function jsonViewerLabelsScript(language: ReportLanguage): string {
+  const payload = JSON.stringify(jsonViewerLabels(language)).replace(/</g, '\\u003c')
+  return `window.__A8A_JSON_VIEWER_LABELS__=${payload};`
+}
+
+function statusText(status: ReportMeta['overallStatus'], labels: ReportLabels): string {
+  if (status === 'success') return labels.success
+  if (status === 'error') return labels.error
+  return labels.partial
+}
+
+function nodeStatusText(status: ReportNode['status'], labels: ReportLabels): string {
+  if (status === 'success') return labels.success
+  if (status === 'error') return labels.errorLabel
+  if (status === 'skip') return labels.skipped
+  return labels.running
+}
+
+function formatCount(count: number, labels: ReportLabels): string {
+  return labels.countSuffix ? `${count}${labels.countSuffix}` : String(count)
 }
 
 function escapeHtml(s: string): string {
@@ -124,30 +244,30 @@ function tryParseJson(text?: string): unknown {
 
 // ── HTML report ──────────────────────────────────────────────
 
-function htmlHeader(meta: ReportMeta): string {
+function htmlHeader(meta: ReportMeta, labels: ReportLabels): string {
   const statusBadge = meta.overallStatus === 'success'
-    ? `<span class="status-pill ok">✓ 성공</span>`
+    ? `<span class="status-pill ok">✓ ${labels.success}</span>`
     : meta.overallStatus === 'error'
-      ? `<span class="status-pill err">✗ 실패</span>`
-      : `<span class="status-pill warn">◐ 일부 성공</span>`
+      ? `<span class="status-pill err">✗ ${labels.error}</span>`
+      : `<span class="status-pill warn">◐ ${labels.partial}</span>`
   return `
 <header>
-  <h1>${escapeHtml(meta.project)} 실행 리포트</h1>
+  <h1>${escapeHtml(meta.project)} ${labels.reportTitle}</h1>
   <div class="meta-row">
-    <span class="meta-item"><span class="meta-k">환경</span> ${escapeHtml(meta.environment)}</span>
-    <span class="meta-item"><span class="meta-k">워크스페이스</span> ${escapeHtml(meta.workspace)}</span>
-    <span class="meta-item"><span class="meta-k">프로젝트</span> ${escapeHtml(meta.project)}</span>
+    <span class="meta-item"><span class="meta-k">${labels.environment}</span> ${escapeHtml(meta.environment)}</span>
+    <span class="meta-item"><span class="meta-k">${labels.workspace}</span> ${escapeHtml(meta.workspace)}</span>
+    <span class="meta-item"><span class="meta-k">${labels.project}</span> ${escapeHtml(meta.project)}</span>
   </div>
   <div class="meta-row">
-    <span class="meta-item"><span class="meta-k">실행 시각</span> ${formatTimestamp(meta.executedAt)}</span>
-    <span class="meta-item"><span class="meta-k">총 소요</span> ${formatDuration(meta.totalDuration)}</span>
+    <span class="meta-item"><span class="meta-k">${labels.executedAt}</span> ${formatTimestamp(meta.executedAt)}</span>
+    <span class="meta-item"><span class="meta-k">${labels.totalDuration}</span> ${formatDuration(meta.totalDuration)}</span>
     ${statusBadge}
   </div>
 </header>
 `
 }
 
-function htmlFlowDiagram(nodes: ReportNode[]): string {
+function htmlFlowDiagram(nodes: ReportNode[], labels: ReportLabels): string {
   if (nodes.length === 0) return ''
   const items = nodes.map(n => {
     const typeColor = TYPE_COLOR[n.type] || '#6e7781'
@@ -158,15 +278,15 @@ function htmlFlowDiagram(nodes: ReportNode[]): string {
         <div class="flow-card" style="border-color:${typeColor}; background:${typeColor}11">
           <div class="flow-type" style="color:${typeColor}">${n.type.toUpperCase()}</div>
           <div class="flow-label">${escapeHtml(n.label)}</div>
-          <div class="flow-status" style="color:${statusColor}">${statusIcon} ${n.status}</div>
+          <div class="flow-status" style="color:${statusColor}">${statusIcon} ${nodeStatusText(n.status, labels)}</div>
         </div>
       </div>`
   }).join('<div class="flow-arrow">→</div>')
   return `<section class="flow-section"><div class="flow-wrap">${items}</div></section>`
 }
 
-function kvTable(rows: Array<[string, string]>): string {
-  if (rows.length === 0) return '<div class="empty">(없음)</div>'
+function kvTable(rows: Array<[string, string]>, labels: ReportLabels): string {
+  if (rows.length === 0) return `<div class="empty">${labels.empty}</div>`
   return `
 <table class="kv">
   <tbody>
@@ -197,14 +317,15 @@ function htmlValueSection(title: string, value: unknown): string {
   return hasReportValue(value) ? `<h3>${escapeHtml(title)}</h3>${jsonViewerBlock(value)}` : ''
 }
 
-function htmlScriptLogSection(title: string, logs?: ReportScriptConsoleEntry[]): string {
+function htmlScriptLogSection(title: string, logs: ReportScriptConsoleEntry[] | undefined, language: ReportLanguage): string {
   if (!logs || logs.length === 0) return ''
+  const locale = language === 'ko' ? 'ko-KR' : 'en-US'
   return `
 <h3>${escapeHtml(title)}</h3>
 <div class="script-log">
   ${logs.map(log => `
     <div class="script-log-row script-log-${escapeHtml(log.level)}">
-      <span class="script-log-time">${escapeHtml(new Date(log.timestamp).toLocaleTimeString('ko-KR', { hour12: false }))}</span>
+      <span class="script-log-time">${escapeHtml(new Date(log.timestamp).toLocaleTimeString(locale, { hour12: false }))}</span>
       <span class="script-log-level">${escapeHtml(log.level)}</span>
       <pre>${escapeHtml(log.message)}</pre>
     </div>
@@ -212,7 +333,7 @@ function htmlScriptLogSection(title: string, logs?: ReportScriptConsoleEntry[]):
 </div>`
 }
 
-function htmlNodeSection(n: ReportNode, index: number): string {
+function htmlNodeSection(n: ReportNode, index: number, labels: ReportLabels, language: ReportLanguage): string {
   const typeColor = TYPE_COLOR[n.type] || '#6e7781'
   const statusColor = STATUS_COLOR[n.status] || '#8b949e'
   const statusIcon = STATUS_ICON[n.status] || '·'
@@ -223,7 +344,7 @@ function htmlNodeSection(n: ReportNode, index: number): string {
   <span class="node-num">${index}</span>
   <span class="node-type-badge" style="background:${typeColor}22; color:${typeColor}; border-color:${typeColor}55">${n.type.toUpperCase()}</span>
   <span class="node-label">${escapeHtml(n.label)}</span>
-  <span class="node-status" style="color:${statusColor}">${statusIcon} ${n.status}</span>
+  <span class="node-status" style="color:${statusColor}">${statusIcon} ${nodeStatusText(n.status, labels)}</span>
   <span class="node-duration">${formatDuration(n.duration)}</span>
 </div>`
 
@@ -247,32 +368,32 @@ function htmlNodeSection(n: ReportNode, index: number): string {
   ${a.statusCode ? `<span class="api-status" style="color:${sc}; border-color:${sc}55">${a.statusCode} ${escapeHtml(a.statusText || '')}</span>` : ''}
 </div>
 
-<h3>요청 헤더</h3>
-${kvTable(reqHeaderRows)}
+<h3>${labels.requestHeaders}</h3>
+${kvTable(reqHeaderRows, labels)}
 
-${a.body && a.body.trim() ? `<h3>요청 바디</h3>${jsonViewerBlock(reqBodyJson)}` : ''}
+${a.body && a.body.trim() ? `<h3>${labels.requestBody}</h3>${jsonViewerBlock(reqBodyJson)}` : ''}
 
-${a.responseText !== undefined ? `<h3>응답 바디</h3>${jsonViewerBlock(resBodyJson)}` : ''}
+${a.responseText !== undefined ? `<h3>${labels.responseBody}</h3>${jsonViewerBlock(resBodyJson)}` : ''}
 `
   }
 
-  body += htmlScriptLogSection('PRE REQUEST / INPUT CONSOLE', n.scriptLogs?.pre)
-  body += htmlScriptLogSection('POST RESPONSE CONSOLE', n.scriptLogs?.post)
+  body += htmlScriptLogSection('PRE REQUEST / INPUT CONSOLE', n.scriptLogs?.pre, language)
+  body += htmlScriptLogSection('POST RESPONSE CONSOLE', n.scriptLogs?.post, language)
 
   if (n.preScript && n.preScript.trim()) {
-    body += `<h3>Pre Request 스크립트</h3><pre class="code-block">${escapeHtml(n.preScript)}</pre>`
+    body += `<h3>${labels.preScript}</h3><pre class="code-block">${escapeHtml(n.preScript)}</pre>`
   }
   if (n.postScript && n.postScript.trim()) {
-    body += `<h3>Post Response 스크립트</h3><pre class="code-block">${escapeHtml(n.postScript)}</pre>`
+    body += `<h3>${labels.postScript}</h3><pre class="code-block">${escapeHtml(n.postScript)}</pre>`
   }
   if (n.error) {
-    body += `<div class="err-box"><strong>오류</strong><br>${escapeHtml(n.error)}</div>`
+    body += `<div class="err-box"><strong>${labels.errorLabel}</strong><br>${escapeHtml(n.error)}</div>`
   }
 
   return `<details class="node-section"><summary class="node-hd-summary">${headerBar}</summary><div class="node-body">${body}</div></details>`
 }
 
-function htmlVariablesSection(variables?: ReportVariable[]): string {
+function htmlVariablesSection(variables: ReportVariable[] | undefined, labels: ReportLabels): string {
   if (!variables || variables.length === 0) return ''
   const rows = variables.map(variable => `
     <tr>
@@ -288,14 +409,14 @@ function htmlVariablesSection(variables?: ReportVariable[]): string {
     <div class="node-hd">
       <span class="node-toggle"></span>
       <span class="node-type-badge variable-badge">VARS</span>
-      <span class="node-label">사용된 변수</span>
-      <span class="node-duration">${variables.length}개</span>
+      <span class="node-label">${labels.usedVariables}</span>
+      <span class="node-duration">${formatCount(variables.length, labels)}</span>
     </div>
   </summary>
   <div class="node-body">
     <table class="variable-table">
       <thead>
-        <tr><th>구분</th><th>변수명</th><th>최종 값</th></tr>
+        <tr><th>${labels.kind}</th><th>${labels.variableName}</th><th>${labels.finalValue}</th></tr>
       </thead>
       <tbody>${rows}</tbody>
     </table>
@@ -304,15 +425,17 @@ function htmlVariablesSection(variables?: ReportVariable[]): string {
 }
 
 function buildHtml(input: ReportInput): string {
+  const language = input.language ?? 'ko'
+  const labels = reportLabels(language)
   const reportNodes = input.nodes.filter(n => input.selectedModuleIds.has(n.nodeId) && n.type !== 'start' && n.type !== 'end')
-  const bodyHtml = reportNodes.map((n, i) => htmlNodeSection(n, i + 1)).join('')
-  const variablesHtml = htmlVariablesSection(input.variables)
+  const bodyHtml = reportNodes.map((n, i) => htmlNodeSection(n, i + 1, labels, language)).join('')
+  const variablesHtml = htmlVariablesSection(input.variables, labels)
 
   return `<!DOCTYPE html>
-<html lang="ko">
+<html lang="${language}">
 <head>
 <meta charset="UTF-8">
-<title>${escapeHtml(input.meta.project)} 실행 리포트</title>
+<title>${escapeHtml(input.meta.project)} ${labels.reportTitle}</title>
 <style>
 * { box-sizing: border-box; }
 body {
@@ -400,11 +523,12 @@ ${JSON_VIEWER_CSS}
 </head>
 <body>
 <div class="container">
-  ${htmlHeader(input.meta)}
-  ${htmlFlowDiagram(reportNodes)}
+  ${htmlHeader(input.meta, labels)}
+  ${htmlFlowDiagram(reportNodes, labels)}
   ${bodyHtml}
   ${variablesHtml}
 </div>
+<script>${jsonViewerLabelsScript(language)}</script>
 <script>${JSON_VIEWER_JS}</script>
 </body>
 </html>
@@ -445,37 +569,37 @@ function mdCodeBlock(content: string, lang = ''): string {
   return '```' + lang + '\n' + content + '\n```'
 }
 
-function mdNodeSection(n: ReportNode, index: number): string {
+function mdNodeSection(n: ReportNode, index: number, labels: ReportLabels): string {
   const lines: string[] = []
   lines.push(`## ${index}. ${n.type.toUpperCase()} · ${n.label}`)
   lines.push('')
-  lines.push(`- 상태: **${n.status}** ${STATUS_ICON[n.status] || ''}`)
-  if (n.duration !== undefined) lines.push(`- 소요: ${formatDuration(n.duration)}`)
+  lines.push(`- ${labels.status}: **${nodeStatusText(n.status, labels)}** ${STATUS_ICON[n.status] || ''}`)
+  if (n.duration !== undefined) lines.push(`- ${labels.duration}: ${formatDuration(n.duration)}`)
 
   if (n.type === 'api' && n.apiDetail) {
     const a = n.apiDetail
     lines.push(`- ${a.method} \`${a.url}\``)
-    if (a.statusCode) lines.push(`- 응답: ${a.statusCode} ${a.statusText ?? ''}`)
+    if (a.statusCode) lines.push(`- ${labels.response}: ${a.statusCode} ${a.statusText ?? ''}`)
     lines.push('')
-    lines.push('### 요청 헤더')
+    lines.push(`### ${labels.requestHeaders}`)
     lines.push('')
     if (Object.keys(a.headers).length === 0) {
-      lines.push('_(없음)_')
+      lines.push(`_${labels.empty}_`)
     } else {
-      lines.push('| 키 | 값 |')
+      lines.push(`| ${labels.key} | ${labels.value} |`)
       lines.push('|---|---|')
       for (const [k, v] of Object.entries(a.headers)) lines.push(`| ${k} | ${v} |`)
     }
     if (a.body && a.body.trim()) {
       lines.push('')
-      lines.push('### 요청 바디')
+      lines.push(`### ${labels.requestBody}`)
       lines.push('')
       const parsed = tryParseJson(a.body)
       lines.push(mdCodeBlock(typeof parsed === 'string' ? parsed : JSON.stringify(parsed, null, 2), 'json'))
     }
     if (a.responseText !== undefined) {
       lines.push('')
-      lines.push('### 응답 바디')
+      lines.push(`### ${labels.responseBody}`)
       lines.push('')
       const parsed = tryParseJson(a.responseText)
       lines.push(mdCodeBlock(typeof parsed === 'string' ? parsed : JSON.stringify(parsed, null, 2), 'json'))
@@ -497,19 +621,19 @@ function mdNodeSection(n: ReportNode, index: number): string {
 
   if (n.preScript && n.preScript.trim()) {
     lines.push('')
-    lines.push('### Pre Request 스크립트')
+    lines.push(`### ${labels.preScript}`)
     lines.push('')
     lines.push(mdCodeBlock(n.preScript, 'js'))
   }
   if (n.postScript && n.postScript.trim()) {
     lines.push('')
-    lines.push('### Post Response 스크립트')
+    lines.push(`### ${labels.postScript}`)
     lines.push('')
     lines.push(mdCodeBlock(n.postScript, 'js'))
   }
   if (n.error) {
     lines.push('')
-    lines.push('### ⚠ 오류')
+    lines.push(`### ⚠ ${labels.errorLabel}`)
     lines.push('')
     lines.push('```')
     lines.push(n.error)
@@ -519,21 +643,22 @@ function mdNodeSection(n: ReportNode, index: number): string {
 }
 
 function buildMarkdown(input: ReportInput): string {
+  const labels = reportLabels(input.language)
   const m = input.meta
   const lines: string[] = []
-  lines.push(`# ${m.project} 실행 리포트`)
+  lines.push(`# ${m.project} ${labels.reportTitle}`)
   lines.push('')
-  lines.push(`- **환경**: ${m.environment}`)
-  lines.push(`- **워크스페이스**: ${m.workspace}`)
-  lines.push(`- **프로젝트**: ${m.project}`)
-  lines.push(`- **실행 시각**: ${formatTimestamp(m.executedAt)}`)
-  lines.push(`- **총 소요**: ${formatDuration(m.totalDuration)}`)
-  lines.push(`- **상태**: ${m.overallStatus === 'success' ? '✓ 성공' : m.overallStatus === 'error' ? '✗ 실패' : '◐ 일부 성공'}`)
+  lines.push(`- **${labels.environment}**: ${m.environment}`)
+  lines.push(`- **${labels.workspace}**: ${m.workspace}`)
+  lines.push(`- **${labels.project}**: ${m.project}`)
+  lines.push(`- **${labels.executedAt}**: ${formatTimestamp(m.executedAt)}`)
+  lines.push(`- **${labels.totalDuration}**: ${formatDuration(m.totalDuration)}`)
+  lines.push(`- **${labels.status}**: ${m.overallStatus === 'success' ? `✓ ${labels.success}` : m.overallStatus === 'error' ? `✗ ${labels.error}` : `◐ ${labels.partial}`}`)
   lines.push('')
   const bodyNodes = input.nodes.filter(n => input.selectedModuleIds.has(n.nodeId) && n.type !== 'start' && n.type !== 'end')
 
   if (bodyNodes.length > 0) {
-    lines.push('## 실행 흐름')
+    lines.push(`## ${labels.executionFlow}`)
     lines.push('')
     lines.push('```mermaid')
     lines.push(mermaidDiagram(bodyNodes))
@@ -542,15 +667,15 @@ function buildMarkdown(input: ReportInput): string {
   }
 
   bodyNodes.forEach((n, i) => {
-    lines.push(mdNodeSection(n, i + 1))
+    lines.push(mdNodeSection(n, i + 1, labels))
     lines.push('')
   })
 
   if (input.variables && input.variables.length > 0) {
     lines.push('<details>')
-    lines.push('<summary>사용된 변수</summary>')
+    lines.push(`<summary>${labels.usedVariables}</summary>`)
     lines.push('')
-    lines.push('| 구분 | 변수명 | 최종 값 |')
+    lines.push(`| ${labels.kind} | ${labels.variableName} | ${labels.finalValue} |`)
     lines.push('|---|---|---|')
     for (const variable of input.variables) {
       const value = formatVariableValue(variable.value).replace(/\|/g, '\\|').replace(/\n/g, '<br>')

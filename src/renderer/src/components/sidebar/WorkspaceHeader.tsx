@@ -1,5 +1,6 @@
 import { IcoPlus, IcoChevD, IcoTrash, IcoPencil } from '../Icon'
 import { useSidebarOpen } from '../../hooks/useSidebarOpen'
+import { useI18n } from '../../i18n'
 
 export type WorkspaceItem = { id: string; name: string; description: string }
 
@@ -14,6 +15,7 @@ interface WorkspaceRowProps {
 
 function WorkspaceRow({ workspace, isActive, onSelect, onEditRequest, onDeleteRequest, children }: WorkspaceRowProps): JSX.Element {
   const [open, toggleOpen] = useSidebarOpen(`ws-item-${workspace.id}`, true)
+  const { t } = useI18n()
 
   const handleRowClick = (): void => {
     onSelect()
@@ -39,14 +41,14 @@ function WorkspaceRow({ workspace, isActive, onSelect, onEditRequest, onDeleteRe
         <button
           className="btn ghost icon ws-item-del"
           onClick={e => { e.stopPropagation(); onEditRequest() }}
-          title="워크스페이스 수정"
+          title={t('sidebar.workspace.edit')}
         >
           <IcoPencil size={12} />
         </button>
         <button
           className="btn ghost icon ws-item-del"
           onClick={e => { e.stopPropagation(); onDeleteRequest() }}
-          title="워크스페이스 삭제"
+          title={t('sidebar.workspace.delete')}
           style={{ color: 'var(--state-danger, #f85149)' }}
         >
           <IcoTrash size={12} />
@@ -73,6 +75,7 @@ interface Props {
 
 export default function WorkspaceHeader({ workspaces, activeId, onSelect, onAdd, onEditRequest, onDeleteRequest, renderContent }: Props): JSX.Element {
   const [open, toggleOpen] = useSidebarOpen('workspace')
+  const { t } = useI18n()
 
   return (
     <div className="sidebar-section ws-section">
@@ -86,11 +89,11 @@ export default function WorkspaceHeader({ workspaces, activeId, onSelect, onAdd,
             flexShrink: 0
           }}
         />
-        <span className="sidebar-section-title">Workspace</span>
+        <span className="sidebar-section-title">{t('sidebar.workspace')}</span>
         <button
           className="btn ghost icon sidebar-section-add"
           onClick={e => { e.stopPropagation(); onAdd() }}
-          title="워크스페이스 추가"
+          title={t('sidebar.workspace.add')}
         >
           <IcoPlus size={13} />
         </button>

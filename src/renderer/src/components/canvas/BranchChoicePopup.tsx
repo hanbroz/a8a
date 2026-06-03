@@ -1,3 +1,5 @@
+import { useI18n } from '../../i18n'
+
 interface Props {
   title: string
   trueLabel: string
@@ -27,6 +29,7 @@ export default function BranchChoicePopup({
   onConfirm,
   onCancel,
 }: Props): JSX.Element {
+  const { t } = useI18n()
   return (
     <div className="branch-choice-overlay">
       <div className="branch-choice-modal">
@@ -34,7 +37,7 @@ export default function BranchChoicePopup({
           <span className="branch-choice-icon"><BranchIcon /></span>
           <div>
             <div className="branch-choice-title">{title}</div>
-            <div className="branch-choice-subtitle">진행할 경로를 선택하세요.</div>
+            <div className="branch-choice-subtitle">{t('module.branchChoice.subtitle')}</div>
           </div>
         </div>
 
@@ -56,7 +59,7 @@ export default function BranchChoicePopup({
         </div>
 
         <div className="branch-choice-ft">
-          <button className="btn ghost" onClick={onCancel}>취소</button>
+          <button className="btn ghost" onClick={onCancel}>{t('common.cancel')}</button>
         </div>
       </div>
     </div>
