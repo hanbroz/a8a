@@ -60,8 +60,13 @@ function withQueryParam(url: string, key: string, value: string): string {
   return `${base}${sep}${encodeURIComponent(key)}=${encodeURIComponent(value)}${hash}`
 }
 
-function resolveAuthValue(value: string | undefined, envVars: Record<string, string>, inputData: Record<string, unknown>): string {
-  return resolveTemplate(value ?? '', envVars, inputData).trim()
+function resolveAuthValue(
+  value: string | undefined,
+  envVars: Record<string, string>,
+  inputData: Record<string, unknown>,
+  dataVars: Record<string, unknown> = inputData,
+): string {
+  return resolveTemplate(value ?? '', envVars, inputData, dataVars).trim()
 }
 
 export function applyApiAuth(
@@ -69,6 +74,7 @@ export function applyApiAuth(
   rawAuth: ApiAuthConfig | undefined,
   envVars: Record<string, string>,
   inputData: Record<string, unknown>,
+  dataVars: Record<string, unknown> = inputData,
 ): ApiRequestParts {
   const auth = normalizeApiAuth(rawAuth)
   const headers = { ...request.headers }
@@ -76,19 +82,19 @@ export function applyApiAuth(
 
   switch (auth.type) {
     case 'bearer': {
-      const token = resolveAuthValue(auth.token, envVars, inputData)
+      const token = resolveAuthValue(auth.token, envVars, inputData, dataVars)
       if (token) headers.Authorization = withBearerPrefix(token)
       break
     }
     case 'basic': {
-      const username = resolveAuthValue(auth.username, envVars, inputData)
-      const password = resolveAuthValue(auth.password, envVars, inputData)
+      const username = resolveAuthValue(auth.username, envVars, inputData, dataVars)
+      const password = resolveAuthValue(auth.password, envVars, inputData, dataVars)
       if (username || password) headers.Authorization = `Basic ${encodeBase64(`${username}:${password}`)}`
       break
     }
     case 'apiKey': {
-      const key = resolveAuthValue(auth.key, envVars, inputData)
-      const value = resolveAuthValue(auth.value, envVars, inputData)
+      const key = resolveAuthValue(auth.key, envVars, inputData, dataVars)
+      const value = resolveAuthValue(auth.value, envVars, inputData, dataVars)
       if (key) {
         if (auth.addTo === 'query') url = withQueryParam(url, key, value)
         else headers[key] = value
@@ -96,7 +102,7 @@ export function applyApiAuth(
       break
     }
     case 'oauth2': {
-      const token = resolveAuthValue(auth.accessToken || auth.token, envVars, inputData)
+      const token = resolveAuthValue(auth.accessToken || auth.token, envVars, inputData, dataVars)
       if (token) headers.Authorization = withBearerPrefix(token)
       break
     }

@@ -71,6 +71,30 @@ declare global {
   interface StartConfig {
     mode: 'manual' | 'schedule'
     schedule: StartSchedule
+    repeat?: StartRepeatConfig
+  }
+
+  interface StartRepeatConfig {
+    enabled: boolean
+    mode: 'count' | 'data'
+    count: number
+    stopOnFailure: boolean
+    data: StartRepeatData | null
+  }
+
+  interface StartRepeatData {
+    fileName: string
+    columns: string[]
+    rows: Record<string, unknown>[]
+  }
+
+  type StartRepeatRowStatus = 'pending' | 'running' | 'success' | 'failed'
+
+  interface StartRepeatRowRunState {
+    status: StartRepeatRowStatus
+    error?: string
+    failedNodeId?: string
+    updatedAt?: number
   }
 
   interface SelectConfig {
@@ -149,6 +173,7 @@ declare global {
     savePath: string
     filenameTemplate: string
     selectedModuleIds: string[]
+    displayEnvKeys?: string[]
   }
 
   interface ApiEdge {
@@ -183,6 +208,7 @@ declare global {
     }
     file: {
       write: (path: string, content: string) => Promise<{ ok: true; path: string } | { ok: false; error: string }>
+      writeXlsxDownload: (fileName: string, base64Content: string) => Promise<{ ok: true; path: string } | { ok: false; error: string }>
       open: (path: string) => Promise<{ ok: true } | { ok: false; error: string }>
       downloadsDir: () => Promise<string>
     }

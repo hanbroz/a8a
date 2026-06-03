@@ -10,6 +10,7 @@ interface Props {
   node: ApiNode
   isNew?: boolean
   initialInput?: string
+  dataVars?: Record<string, unknown>
   onRun?: () => string | Promise<string>
   onSave: (nodeId: string, label: string, config: string) => Promise<void>
   onDelete?: () => Promise<void>
@@ -26,7 +27,7 @@ const MIN_INPUT_W = 260
 const MIN_SETTINGS_W = 320
 
 type BranchVariableRow = {
-  kind: 'env' | 'input'
+  kind: 'env' | 'input' | 'data'
   name: string
   resolved: string | null
   rawValue?: unknown
@@ -89,7 +90,7 @@ function isEmptyBranchConfig(raw: string): boolean {
   return !source || source === '{}'
 }
 
-export default function BranchNodeModal({ node, isNew, initialInput, onRun, onSave, onDelete, onClose }: Props): JSX.Element {
+export default function BranchNodeModal({ node, isNew, initialInput, dataVars, onRun, onSave, onDelete, onClose }: Props): JSX.Element {
   const initial = parseBranchConfig(node.config)
   const emptyConfig = isEmptyBranchConfig(node.config)
   const [moduleName, setModuleName] = useState(node.label)
@@ -135,6 +136,7 @@ export default function BranchNodeModal({ node, isNew, initialInput, onRun, onSa
     if (inputValue && typeof inputValue === 'object') return inputValue as Record<string, unknown>
     return { value: inputValue }
   }, [inputValue])
+  const dataInputRecord = useMemo<Record<string, unknown>>(() => dataVars ?? {}, [dataVars])
 
   const evalResult = useMemo(() => evaluateBranch({
     mode,
@@ -143,7 +145,7 @@ export default function BranchNodeModal({ node, isNew, initialInput, onRun, onSa
     falseLabel,
     defaultRoute,
     selectedRoute,
-  }, inputValue), [defaultRoute, expression, falseLabel, inputValue, mode, selectedRoute, trueLabel])
+  }, inputValue, dataInputRecord), [dataInputRecord, defaultRoute, expression, falseLabel, inputValue, mode, selectedRoute, trueLabel])
 
   const variableRows = useMemo<BranchVariableRow[]>(() => {
     const rows: BranchVariableRow[] = []
@@ -155,13 +157,22 @@ export default function BranchNodeModal({ node, isNew, initialInput, onRun, onSa
       rows.push(row)
     }
 
-    parseTemplate(expression, {}, inputRecord).forEach(token => {
+    parseTemplate(expression, {}, inputRecord, dataInputRecord).forEach(token => {
       if (token.type === 'input') {
         addRow({
           kind: 'input',
           name: token.key,
           resolved: token.resolved,
           rawValue: resolveInputExpression(inputRecord, token.key),
+          source: 'used',
+        })
+      }
+      if (token.type === 'data') {
+        addRow({
+          kind: 'data',
+          name: token.key,
+          resolved: token.resolved,
+          rawValue: resolveInputExpression(dataInputRecord, token.key),
           source: 'used',
         })
       }
@@ -192,7 +203,7 @@ export default function BranchNodeModal({ node, isNew, initialInput, onRun, onSa
     }
 
     return rows
-  }, [expression, inputRecord, parsedInput.hasInput])
+  }, [dataInputRecord, expression, inputRecord, parsedInput.hasInput])
 
   const handleUseVariable = (row: BranchVariableRow): void => {
     if (row.kind !== 'input' || row.resolved === null) return
@@ -460,7 +471,7 @@ export default function BranchNodeModal({ node, isNew, initialInput, onRun, onSa
                   </div>
 
                   <div className="dm-field">
-                    <label className="dm-field-label">사용된 환경변수 / INPUT 변수</label>
+                    <label className="dm-field-label">사용된 환경변수 / INPUT / DATA</label>
                     {variableRows.length > 0 ? (
                       <table className="api-env-vars-table branch-vars-table">
                         <thead>
@@ -473,12 +484,17 @@ export default function BranchNodeModal({ node, isNew, initialInput, onRun, onSa
                         <tbody>
                           {variableRows.map(row => {
                             const isInput = row.kind === 'input'
+                            const isData = row.kind === 'data'
                             const isClickable = isInput && row.resolved !== null
                             const valueText = row.resolved !== null
                               ? row.resolved
                               : isInput
                                 ? 'INPUT 값 없음'
-                                : 'BRANCH 조건식은 INPUT 변수를 사용합니다'
+                                : isData
+                                  ? 'DATA 값 없음'
+                                  : 'BRANCH 조건식은 INPUT 변수를 사용합니다'
+                            const tokenText = isInput ? `[[${row.name}]]` : isData ? `<<${row.name}>>` : `{{${row.name}}}`
+                            const kindLabel = isInput ? 'INPUT' : isData ? 'DATA' : '환경'
                             return (
                               <tr
                                 key={`${row.kind}:${row.name}`}
@@ -488,12 +504,12 @@ export default function BranchNodeModal({ node, isNew, initialInput, onRun, onSa
                               >
                                 <td>
                                   <span className={`api-var-kind api-var-kind-${row.kind}`}>
-                                    {isInput ? 'INPUT' : '환경'}
+                                    {kindLabel}
                                   </span>
                                 </td>
                                 <td>
                                   <span className={`api-var-token${isInput ? ' api-input-token' : ''}${row.resolved !== null ? ' api-var-ok' : ' api-var-err'}`}>
-                                    {isInput ? `[[${row.name}]]` : `{{${row.name}}}`}
+                                    {tokenText}
                                   </span>
                                 </td>
                                 <td className={row.resolved !== null ? 'api-env-val-ok' : 'api-env-val-err'}>

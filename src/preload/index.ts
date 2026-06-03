@@ -7,6 +7,8 @@ const api = {
   file: {
     write: (path: string, content: string): Promise<{ ok: true; path: string } | { ok: false; error: string }> =>
       ipcRenderer.invoke('file:write', path, content),
+    writeXlsxDownload: (fileName: string, base64Content: string): Promise<{ ok: true; path: string } | { ok: false; error: string }> =>
+      ipcRenderer.invoke('file:write-xlsx-download', fileName, base64Content),
     open: (path: string): Promise<{ ok: true } | { ok: false; error: string }> =>
       ipcRenderer.invoke('file:open', path),
     downloadsDir: (): Promise<string> => ipcRenderer.invoke('file:downloads-dir')

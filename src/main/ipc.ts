@@ -1,6 +1,6 @@
 import { ipcMain, app, dialog, BrowserWindow, shell } from 'electron'
 import { writeFile } from 'fs/promises'
-import { dirname, extname, isAbsolute, relative, resolve } from 'path'
+import { basename, dirname, extname, isAbsolute, join, relative, resolve } from 'path'
 import * as db from './db'
 import type { EnvRow } from './db'
 
@@ -117,6 +117,35 @@ export function registerIpcHandlers(): void {
         return { ok: false as const, error: '선택한 저장 경로 또는 다운로드 폴더 안에만 저장할 수 있습니다.' }
       }
       await writeFile(targetPath, content, 'utf-8')
+      return { ok: true as const, path: targetPath }
+    } catch (err) {
+      return { ok: false as const, error: String((err as Error)?.message ?? err) }
+    }
+  })
+
+  ipcMain.handle('file:write-xlsx-download', async (_, fileName: string, base64Content: string) => {
+    try {
+      const requestedName = String(fileName ?? '')
+      const safeName = basename(requestedName)
+      if (!safeName || safeName !== requestedName || requestedName.includes('\0')) {
+        return { ok: false as const, error: 'Excel 파일명만 지정할 수 있습니다.' }
+      }
+      const ext = extname(safeName).toLowerCase()
+      if (ext !== '.xlsx') {
+        return { ok: false as const, error: 'Excel 파일은 .xlsx 확장자만 저장할 수 있습니다.' }
+      }
+      if (typeof base64Content !== 'string' || !/^[A-Za-z0-9+/=\s]+$/.test(base64Content)) {
+        return { ok: false as const, error: 'Excel 파일 내용을 해석할 수 없습니다.' }
+      }
+      const buffer = Buffer.from(base64Content, 'base64')
+      if (buffer.length === 0 || buffer.length > 100 * 1024 * 1024) {
+        return { ok: false as const, error: 'Excel 파일 크기가 허용 범위를 벗어났습니다.' }
+      }
+      const targetPath = normalizePath(join(app.getPath('downloads'), safeName))
+      if (!isInsideDir(targetPath, app.getPath('downloads'))) {
+        return { ok: false as const, error: '다운로드 폴더 안에만 저장할 수 있습니다.' }
+      }
+      await writeFile(targetPath, buffer, { flag: 'wx' })
       return { ok: true as const, path: targetPath }
     } catch (err) {
       return { ok: false as const, error: String((err as Error)?.message ?? err) }

@@ -1,6 +1,6 @@
 import { useRef, useState, useCallback, useEffect } from 'react'
 import type { CSSProperties } from 'react'
-import { IcoCopy, IcoPlay, IcoX } from '../Icon'
+import { IcoChevD, IcoCopy, IcoPlay, IcoX } from '../Icon'
 import { parseBranchConfig } from '../../utils/branch'
 
 const NODE_W = 160
@@ -10,8 +10,9 @@ const DATA_NODE_H = 72
 const MODULE_NODE_MIN_W = 160
 const MODULE_NODE_MIN_H = 72
 const SNAP_R = 20
-const MIN_ZOOM = 0.45
-const MAX_ZOOM = 1.8
+const MIN_ZOOM = 0.3
+const MAX_ZOOM = 2
+const ZOOM_PRESETS = [2, 1, 0.5, 0.3] as const
 const GRID_SIZE = 10
 const AUTO_ARRANGE_PADDING = 80
 const TILE_GAP_X = 50
@@ -21,7 +22,8 @@ type EdgeLineStyle = 'curve' | 'straight'
 type InputPortSide = 'left' | 'top'
 type OutputPortSide = 'right' | 'bottom'
 type NodeSize = { width: number; height: number }
-type EndNodePnrValue = { name: string; value: string }
+type EndNodeDisplayValue = { name: string; value: string }
+type StartNodeLoopProgress = { current: number; total: number }
 type ApiFlowItem = { id: string; index: number; label: string; method: string; url: string; rawUrl: string }
 
 function isCanvasModuleNodeType(type: ApiNode['type']): boolean {
@@ -78,8 +80,11 @@ interface Props {
   onModuleDrop: (moduleType: string, x: number, y: number) => void
   nodeStatuses?: Record<string, NodeStatus>
   branchRoutes?: Record<string, 'true' | 'false'>
-  endNodePnrValues?: Record<string, EndNodePnrValue[]>
+  endNodeDisplayValues?: Record<string, EndNodeDisplayValue[]>
+  startNodeLoopProgress?: Record<string, StartNodeLoopProgress>
   onNodeStatusClick?: (nodeId: string) => void
+  isCanvasFullscreen?: boolean
+  onCanvasFullscreenChange?: (fullscreen: boolean) => void
 }
 
 interface NodeDrag {
@@ -478,7 +483,8 @@ export default function WorkflowCanvas({
   onNodeMove, onNodeResize, onEdgeCreate, onEdgeDelete, onEdgeReconnect,
   onNodeOpen, onNodeRun, onNodeCopy, onNodePaste, onNodeDeleteRequest, canPasteNode,
   onModuleDrop,
-  nodeStatuses, branchRoutes, endNodePnrValues, onNodeStatusClick,
+  nodeStatuses, branchRoutes, endNodeDisplayValues, startNodeLoopProgress, onNodeStatusClick,
+  isCanvasFullscreen = false, onCanvasFullscreenChange,
 }: Props): JSX.Element {
   const canvasRef = useRef<HTMLDivElement>(null)
   const nodeDragRef = useRef<NodeDrag | null>(null)
@@ -501,15 +507,16 @@ export default function WorkflowCanvas({
   const [selectionBox, setSelectionBox] = useState<SelectionBox | null>(null)
   const [viewport, setViewport] = useState({ x: 0, y: 0 })
   const [zoom, setZoom] = useState(1)
-  const [copiedPnrKey, setCopiedPnrKey] = useState<string | null>(null)
+  const [copiedEndValueKey, setCopiedEndValueKey] = useState<string | null>(null)
   const [lineStyle, setLineStyle] = useState<EdgeLineStyle>(() =>
     localStorage.getItem('wf-edge-line-style') === 'straight' ? 'straight' : 'curve',
   )
   const [apiListOpen, setApiListOpen] = useState(false)
   const [floatingToolsWidth, setFloatingToolsWidth] = useState<number | null>(null)
+  const [zoomMenuOpen, setZoomMenuOpen] = useState(false)
   const [panning, setPanning] = useState(false)
   const panRef = useRef<{ startX: number; startY: number; vx0: number; vy0: number } | null>(null)
-  const copiedPnrTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const copiedEndValueTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
 
   const canvasRect = () => canvasRef.current?.getBoundingClientRect()
 
@@ -525,6 +532,7 @@ export default function WorkflowCanvas({
   const onCanvasMouseDown = useCallback((e: React.MouseEvent) => {
     canvasRef.current?.focus({ preventScroll: true })
     const t = e.target as HTMLElement
+    if (!t.closest('.wf-floating-tools')) setZoomMenuOpen(false)
     if (e.button === 0) {
       if (!t.closest('.wf-node, .wf-port, .wf-edge-endpoint, .wf-edge-delete-btn, .wf-floating-tools') && t.tagName.toLowerCase() !== 'path') {
         const world = clientToWorld(e.clientX, e.clientY)
@@ -550,7 +558,8 @@ export default function WorkflowCanvas({
   }, [clientToWorld, selectedNodeIds, viewport])
 
   const onCanvasWheel = useCallback((e: React.WheelEvent) => {
-    if (!e.ctrlKey) return
+    const target = e.target as HTMLElement
+    if (target.closest('.wf-floating-tools')) return
     e.preventDefault()
     const rect = canvasRect()
     if (!rect) return
@@ -565,6 +574,37 @@ export default function WorkflowCanvas({
       y: e.clientY - rect.top - worldY * nextZoom,
     })
   }, [viewport, zoom])
+
+  const setZoomFromCenter = useCallback((value: number): void => {
+    const nextZoom = clamp(value, MIN_ZOOM, MAX_ZOOM)
+    const rect = canvasRect()
+    if (!rect) {
+      setZoom(nextZoom)
+      return
+    }
+
+    const centerX = rect.width / 2
+    const centerY = rect.height / 2
+    const worldX = (centerX - viewport.x) / zoom
+    const worldY = (centerY - viewport.y) / zoom
+    setZoom(nextZoom)
+    setViewport({
+      x: centerX - worldX * nextZoom,
+      y: centerY - worldY * nextZoom,
+    })
+  }, [viewport, zoom])
+
+  const selectZoomPreset = useCallback((value: number): void => {
+    setZoomFromCenter(value)
+    setZoomMenuOpen(false)
+    canvasRef.current?.focus({ preventScroll: true })
+  }, [setZoomFromCenter])
+
+  const toggleCanvasFullscreen = useCallback((): void => {
+    onCanvasFullscreenChange?.(!isCanvasFullscreen)
+    setZoomMenuOpen(false)
+    canvasRef.current?.focus({ preventScroll: true })
+  }, [isCanvasFullscreen, onCanvasFullscreenChange])
 
   useEffect(() => {
     setPositions(prev => {
@@ -613,7 +653,7 @@ export default function WorkflowCanvas({
 
   useEffect(() => {
     return () => {
-      if (copiedPnrTimerRef.current) clearTimeout(copiedPnrTimerRef.current)
+      if (copiedEndValueTimerRef.current) clearTimeout(copiedEndValueTimerRef.current)
     }
   }, [])
 
@@ -622,20 +662,20 @@ export default function WorkflowCanvas({
     setSelectedNodeIds(prev => prev.filter(id => nodeIds.has(id)))
   }, [nodes])
 
-  const markPnrCopied = useCallback((key: string): void => {
-    if (copiedPnrTimerRef.current) clearTimeout(copiedPnrTimerRef.current)
-    setCopiedPnrKey(key)
-    copiedPnrTimerRef.current = setTimeout(() => {
-      setCopiedPnrKey(prev => prev === key ? null : prev)
-      copiedPnrTimerRef.current = null
+  const markEndValueCopied = useCallback((key: string): void => {
+    if (copiedEndValueTimerRef.current) clearTimeout(copiedEndValueTimerRef.current)
+    setCopiedEndValueKey(key)
+    copiedEndValueTimerRef.current = setTimeout(() => {
+      setCopiedEndValueKey(prev => prev === key ? null : prev)
+      copiedEndValueTimerRef.current = null
     }, 1200)
   }, [])
 
-  const onPnrCopy = useCallback((e: React.MouseEvent, key: string, value: string): void => {
+  const onEndValueCopy = useCallback((e: React.MouseEvent, key: string, value: string): void => {
     e.preventDefault()
     e.stopPropagation()
-    void copyText(value).then(() => markPnrCopied(key))
-  }, [markPnrCopied])
+    void copyText(value).then(() => markEndValueCopied(key))
+  }, [markEndValueCopied])
 
   const onNodeDown = useCallback((e: React.MouseEvent, nodeId: string) => {
     if (e.button !== 0) return
@@ -957,8 +997,9 @@ export default function WorkflowCanvas({
     const worldTop = Math.max(0, -viewport.y / zoom) + safePadding
     const usableW = Math.max(1, visibleW - safePadding * 2)
     const usableH = Math.max(1, visibleH - safePadding * 2)
-    const maxNodeW = Math.max(...orderedNodes.map(node => nW(sizes[node.id] ?? node)))
-    const maxNodeH = Math.max(...orderedNodes.map(node => nH(sizes[node.id] ?? node)))
+    const nodeWithSize = (node: ApiNode): ApiNode => ({ ...node, ...(sizes[node.id] ?? {}) })
+    const maxNodeW = Math.max(...orderedNodes.map(node => nW(nodeWithSize(node))))
+    const maxNodeH = Math.max(...orderedNodes.map(node => nH(nodeWithSize(node))))
     const maxColsByWidth = Math.max(1, Math.floor((usableW + TILE_GAP_X) / (maxNodeW + TILE_GAP_X)))
     const targetAspect = usableW / Math.max(1, usableH)
     const idealCols = Math.ceil(Math.sqrt(orderedNodes.length * targetAspect * (maxNodeH / maxNodeW)))
@@ -979,9 +1020,10 @@ export default function WorkflowCanvas({
     orderedNodes.forEach((node, index) => {
       const col = index % cols
       const row = Math.floor(index / cols)
+      const sizedNode = nodeWithSize(node)
       nextPositions[node.id] = {
-        x: snapToGrid(startX + col * (maxNodeW + colGap) + (maxNodeW - nW(sizes[node.id] ?? node)) / 2),
-        y: snapToGrid(startY + row * (maxNodeH + rowGap) + (maxNodeH - nH(sizes[node.id] ?? node)) / 2),
+        x: snapToGrid(startX + col * (maxNodeW + colGap) + (maxNodeW - nW(sizedNode)) / 2),
+        y: snapToGrid(startY + row * (maxNodeH + rowGap) + (maxNodeH - nH(sizedNode)) / 2),
       }
     })
 
@@ -994,13 +1036,13 @@ export default function WorkflowCanvas({
 
   const liveNodes = nodes.map(n => {
     const size = sizes[n.id] ?? { width: nW(n), height: nH(n) }
-    const hasEndPnr = n.type === 'end' && (endNodePnrValues?.[n.id]?.length ?? 0) > 0
+    const endDisplayCount = n.type === 'end' ? endNodeDisplayValues?.[n.id]?.length ?? 0 : 0
     return {
       ...n,
       x: positions[n.id]?.x ?? n.x,
       y: positions[n.id]?.y ?? n.y,
-      width: hasEndPnr ? Math.max(size.width, 190) : size.width,
-      height: size.height,
+      width: endDisplayCount > 0 ? Math.max(size.width, 220) : size.width,
+      height: endDisplayCount > 0 ? Math.max(size.height, 54 + endDisplayCount * 26) : size.height,
     }
   })
   const apiFlowItems = buildApiFlowItems(liveNodes, edges)
@@ -1016,6 +1058,11 @@ export default function WorkflowCanvas({
 
   const onCanvasKeyDown = useCallback((e: React.KeyboardEvent<HTMLDivElement>) => {
     const key = e.key.toLowerCase()
+    if (key === 'escape' && zoomMenuOpen) {
+      e.preventDefault()
+      setZoomMenuOpen(false)
+      return
+    }
     if (key === 'delete' && selectedCopyableNode && onNodeDeleteRequest) {
       e.preventDefault()
       onNodeDeleteRequest(selectedCopyableNode.id)
@@ -1030,7 +1077,7 @@ export default function WorkflowCanvas({
       e.preventDefault()
       onNodePaste()
     }
-  }, [canPasteNode, onNodeCopy, onNodeDeleteRequest, onNodePaste, selectedCopyableNode, selectedCopyableNodeIds])
+  }, [canPasteNode, onNodeCopy, onNodeDeleteRequest, onNodePaste, selectedCopyableNode, selectedCopyableNodeIds, zoomMenuOpen])
 
   // Snap indicators: which input/output ports to highlight
   const snapInputId = connecting?.snapTo ?? (reconnecting?.dragging === 'target' ? reconnecting.snapTo : null)
@@ -1189,7 +1236,10 @@ export default function WorkflowCanvas({
         <button
           type="button"
           className={`wf-floating-tool-btn${apiListOpen ? ' active' : ''}`}
-          onClick={() => setApiListOpen(open => !open)}
+          onClick={() => {
+            setApiListOpen(open => !open)
+            setZoomMenuOpen(false)
+          }}
           title="연결선 실행 순서에 따른 API 목록"
         >
           API 목록
@@ -1212,7 +1262,49 @@ export default function WorkflowCanvas({
             직선
           </button>
         </div>
-        <span className="wf-zoom-indicator">{Math.round(zoom * 100)}%</span>
+        <div className="wf-zoom-menu-wrap">
+          <button
+            type="button"
+            className={`wf-zoom-indicator${zoomMenuOpen ? ' active' : ''}`}
+            onClick={() => {
+              setZoomMenuOpen(open => !open)
+              setApiListOpen(false)
+            }}
+            title="캔버스 확대비율"
+            aria-haspopup="menu"
+            aria-expanded={zoomMenuOpen}
+          >
+            <span>{Math.round(zoom * 100)}%</span>
+            <IcoChevD size={10} />
+          </button>
+          {zoomMenuOpen && (
+            <div className="wf-zoom-menu" role="menu">
+              {onCanvasFullscreenChange && (
+                <>
+                  <button type="button" className="wf-zoom-menu-option" role="menuitem" onClick={toggleCanvasFullscreen}>
+                    {isCanvasFullscreen ? '닫기' : '전체화면'}
+                  </button>
+                  <div className="wf-zoom-menu-divider" />
+                </>
+              )}
+              {ZOOM_PRESETS.map(value => {
+                const percent = Math.round(value * 100)
+                const active = Math.round(zoom * 100) === percent
+                return (
+                  <button
+                    key={value}
+                    type="button"
+                    className={`wf-zoom-menu-option${active ? ' active' : ''}`}
+                    role="menuitem"
+                    onClick={() => selectZoomPreset(value)}
+                  >
+                    {percent}%
+                  </button>
+                )
+              })}
+            </div>
+          )}
+        </div>
         </div>
         {apiListOpen && (
           <div className="wf-api-flow-list">
@@ -1546,12 +1638,13 @@ export default function WorkflowCanvas({
           )
         }
 
-        const endPnrList = node.type === 'end' ? endNodePnrValues?.[node.id] ?? [] : []
+        const endDisplayList = node.type === 'end' ? endNodeDisplayValues?.[node.id] ?? [] : []
+        const startProgress = node.type === 'start' ? startNodeLoopProgress?.[node.id] : undefined
 
         return (
           <div
             key={node.id}
-            className={`wf-node wf-node-${node.type}${endPnrList.length > 0 ? ' wf-node-end-has-pnr' : ''}${selectedNodeIdSet.has(node.id) ? ' wf-node-selected' : ''}`}
+            className={`wf-node wf-node-${node.type}${endDisplayList.length > 0 ? ' wf-node-end-has-vars' : ''}${selectedNodeIdSet.has(node.id) ? ' wf-node-selected' : ''}`}
             data-dragging={draggingNodeIdSet.has(node.id) ? 'true' : undefined}
             style={nodeStyle(node)}
             onMouseDown={e => onNodeDown(e, node.id)}
@@ -1562,27 +1655,36 @@ export default function WorkflowCanvas({
               {node.type === 'start' ? <IcoPlay size={13} /> : <StopIcon />}
             </div>
             <div className="wf-node-terminal-content">
-              <span className="wf-node-label">{node.label}</span>
-              {endPnrList.length > 0 && (
+              {startProgress ? (
+                <div className="wf-node-start-title">
+                  <span className="wf-node-label">{node.label}</span>
+                  <span className="wf-node-start-progress" title={`반복 실행 ${startProgress.current}/${startProgress.total}`}>
+                    {startProgress.current}/{startProgress.total}
+                  </span>
+                </div>
+              ) : (
+                <span className="wf-node-label">{node.label}</span>
+              )}
+              {endDisplayList.length > 0 && (
                 <div
-                  className="wf-node-end-pnr-list"
+                  className="wf-node-end-var-list"
                   onMouseDown={e => e.stopPropagation()}
-                  title={endPnrList.map(item => `${item.name}: ${item.value}`).join('\n')}
+                  title={endDisplayList.map(item => `${item.name}: ${item.value}`).join('\n')}
                 >
-                  {endPnrList.map(item => {
-                    const pnrKey = `${node.id}:${item.name}:${item.value}`
-                    const copied = copiedPnrKey === pnrKey
+                  {endDisplayList.map(item => {
+                    const valueKey = `${node.id}:${item.name}:${item.value}`
+                    const copied = copiedEndValueKey === valueKey
                     return (
-                      <span key={`${item.name}:${item.value}`} className="wf-node-end-pnr-chip">
-                        <span className="wf-node-end-pnr-name">PNR</span>
-                        <span className="wf-node-end-pnr-value">{item.value}</span>
+                      <span key={`${item.name}:${item.value}`} className="wf-node-end-var-chip">
+                        <span className="wf-node-end-var-name">{item.name}</span>
+                        <span className="wf-node-end-var-value">{item.value}</span>
                         <button
                           type="button"
-                          className={`wf-node-end-pnr-copy${copied ? ' copied' : ''}`}
+                          className={`wf-node-end-var-copy${copied ? ' copied' : ''}`}
                           onMouseDown={e => e.stopPropagation()}
                           onDoubleClick={e => e.stopPropagation()}
-                          onClick={e => onPnrCopy(e, pnrKey, item.value)}
-                          title={copied ? '복사됨' : 'PNR 복사'}
+                          onClick={e => onEndValueCopy(e, valueKey, item.value)}
+                          title={copied ? '복사됨' : `${item.name} 복사`}
                           aria-label={`${item.name} 값 복사`}
                         >
                           <IcoCopy size={11} />

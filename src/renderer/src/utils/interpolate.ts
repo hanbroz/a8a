@@ -2,6 +2,7 @@ export type Token =
   | { type: 'text'; text: string }
   | { type: 'env'; name: string; resolved: string | null }
   | { type: 'input'; key: string; resolved: string | null }
+  | { type: 'data'; key: string; resolved: string | null }
 
 type PathPart = string | number
 
@@ -165,9 +166,10 @@ export function parseTemplate(
   template: string,
   envVars: Record<string, string> = {},
   inputData: Record<string, unknown> = {},
+  dataVars: Record<string, unknown> = inputData,
 ): Token[] {
   const tokens: Token[] = []
-  const re = /\{\{([\s\S]*?)\}\}|\[\[([\s\S]*?)\]\]/g
+  const re = /\{\{([\s\S]*?)\}\}|\[\[([\s\S]*?)\]\]|<<([\s\S]*?)>>/g
   let last = 0
   let m: RegExpExecArray | null
 
@@ -184,6 +186,11 @@ export function parseTemplate(
       const val = resolveInputExpression(inputData, key)
       const resolved = stringifyTemplateValue(val)
       tokens.push({ type: 'input', key, resolved })
+    } else if (m[3] !== undefined) {
+      const key = m[3].trim()
+      const val = resolveInputExpression(dataVars, key)
+      const resolved = stringifyTemplateValue(val)
+      tokens.push({ type: 'data', key, resolved })
     }
     last = m.index + m[0].length
   }
@@ -199,6 +206,7 @@ export function resolveTemplate(
   template: string,
   envVars: Record<string, string> = {},
   inputData: Record<string, unknown> = {},
+  dataVars: Record<string, unknown> = inputData,
 ): string {
   return template
     .replace(/\{\{([^}]+)\}\}/g, (_, name: string) => {
@@ -210,6 +218,12 @@ export function resolveTemplate(
       const resolved = stringifyTemplateValue(resolveInputExpression(inputData, k))
       if (resolved !== null) return resolved
       return `[[${k}]]`
+    })
+    .replace(/<<([\s\S]*?)>>/g, (_, key: string) => {
+      const k = key.trim()
+      const resolved = stringifyTemplateValue(resolveInputExpression(dataVars, k))
+      if (resolved !== null) return resolved
+      return `<<${k}>>`
     })
 }
 

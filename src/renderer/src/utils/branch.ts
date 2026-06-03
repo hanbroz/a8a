@@ -98,7 +98,7 @@ export function parseBranchConfig(raw: string): BranchConfig {
   }
 }
 
-export function evaluateBranch(config: BranchConfig, input: unknown): BranchEvalResult {
+export function evaluateBranch(config: BranchConfig, input: unknown, dataVars?: Record<string, unknown>): BranchEvalResult {
   if (config.mode === 'manual') {
     const route: BranchRouteKey = config.selectedRoute === 'false' ? 'false' : 'true'
     return { route, matched: route === 'true', value: route === 'true' }
@@ -112,16 +112,17 @@ export function evaluateBranch(config: BranchConfig, input: unknown): BranchEval
 
   try {
     const inputRecord = inputAsRecord(input)
-    const comparison = expression.match(/^\s*\[\[([\s\S]*?)\]\]\s*(===|!==|==|!=|>=|<=|>|<)\s*([\s\S]+?)\s*$/)
+    const dataRecord = dataVars ?? inputRecord
+    const comparison = expression.match(/^\s*(?:\[\[([\s\S]*?)\]\]|<<([\s\S]*?)>>)\s*(===|!==|==|!=|>=|<=|>|<)\s*([\s\S]+?)\s*$/)
     if (comparison) {
-      const value = resolveInputExpression(inputRecord, comparison[1].trim())
-      const matched = compare(value, comparison[2], parseLiteral(comparison[3]))
+      const value = resolveInputExpression(comparison[2] !== undefined ? dataRecord : inputRecord, (comparison[1] ?? comparison[2]).trim())
+      const matched = compare(value, comparison[3], parseLiteral(comparison[4]))
       return { route: matched ? 'true' : 'false', matched, value }
     }
 
-    const singleValue = expression.match(/^\s*\[\[([\s\S]*?)\]\]\s*$/)
+    const singleValue = expression.match(/^\s*(?:\[\[([\s\S]*?)\]\]|<<([\s\S]*?)>>)\s*$/)
     const value = singleValue
-      ? resolveInputExpression(inputRecord, singleValue[1].trim())
+      ? resolveInputExpression(singleValue[2] !== undefined ? dataRecord : inputRecord, (singleValue[1] ?? singleValue[2]).trim())
       : resolveInputExpression(inputRecord, expression)
     const matched = isTruthy(value)
     return { route: matched ? 'true' : 'false', matched, value }

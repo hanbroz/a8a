@@ -9,6 +9,23 @@
   overflow: hidden;
 }
 
+.app-canvas-fullscreen .sidebar,
+.app-canvas-fullscreen .topbar,
+.app-canvas-fullscreen .log-panel,
+.app-canvas-fullscreen .update-notice {
+  display: none;
+}
+
+.app-canvas-fullscreen .workspace {
+  width: 100%;
+  height: 100%;
+}
+
+.app-canvas-fullscreen .workspace-body,
+.app-canvas-fullscreen .canvas-wrap {
+  height: 100%;
+}
+
 /* ── Sidebar ─────────────────────────────────────── */
 .sidebar {
   background: var(--bg-2);

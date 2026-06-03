@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef, useCallback } from 'react'
+import { useState, useEffect, useRef, useCallback, useMemo } from 'react'
 import { flushSync } from 'react-dom'
 import { applyInputMappings, mergeEnvVars, parseTemplate, resolveInputExpression, resolveTemplate } from './utils/interpolate'
 import { applyApiAuth, getApiAuthTemplateValues } from './utils/apiAuth'
@@ -32,6 +32,7 @@ import type { Environment } from './components/env/EnvSection'
 import type { ProjectItem } from './components/sidebar/ProjectModal'
 import type { WorkspaceModalItem } from './components/sidebar/WorkspaceModal'
 import { randomId } from './utils/id'
+import { buildExcelWorkbookBase64 } from './utils/tabularData'
 
 // Read a DATA node's output value. Accepts both new shape (`{ output: string }`)
 // and legacy shape (`{ items, excelData }`). On any failure returns an empty array.
@@ -107,11 +108,13 @@ interface CanvasExecution {
   moduleVars: Record<string, Record<string, unknown>>
   branchRoutes?: Record<string, 'true' | 'false'>
   envVars: Record<string, string>
+  persistedEnvVarsByEnvId?: Record<string, Environment['vars']>
   usedVariables: Record<string, ReportVariable>
   execLogs: LogEntry[]
   startedAt: number
   plan: string[]
   step: number
+  loop?: ExecutionLoopContext
   pendingSelectInput: unknown | null
   pendingBranchChoice?: {
     input: unknown
@@ -122,7 +125,17 @@ interface CanvasExecution {
   pendingLogEntryId?: string | null
 }
 
-type EndNodePnrValue = {
+interface ExecutionLoopContext {
+  startNodeId: string
+  rows: Record<string, unknown>[]
+  index: number
+  total: number
+  stopOnFailure: boolean
+  logStartIndex: number
+  iterationStartedAt: number
+}
+
+type EndNodeDisplayValue = {
   name: string
   value: string
 }
@@ -131,13 +144,7 @@ function usedVariableKey(kind: ReportVariable['kind'], name: string): string {
   return `${kind}:${name}`
 }
 
-function isPnrEnvName(name: string): boolean {
-  const normalized = name.trim().toLowerCase()
-  const compact = normalized.replace(/[_\-\s]/g, '')
-  return normalized === 'pnr' || compact === 'recordlocator'
-}
-
-function formatPnrDisplayValue(value: unknown): string | null {
+function formatDisplayValue(value: unknown): string | null {
   if (value === null || value === undefined) return null
   if (typeof value === 'string') {
     const trimmed = value.trim()
@@ -153,21 +160,140 @@ function formatPnrDisplayValue(value: unknown): string | null {
   }
 }
 
-function extractPnrEnvValues(variables: ReportVariable[]): EndNodePnrValue[] {
+function extractEndNodeDisplayValues(
+  selectedKeys: string[] | undefined,
+  runtimeEnvVars: Record<string, string>,
+  configuredEnvVars: Record<string, string>,
+): EndNodeDisplayValue[] {
   const seen = new Set<string>()
-  return variables
-    .filter(variable => variable.kind === 'env' && isPnrEnvName(variable.name))
-    .map(variable => {
-      const value = formatPnrDisplayValue(variable.value)
-      return value ? { name: variable.name, value } : null
-    })
-    .filter((item): item is EndNodePnrValue => {
-      if (!item) return false
-      const dedupeKey = `${item.name.toLowerCase()}:${item.value}`
-      if (seen.has(dedupeKey)) return false
-      seen.add(dedupeKey)
+  return (selectedKeys ?? [])
+    .map(key => key.trim())
+    .filter(Boolean)
+    .filter(key => {
+      const normalized = key.toLowerCase()
+      if (seen.has(normalized)) return false
+      seen.add(normalized)
       return true
     })
+    .map(variable => {
+      const rawValue = Object.prototype.hasOwnProperty.call(runtimeEnvVars, variable)
+        ? runtimeEnvVars[variable]
+        : configuredEnvVars[variable]
+      const value = formatDisplayValue(rawValue)
+      return value ? { name: variable, value } : null
+    })
+    .filter((item): item is EndNodeDisplayValue => !!item)
+}
+
+function appendRepeatNoSuffix(filename: string, no: unknown): string {
+  const value = formatDisplayValue(no)
+  return value ? `${filename} - ${value}` : filename
+}
+
+function safeDownloadFilePart(value: string): string {
+  return value.replace(/[\\/:*?"<>|]/g, '_').replace(/\s+/g, ' ').trim() || 'a8a'
+}
+
+function mergeConfiguredEnvVarsForDisplay(
+  environments: Array<{ id: string; isBase: boolean; vars: Array<{ key: string; value: string }> }>,
+  activeEnvId?: string,
+): Record<string, string> {
+  const result: Record<string, string> = {}
+  const apply = (env?: { vars: Array<{ key: string; value: string }> }): void => {
+    env?.vars.forEach(variable => {
+      const key = variable.key.trim()
+      if (key) result[key] = variable.value
+    })
+  }
+  apply(environments.find(env => env.isBase))
+  apply(environments.find(env => env.id === activeEnvId && !env.isBase))
+  return result
+}
+
+function normalizeStartRepeat(raw: unknown): StartRepeatConfig {
+  const parsed = raw && typeof raw === 'object' ? raw as Partial<StartRepeatConfig> : {}
+  const data = parsed.data && typeof parsed.data === 'object'
+    ? parsed.data as Partial<StartRepeatData>
+    : null
+  const rows = Array.isArray(data?.rows)
+    ? data.rows.filter(row => row && typeof row === 'object' && !Array.isArray(row)) as Record<string, unknown>[]
+    : []
+  const columns = Array.isArray(data?.columns) ? data.columns.map(String).filter(Boolean) : []
+  return {
+    enabled: parsed.enabled === true,
+    mode: parsed.mode === 'data' ? 'data' : 'count',
+    count: Math.max(1, Math.floor(Number(parsed.count) || 1)),
+    stopOnFailure: parsed.stopOnFailure !== false,
+    data: data && rows.length > 0
+      ? {
+          fileName: typeof data.fileName === 'string' ? data.fileName : 'data',
+          columns: columns.length > 0 ? columns : Array.from(new Set(rows.flatMap(row => Object.keys(row)))),
+          rows: rows.map((row, index) => {
+            const { no: _reservedNo, ...rest } = row
+            return { no: index + 1, ...rest }
+          }),
+        }
+      : null,
+  }
+}
+
+function parseStartConfig(raw: string): StartConfig {
+  try {
+    const parsed = JSON.parse(raw || '{}') as Partial<StartConfig>
+    return {
+      mode: parsed.mode === 'schedule' ? 'schedule' : 'manual',
+      schedule: parsed.schedule as StartSchedule,
+      repeat: normalizeStartRepeat(parsed.repeat),
+    }
+  } catch {
+    return {
+      mode: 'manual',
+      schedule: {
+        type: 'daily',
+        time: '09:00',
+        weekdays: [1],
+        monthDay: 1,
+        cron: '0 9 * * *',
+      },
+      repeat: normalizeStartRepeat(null),
+    }
+  }
+}
+
+type RepeatRowsResult =
+  | { ok: true; rows: Record<string, unknown>[] | null; stopOnFailure: boolean }
+  | { ok: false; error: string }
+
+function buildRepeatRows(startNode: ApiNode | undefined): RepeatRowsResult {
+  if (!startNode) return { ok: true, rows: null, stopOnFailure: true }
+  const repeat = parseStartConfig(startNode.config).repeat
+  if (!repeat?.enabled) return { ok: true, rows: null, stopOnFailure: true }
+  if (repeat.mode === 'data') {
+    const rows = repeat.data?.rows ?? []
+    if (rows.length === 0) return { ok: false, error: 'START 반복 실행 데이터가 없습니다. 데이터를 다시 첨부해 주세요.' }
+    return { ok: true, rows, stopOnFailure: repeat.stopOnFailure }
+  }
+  return {
+    ok: true,
+    rows: Array.from({ length: Math.max(1, repeat.count) }, (_, index) => ({ no: index + 1 })),
+    stopOnFailure: repeat.stopOnFailure,
+  }
+}
+
+function getStartRepeatPreviewRow(startNode: ApiNode | undefined): Record<string, unknown> | null {
+  const result = buildRepeatRows(startNode)
+  if (!result.ok || !result.rows || result.rows.length === 0) return null
+  return result.rows[0]
+}
+
+function repeatDataSignature(config: string): string {
+  const repeat = parseStartConfig(config).repeat
+  if (!repeat?.enabled || repeat.mode !== 'data' || !repeat.data) return ''
+  return JSON.stringify({
+    fileName: repeat.data.fileName,
+    columns: repeat.data.columns,
+    rows: repeat.data.rows,
+  })
 }
 
 function recordUsedTemplateVariables(
@@ -175,11 +301,12 @@ function recordUsedTemplateVariables(
   templates: string[],
   envVars: Record<string, string>,
   inputData: Record<string, unknown>,
+  dataVars: Record<string, unknown> = inputData,
 ): void {
   templates
     .filter(template => template.trim().length > 0)
     .forEach(template => {
-      parseTemplate(template, envVars, inputData).forEach(token => {
+      parseTemplate(template, envVars, inputData, dataVars).forEach(token => {
         if (token.type === 'env') {
           usedVariables[usedVariableKey('env', token.name)] = {
             kind: 'env',
@@ -191,6 +318,14 @@ function recordUsedTemplateVariables(
           const value = resolveInputExpression(inputData, token.key)
           usedVariables[usedVariableKey('input', token.key)] = {
             kind: 'input',
+            name: token.key,
+            value: value === undefined ? null : value,
+          }
+        }
+        if (token.type === 'data') {
+          const value = resolveInputExpression(dataVars, token.key)
+          usedVariables[usedVariableKey('data', token.key)] = {
+            kind: 'data',
             name: token.key,
             value: value === undefined ? null : value,
           }
@@ -217,12 +352,13 @@ function recordUsedInputVariable(
   usedVariables: Record<string, ReportVariable>,
   name: string,
   inputData: Record<string, unknown>,
+  kind: Extract<ReportVariable['kind'], 'input' | 'data'> = 'input',
 ): void {
   const trimmed = name.trim()
   if (!trimmed) return
   const value = resolveInputExpression(inputData, trimmed)
-  usedVariables[usedVariableKey('input', trimmed)] = {
-    kind: 'input',
+  usedVariables[usedVariableKey(kind, trimmed)] = {
+    kind,
     name: trimmed,
     value: value === undefined ? null : value,
   }
@@ -232,16 +368,25 @@ function recordUsedBranchVariables(
   usedVariables: Record<string, ReportVariable>,
   expression: string,
   input: unknown,
+  dataVars?: Record<string, unknown>,
 ): void {
   const inputData = input && typeof input === 'object' ? input as Record<string, unknown> : { value: input }
-  const comparison = expression.match(/^\s*\[\[([\s\S]*?)\]\]\s*(?:===|!==|==|!=|>=|<=|>|<)\s*([\s\S]+?)\s*$/)
+  const dataInput = dataVars ?? inputData
+  const comparison = expression.match(/^\s*(?:\[\[([\s\S]*?)\]\]|<<([\s\S]*?)>>)\s*(?:===|!==|==|!=|>=|<=|>|<)\s*([\s\S]+?)\s*$/)
   if (comparison) {
-    recordUsedInputVariable(usedVariables, comparison[1], inputData)
+    const isData = comparison[2] !== undefined
+    recordUsedInputVariable(usedVariables, comparison[1] ?? comparison[2], isData ? dataInput : inputData, isData ? 'data' : 'input')
     return
   }
 
-  const singleValue = expression.match(/^\s*\[\[([\s\S]*?)\]\]\s*$/)
-  recordUsedInputVariable(usedVariables, singleValue ? singleValue[1] : expression, inputData)
+  const singleValue = expression.match(/^\s*(?:\[\[([\s\S]*?)\]\]|<<([\s\S]*?)>>)\s*$/)
+  const isData = singleValue?.[2] !== undefined
+  recordUsedInputVariable(
+    usedVariables,
+    singleValue ? (singleValue[1] ?? singleValue[2]) : expression,
+    isData ? dataInput : inputData,
+    isData ? 'data' : 'input',
+  )
 }
 
 function finalizeUsedVariables(
@@ -787,6 +932,20 @@ function mergeIncomingModuleVars(
   }), {})
 }
 
+function buildRuntimeInputContext(
+  rawInput: unknown,
+  upstreamModuleVars: Record<string, unknown>,
+): unknown {
+  if (Object.keys(upstreamModuleVars).length === 0) return rawInput
+  if (Array.isArray(rawInput)) {
+    return Object.assign([...rawInput], upstreamModuleVars)
+  }
+  if (rawInput && typeof rawInput === 'object') {
+    return { ...(rawInput as Record<string, unknown>), ...upstreamModuleVars }
+  }
+  return { value: rawInput, ...upstreamModuleVars }
+}
+
 function buildApiTemplateItems(
   rawInput: unknown,
   incomingEdges: ApiEdge[],
@@ -850,6 +1009,7 @@ export default function App(): JSX.Element {
   const [theme, setTheme] = useState<Theme>('dark')
   const [sidebarLayout, setSidebarLayout] = useState<SidebarLayout>('full')
   const [logState, setLogState] = useState<LogState>('collapsed')
+  const [isCanvasFullscreen, setCanvasFullscreen] = useState(false)
   const [sidebarWidth, setSidebarWidth] = useState<number>(() => {
     try {
       const saved = localStorage.getItem('sidebar-width')
@@ -896,7 +1056,8 @@ export default function App(): JSX.Element {
   const [execLogs, setExecLogs] = useState<LogEntry[]>([])
   const [nodeStatuses, setNodeStatuses] = useState<Record<string, NodeStatus>>({})
   const [activeBranchRoutes, setActiveBranchRoutes] = useState<Record<string, 'true' | 'false'>>({})
-  const [endNodePnrValues, setEndNodePnrValues] = useState<Record<string, EndNodePnrValue[]>>({})
+  const [endNodeDisplayValues, setEndNodeDisplayValues] = useState<Record<string, EndNodeDisplayValue[]>>({})
+  const [startRepeatRowStates, setStartRepeatRowStates] = useState<Record<string, Record<number, StartRepeatRowRunState>>>({})
   const [activeLogNodeId, setActiveLogNodeId] = useState<string | null>(null)
   const [downloadingReport, setDownloadingReport] = useState(false)
   const [savedReport, setSavedReport] = useState<{ path: string } | null>(null)
@@ -1008,6 +1169,31 @@ export default function App(): JSX.Element {
         activeProjectWs.activeEnvId,
       )
     : {}
+  const activeProjectEnvDisplayVars = activeProjectWs
+    ? mergeConfiguredEnvVarsForDisplay(activeProjectWs.environments, activeProjectWs.activeEnvId)
+    : {}
+  const activeProjectEnvDisplayKeys = activeProjectWs
+    ? (() => {
+        const keys = Object.keys(activeProjectEnvDisplayVars)
+        return keys.sort((a, b) => a.localeCompare(b))
+      })()
+    : []
+  const startRepeatPreviewData = useMemo(
+    () => getStartRepeatPreviewRow(activeNodes.find(node => node.type === 'start')) ?? undefined,
+    [activeNodes],
+  )
+  const startNodeLoopProgress = canvasExecution?.loop
+    ? (() => {
+        const startNodeId = activeNodes.find(node => node.type === 'start')?.id
+        if (!startNodeId) return undefined
+        return {
+          [startNodeId]: {
+            current: canvasExecution.loop.index + 1,
+            total: canvasExecution.loop.total,
+          },
+        }
+      })()
+    : undefined
 
   useEffect(() => {
     // 프로젝트가 바뀌면 이전 프로젝트의 실행 상태(진행 중 실행/로그/상태 배지/분기 경로)를
@@ -1016,7 +1202,8 @@ export default function App(): JSX.Element {
     setExecLogs([])
     setNodeStatuses({})
     setActiveBranchRoutes({})
-    setEndNodePnrValues({})
+    setEndNodeDisplayValues({})
+    setStartRepeatRowStates({})
     if (!activeProject) { setActiveNodes([]); setActiveEdges([]); return }
     // 프로젝트 전환 경쟁 상태 방지: 로드가 끝나기 전에 다른 프로젝트로 바꾸면
     // 뒤늦게 도착한 응답이 현재 캔버스를 덮어쓰고, 엉뚱한 프로젝트의 엣지를
@@ -1120,8 +1307,18 @@ export default function App(): JSX.Element {
   }, [activeNodes])
 
   const handleNodeSave = async (nodeId: string, config: string): Promise<void> => {
+    const node = activeNodes.find(n => n.id === nodeId)
+    const shouldResetRepeatRows = node?.type === 'start' && repeatDataSignature(node.config) !== repeatDataSignature(config)
     await window.api.node.updateConfig(nodeId, config)
     setActiveNodes(prev => prev.map(n => n.id === nodeId ? { ...n, config } : n))
+    if (shouldResetRepeatRows) {
+      setStartRepeatRowStates(prev => {
+        if (!prev[nodeId]) return prev
+        const next = { ...prev }
+        delete next[nodeId]
+        return next
+      })
+    }
   }
 
   const handleDataNodeSave = async (nodeId: string, label: string, config: string): Promise<void> => {
@@ -1336,6 +1533,7 @@ export default function App(): JSX.Element {
 
     const envVars: Record<string, string> = { ...activeProjectEnvVars }
     const moduleVarsMap: Record<string, Record<string, unknown>> = {}
+    const previewDataVars = getStartRepeatPreviewRow(activeNodes.find(node => node.type === 'start')) ?? {}
     const visiting = new Set<string>()
 
     const runNode = async (nodeId: string): Promise<unknown> => {
@@ -1355,7 +1553,13 @@ export default function App(): JSX.Element {
         : upstreamEdge ? (moduleVarsMap[upstreamEdge.sourceNodeId] ?? {}) : {}
       const inputArray: unknown[] = upstream === null ? [] : Array.isArray(upstream) ? upstream : [upstream]
 
-      if (node.type === 'start' || node.type === 'end') {
+      if (node.type === 'start') {
+        const startPreviewRow = getStartRepeatPreviewRow(node)
+        moduleVarsMap[nodeId] = startPreviewRow ? { ...startPreviewRow } : { ...upstreamModuleVars }
+        visiting.delete(nodeId)
+        return startPreviewRow ?? upstream
+      }
+      if (node.type === 'end') {
         moduleVarsMap[nodeId] = { ...upstreamModuleVars }
         visiting.delete(nodeId)
         return upstream
@@ -1369,9 +1573,10 @@ export default function App(): JSX.Element {
       if (node.type === 'select') {
         const cfg = parseSelectConfig(node.config)
         let preInputVars: Record<string, unknown> = {}
+        const preScriptInput = buildRuntimeInputContext(upstream, upstreamModuleVars)
         if (cfg.preScript && cfg.preScript.trim()) {
           try {
-            const r = await runPreRequest(cfg.preScript, { input: upstream, envVars })
+            const r = await runPreRequest(cfg.preScript, { input: preScriptInput, envVars })
             setScriptLogsForNode(nodeId, 'pre', r.logs)
             preInputVars = r.inputVars
             for (const [k, v] of Object.entries(r.envUpdates)) envVars[k] = v
@@ -1386,8 +1591,9 @@ export default function App(): JSX.Element {
           let postOutputVars: Record<string, unknown> = {}
           if (cfg.postScript && cfg.postScript.trim()) {
             try {
+              const postScriptInput = buildRuntimeInputContext(upstream, { ...upstreamModuleVars, ...preInputVars })
               const r = await runPostResponse(cfg.postScript, {
-                input: upstream,
+                input: postScriptInput,
                 output: selectedOutput,
                 envVars,
               })
@@ -1444,9 +1650,10 @@ export default function App(): JSX.Element {
         if (!cfg.url.trim()) { moduleVarsMap[nodeId] = { ...upstreamModuleVars }; visiting.delete(nodeId); return null }
 
         let preInputVars: Record<string, unknown> = {}
+        const preScriptInput = buildRuntimeInputContext(upstream, upstreamModuleVars)
         if (cfg.preScript && cfg.preScript.trim()) {
           try {
-            const r = await runPreRequest(cfg.preScript, { input: upstream, envVars })
+            const r = await runPreRequest(cfg.preScript, { input: preScriptInput, envVars })
             setScriptLogsForNode(nodeId, 'pre', r.logs)
             preInputVars = r.inputVars
             for (const [k, v] of Object.entries(r.envUpdates)) envVars[k] = v
@@ -1461,24 +1668,25 @@ export default function App(): JSX.Element {
         const allResults: unknown[] = []
         for (const row of items) {
           const item: Record<string, unknown> = applyInputMappings(row, cfg.inputMappings ?? {})
-          let fullUrl = resolveTemplate(cfg.url.trim(), envVars, item)
+          const templateDataVars = previewDataVars
+          let fullUrl = resolveTemplate(cfg.url.trim(), envVars, item, templateDataVars)
           const enabledParams = (cfg.params ?? []).filter(p => p.enabled && p.key)
           if (enabledParams.length > 0) {
-            const qs = new URLSearchParams(enabledParams.map(p => [p.key, resolveTemplate(p.value, envVars, item)]))
+            const qs = new URLSearchParams(enabledParams.map(p => [p.key, resolveTemplate(p.value, envVars, item, templateDataVars)]))
             fullUrl += (fullUrl.includes('?') ? '&' : '?') + qs.toString()
           }
           const hdrs: Record<string, string> = {}
           ;(cfg.headers ?? []).filter(h => h.enabled && h.key).forEach(h => {
-            hdrs[h.key] = resolveTemplate(h.value, envVars, item)
+            hdrs[h.key] = resolveTemplate(h.value, envVars, item, templateDataVars)
           })
           let bodyStr: string | undefined
           if (['POST', 'PUT', 'PATCH'].includes(cfg.method) && cfg.body?.trim()) {
             if (cfg.bodyType === 'json' && !hdrs['Content-Type'] && !hdrs['content-type']) {
               hdrs['Content-Type'] = 'application/json'
             }
-            bodyStr = resolveTemplate(cfg.body, envVars, item)
+            bodyStr = resolveTemplate(cfg.body, envVars, item, templateDataVars)
           }
-          const authedRequest = applyApiAuth({ url: fullUrl, headers: hdrs }, cfg.auth, envVars, item)
+          const authedRequest = applyApiAuth({ url: fullUrl, headers: hdrs }, cfg.auth, envVars, item, templateDataVars)
           fullUrl = authedRequest.url
           const requestHeaders = authedRequest.headers
           const res = await window.api.http.fetch(fullUrl, { method: cfg.method, headers: requestHeaders, body: bodyStr })
@@ -1495,8 +1703,9 @@ export default function App(): JSX.Element {
         if (cfg.postScript && cfg.postScript.trim()) {
           try {
             const responseOutput = allResults.length === 1 ? allResults[0] : allResults
+            const postScriptInput = buildRuntimeInputContext(upstream, { ...upstreamModuleVars, ...preInputVars })
             const r = await runPostResponse(cfg.postScript, {
-              input: upstream,
+              input: postScriptInput,
               output: responseOutput,
               envVars,
             })
@@ -1598,8 +1807,87 @@ export default function App(): JSX.Element {
     const envVarsForRun: Record<string, string> = { ...(exec.envVars ?? activeProjectEnvVars) }
     const usedVariables: Record<string, ReportVariable> = { ...(exec.usedVariables ?? {}) }
     const executionEdges = getValidWorkflowEdges(activeNodes, activeEdges)
-    const persistedEnvVarsByEnvId: Record<string, Environment['vars']> = {}
+    const persistedEnvVarsByEnvId: Record<string, Environment['vars']> = { ...(exec.persistedEnvVarsByEnvId ?? {}) }
     const localLogs: LogEntry[] = [...(exec.execLogs ?? [])]
+    const loop = exec.loop
+    const loopRow = loop ? (loop.rows[loop.index] ?? { no: loop.index + 1 }) : null
+    const loopRowNo = loop ? Math.max(1, Math.floor(Number(loopRow?.no) || loop.index + 1)) : 0
+    let { step, plan } = exec
+    const setLoopRowState = (patch: { status: StartRepeatRowStatus; error?: string; failedNodeId?: string }): void => {
+      if (!loop) return
+      setStartRepeatRowStates(prev => {
+        const currentRows = prev[loop.startNodeId] ?? {}
+        const nextState: StartRepeatRowRunState = {
+          ...(currentRows[loopRowNo] ?? {}),
+          status: patch.status,
+          updatedAt: Date.now(),
+        }
+        if (patch.status === 'failed') {
+          nextState.error = patch.error
+          nextState.failedNodeId = patch.failedNodeId
+        } else {
+          delete nextState.error
+          delete nextState.failedNodeId
+        }
+        return {
+          ...prev,
+          [loop.startNodeId]: {
+            ...currentRows,
+            [loopRowNo]: nextState,
+          },
+        }
+      })
+    }
+    const startNextLoopIteration = (): boolean => {
+      if (!loop || loop.index + 1 >= loop.total) return false
+      const nextStartedAt = Date.now()
+      const nextExecution: CanvasExecution = {
+        nodeOutputs: {},
+        moduleVars: {},
+        branchRoutes: {},
+        envVars: envVarsForRun,
+        persistedEnvVarsByEnvId,
+        usedVariables: {},
+        execLogs: localLogs,
+        startedAt: nextStartedAt,
+        plan,
+        step: 0,
+        loop: {
+          ...loop,
+          index: loop.index + 1,
+          logStartIndex: localLogs.length,
+          iterationStartedAt: nextStartedAt,
+        },
+        pendingSelectInput: null,
+        pendingBranchChoice: null,
+        pendingLogEntryId: null,
+      }
+      setNodeStatuses({})
+      setActiveBranchRoutes({})
+      setEndNodeDisplayValues({})
+      setNodeRunInputs({})
+      setNodeRunOutputs({})
+      setNodeScriptLogs({})
+      setCanvasExecution(nextExecution)
+      void advanceExecution(nextExecution)
+      return true
+    }
+    const continueLoopIfNeeded = (): boolean => {
+      if (!loop) return false
+      setLoopRowState({ status: 'success' })
+      return startNextLoopIteration()
+    }
+    const handleLoopFailure = (failedNodeId: string, message: string): boolean => {
+      if (!loop) return false
+      setLoopRowState({ status: 'failed', error: message, failedNodeId })
+      if (loop.stopOnFailure) {
+        setCanvasExecution(null)
+        return true
+      }
+      if (startNextLoopIteration()) return true
+      setCanvasExecution(null)
+      return true
+    }
     const pushLog = (entry: LogEntry): void => {
       localLogs.push(entry)
       setExecLogs(prev => [...prev, entry])
@@ -1628,8 +1916,6 @@ export default function App(): JSX.Element {
         ? { ...w, environments: w.environments.map(e => e.id === target.id ? (updated as Environment) : e) }
         : w))
     }
-    let { step, plan } = exec
-
     if (selectedRows !== undefined && step > 0) {
       const prevNodeId = plan[step - 1]
       const prevNode = activeNodes.find(n => n.id === prevNodeId)
@@ -1639,8 +1925,9 @@ export default function App(): JSX.Element {
         const cfg = parseSelectConfig(prevNode.config)
         if (cfg.postScript && cfg.postScript.trim()) {
           try {
+            const scriptInput = buildRuntimeInputContext(exec.pendingSelectInput, moduleVars[prevNodeId] ?? {})
             const postResult = await runPostResponse(cfg.postScript, {
-              input: exec.pendingSelectInput,
+              input: scriptInput,
               output: selectedRows,
               envVars: envVarsForRun,
             })
@@ -1666,6 +1953,7 @@ export default function App(): JSX.Element {
               })
             }
             setNodeStatuses(prev => ({ ...prev, [prevNodeId]: 'error' }))
+            if (handleLoopFailure(prevNodeId, `Post Response 스크립트 오류: ${String((err as Error)?.message ?? err)}`)) return
             setCanvasExecution(null)
             return
           }
@@ -1735,27 +2023,36 @@ export default function App(): JSX.Element {
       moduleVars[nodeId] = { ...upstreamModuleVars }
 
       if (node.type === 'start') {
+        const startOutput = loopRow ? { ...loopRow } : null
+        nodeOutputs[nodeId] = startOutput
+        moduleVars[nodeId] = loopRow ? { ...loopRow } : {}
+        setNodeRunOutputs(prev => ({ ...prev, [nodeId]: JSON.stringify(startOutput, null, 2) }))
+        setLoopRowState({ status: 'running' })
         setNodeStatuses(prev => ({ ...prev, [nodeId]: 'success' }))
         step++; continue
       }
 
       if (node.type === 'end') {
         let endStatus: NodeStatus = 'success'
+        let endErrorMessage = '리포트 생성 또는 저장 오류'
         const finalVariables = finalizeUsedVariables(usedVariables, envVarsForRun)
-        const pnrValues = extractPnrEnvValues(finalVariables)
+        let endCfg: Partial<EndNodeConfig> = {}
+        try { endCfg = JSON.parse(node.config || '{}') as Partial<EndNodeConfig> } catch { endCfg = {} }
+        const displayValues = extractEndNodeDisplayValues(endCfg.displayEnvKeys, envVarsForRun, activeProjectEnvDisplayVars)
+        const reportLogs = loop ? localLogs.slice(loop.logStartIndex) : localLogs
+        const iterationStartedAt = loop ? loop.iterationStartedAt : exec.startedAt
         try {
-          const endCfg = JSON.parse(node.config || '{}') as Partial<EndNodeConfig>
           const fmt = endCfg.reportFormat
           if ((fmt === 'html' || fmt === 'markdown') && endCfg.savePath && endCfg.savePath.trim()) {
             const ws = activeProjectWs
             const envName = ws?.environments.find(e => e.id === ws.activeEnvId)?.name ?? 'BASE'
             const wsName = ws?.name ?? ''
             const projectName = activeProject?.name ?? ''
-            const executedAt = new Date(exec.startedAt)
-            const totalDuration = Date.now() - exec.startedAt
-            const hasError = localLogs.some(e => e.status === 'error')
+            const executedAt = new Date(iterationStartedAt)
+            const totalDuration = Date.now() - iterationStartedAt
+            const hasError = reportLogs.some(e => e.status === 'error')
             const overallStatus: 'success' | 'error' | 'partial' = hasError
-              ? (localLogs.some(e => e.status === 'success') ? 'partial' : 'error')
+              ? (reportLogs.some(e => e.status === 'success') ? 'partial' : 'error')
               : 'success'
             // Only plan-connected modules participate in the report. If user
             // saved with previously-connected IDs that are now disconnected,
@@ -1770,7 +2067,7 @@ export default function App(): JSX.Element {
               : new Set(connectedModuleIds)
             const reportNodes: ReportNode[] = plan.map(pid => {
               const pn = activeNodes.find(n => n.id === pid)
-              const logEntry = localLogs.find(e => e.nodeId === pid)
+              const logEntry = reportLogs.find(e => e.nodeId === pid)
               let pcfg: Partial<ApiConfig & SelectConfig> | undefined
               if (pn && (pn.type === 'api' || pn.type === 'select')) {
                 try { pcfg = JSON.parse(pn.config || '{}') as Partial<ApiConfig & SelectConfig> } catch { pcfg = undefined }
@@ -1804,34 +2101,38 @@ export default function App(): JSX.Element {
               variables: finalVariables,
             })
             const tpl = endCfg.filenameTemplate && endCfg.filenameTemplate.trim() ? endCfg.filenameTemplate : '{env}_{ws}_{project}_{ts}'
-            const filename = fillFilenameTemplate(tpl, { env: envName, ws: wsName, project: projectName, ts: executedAt })
+            const baseFilename = fillFilenameTemplate(tpl, { env: envName, ws: wsName, project: projectName, ts: executedAt })
+            const filename = loop ? appendRepeatNoSuffix(baseFilename, loopRow?.no) : baseFilename
             const ext = fmt === 'html' ? '.html' : '.md'
             const sep = endCfg.savePath.includes('/') && !endCfg.savePath.includes('\\') ? '/' : '\\'
             const fullPath = endCfg.savePath.replace(/[\\/]+$/, '') + sep + filename + ext
             const writeResult = await window.api.file.write(fullPath, content)
             if (writeResult.ok) {
-              setSavedReport({ path: writeResult.path })
-              console.log('[리포트 저장 완료]', writeResult.path)
+              if (!loop) setSavedReport({ path: writeResult.path })
             } else {
               endStatus = 'error'
+              endErrorMessage = `리포트 저장 실패: ${writeResult.error}`
               console.error('[리포트 저장 실패]', writeResult.error)
             }
           }
         } catch (err) {
           endStatus = 'error'
+          endErrorMessage = `리포트 생성 오류: ${String((err as Error)?.message ?? err)}`
           console.error('[리포트 생성 오류]', err)
         }
-        setEndNodePnrValues(prev => {
+        setEndNodeDisplayValues(prev => {
           const next = { ...prev }
-          if (endStatus === 'success' && pnrValues.length > 0) next[nodeId] = pnrValues
+          if (endStatus === 'success' && displayValues.length > 0) next[nodeId] = displayValues
           else delete next[nodeId]
           return next
         })
         setNodeStatuses(prev => ({ ...prev, [nodeId]: endStatus }))
         if (endStatus === 'error') {
+          if (handleLoopFailure(nodeId, endErrorMessage)) return
           setCanvasExecution(null)
           return
         }
+        if (continueLoopIfNeeded()) return
         step++; continue
       }
 
@@ -1852,8 +2153,10 @@ export default function App(): JSX.Element {
           setNodeStatuses(prev => ({ ...prev, [nodeId]: 'success' }))
         } catch (err) {
           nodeOutputs[nodeId] = []
-          updateLog(entryId, { status: 'error', error: String(err), duration: Date.now() - startedAt })
+          const errStr = String(err)
+          updateLog(entryId, { status: 'error', error: errStr, duration: Date.now() - startedAt })
           setNodeStatuses(prev => ({ ...prev, [nodeId]: 'error' }))
+          if (handleLoopFailure(nodeId, errStr)) return
           setCanvasExecution(null)
           return
         }
@@ -1872,9 +2175,10 @@ export default function App(): JSX.Element {
         try {
           const selCfg = parseSelectConfig(node.config)
           let preInputVars: Record<string, unknown> = {}
+          const preScriptInput = buildRuntimeInputContext(rawInput, upstreamModuleVars)
           if (selCfg.preScript && selCfg.preScript.trim()) {
             try {
-              const preResult = await runPreRequest(selCfg.preScript, { input: rawInput, envVars: envVarsForRun })
+              const preResult = await runPreRequest(selCfg.preScript, { input: preScriptInput, envVars: envVarsForRun })
               recordScriptLogs('pre', preResult.logs)
               preInputVars = preResult.inputVars
               for (const [k, v] of Object.entries(preResult.envUpdates)) envVarsForRun[k] = v
@@ -1892,8 +2196,9 @@ export default function App(): JSX.Element {
             let postOutputVars: Record<string, unknown> = {}
             if (selCfg.postScript && selCfg.postScript.trim()) {
               try {
+                const postScriptInput = buildRuntimeInputContext(rawInput, { ...upstreamModuleVars, ...preInputVars })
                 const postResult = await runPostResponse(selCfg.postScript, {
-                  input: rawInput,
+                  input: postScriptInput,
                   output: selectedOutput,
                   envVars: envVarsForRun,
                 })
@@ -1944,7 +2249,22 @@ export default function App(): JSX.Element {
             step++; continue
           }
           updateLog(entryId, { scriptLogs: currentScriptLogs })
-          setCanvasExecution({ nodeOutputs, moduleVars, branchRoutes, envVars: envVarsForRun, usedVariables, execLogs: localLogs, startedAt: exec.startedAt, plan, step: step + 1, pendingSelectInput: rawInput ?? [], pendingBranchChoice: null, pendingLogEntryId: entryId })
+          setCanvasExecution({
+            nodeOutputs,
+            moduleVars,
+            branchRoutes,
+            envVars: envVarsForRun,
+            persistedEnvVarsByEnvId,
+            usedVariables,
+            execLogs: localLogs,
+            startedAt: exec.startedAt,
+            plan,
+            step: step + 1,
+            loop: exec.loop,
+            pendingSelectInput: rawInput ?? [],
+            pendingBranchChoice: null,
+            pendingLogEntryId: entryId,
+          })
           return
         } catch (err) {
           nodeOutputs[nodeId] = null
@@ -1952,6 +2272,7 @@ export default function App(): JSX.Element {
           setNodeRunOutputs(prev => ({ ...prev, [nodeId]: errStr }))
           updateLog(entryId, { status: 'error', error: errStr, duration: Date.now() - startedAt, scriptLogs: currentScriptLogs })
           setNodeStatuses(prev => ({ ...prev, [nodeId]: 'error' }))
+          if (handleLoopFailure(nodeId, errStr)) return
           setCanvasExecution(null)
           return
         }
@@ -1961,17 +2282,20 @@ export default function App(): JSX.Element {
         setNodeRunInputs(prev => ({ ...prev, [nodeId]: JSON.stringify(rawInput, null, 2) }))
         try {
           const branchCfg = parseBranchConfig(node.config)
+          const branchInput = buildRuntimeInputContext(rawInput, upstreamModuleVars)
           if (branchCfg.mode === 'manual' && branchCfg.manualSource === 'runtime') {
             setCanvasExecution({
               nodeOutputs,
               moduleVars,
               branchRoutes,
               envVars: envVarsForRun,
+              persistedEnvVarsByEnvId,
               usedVariables,
               execLogs: localLogs,
               startedAt: exec.startedAt,
               plan,
               step: step + 1,
+              loop: exec.loop,
               pendingSelectInput: null,
               pendingBranchChoice: {
                 input: rawInput,
@@ -1984,9 +2308,9 @@ export default function App(): JSX.Element {
             return
           }
           if (branchCfg.mode !== 'manual') {
-            recordUsedBranchVariables(usedVariables, branchCfg.expression, rawInput)
+            recordUsedBranchVariables(usedVariables, branchCfg.expression, branchInput, loopRow ? { ...loopRow } : upstreamModuleVars)
           }
-          const result = evaluateBranch(branchCfg, rawInput)
+          const result = evaluateBranch(branchCfg, branchInput, loopRow ? { ...loopRow } : upstreamModuleVars)
           branchRoutes[nodeId] = result.route
           setActiveBranchRoutes(prev => ({ ...prev, [nodeId]: result.route }))
           nodeOutputs[nodeId] = rawInput
@@ -1995,8 +2319,10 @@ export default function App(): JSX.Element {
           setNodeStatuses(prev => ({ ...prev, [nodeId]: 'success' }))
         } catch (err) {
           nodeOutputs[nodeId] = null
-          updateLog(entryId, { status: 'error', error: String(err), duration: Date.now() - startedAt })
+          const errStr = String(err)
+          updateLog(entryId, { status: 'error', error: errStr, duration: Date.now() - startedAt })
           setNodeStatuses(prev => ({ ...prev, [nodeId]: 'error' }))
+          if (handleLoopFailure(nodeId, errStr)) return
           setCanvasExecution(null)
           return
         }
@@ -2046,9 +2372,10 @@ export default function App(): JSX.Element {
 
           // ── Pre Request script ─────────────────────────
           let preInputVars: Record<string, unknown> = {}
+          const preScriptInput = buildRuntimeInputContext(rawInput, upstreamModuleVars)
           if (cfg.preScript && cfg.preScript.trim()) {
             try {
-              const r = await runPreRequest(cfg.preScript, { input: rawInput, envVars: envVarsForExec })
+              const r = await runPreRequest(cfg.preScript, { input: preScriptInput, envVars: envVarsForExec })
               recordScriptLogs('pre', r.logs)
               preInputVars = r.inputVars
               for (const [k, v] of Object.entries(r.envUpdates)) envVarsForExec[k] = v
@@ -2066,6 +2393,7 @@ export default function App(): JSX.Element {
 
           for (const row of items) {
             const item: Record<string, unknown> = applyInputMappings(row, cfg.inputMappings ?? {})
+            const templateDataVars = loopRow ? { ...loopRow } : item
             const enabledParams = (cfg.params ?? []).filter(p => p.enabled && p.key)
             const enabledHeaders = (cfg.headers ?? []).filter(h => h.enabled && h.key)
             const bodyTemplate = ['POST', 'PUT', 'PATCH'].includes(cfg.method) && cfg.body?.trim() ? cfg.body : ''
@@ -2080,26 +2408,27 @@ export default function App(): JSX.Element {
               ],
               envVarsForExec,
               item,
+              templateDataVars,
             )
 
-            let fullUrl = resolveTemplate(cfg.url.trim(), envVarsForExec, item)
+            let fullUrl = resolveTemplate(cfg.url.trim(), envVarsForExec, item, templateDataVars)
             if (enabledParams.length > 0) {
-              const qs = new URLSearchParams(enabledParams.map(p => [p.key, resolveTemplate(p.value, envVarsForExec, item)]))
+              const qs = new URLSearchParams(enabledParams.map(p => [p.key, resolveTemplate(p.value, envVarsForExec, item, templateDataVars)]))
               fullUrl += (fullUrl.includes('?') ? '&' : '?') + qs.toString()
             }
             const hdrs: Record<string, string> = {}
             ;enabledHeaders.forEach(h => {
-              hdrs[h.key] = resolveTemplate(h.value, envVarsForExec, item)
+              hdrs[h.key] = resolveTemplate(h.value, envVarsForExec, item, templateDataVars)
             })
             let bodyStr: string | undefined
             if (['POST', 'PUT', 'PATCH'].includes(cfg.method) && cfg.body?.trim()) {
               if (cfg.bodyType === 'json' && !hdrs['Content-Type'] && !hdrs['content-type']) {
                 hdrs['Content-Type'] = 'application/json'
               }
-              bodyStr = resolveTemplate(cfg.body, envVarsForExec, item)
+              bodyStr = resolveTemplate(cfg.body, envVarsForExec, item, templateDataVars)
             }
 
-            const authedRequest = applyApiAuth({ url: fullUrl, headers: hdrs }, cfg.auth, envVarsForExec, item)
+            const authedRequest = applyApiAuth({ url: fullUrl, headers: hdrs }, cfg.auth, envVarsForExec, item, templateDataVars)
             fullUrl = authedRequest.url
             const requestHeaders = authedRequest.headers
 
@@ -2126,8 +2455,9 @@ export default function App(): JSX.Element {
           if (cfg.postScript && cfg.postScript.trim()) {
             try {
               const responseOutput = allResults.length === 1 ? allResults[0] : allResults
+              const postScriptInput = buildRuntimeInputContext(rawInput, { ...upstreamModuleVars, ...preInputVars })
               const r = await runPostResponse(cfg.postScript, {
-                input: rawInput,
+                input: postScriptInput,
                 output: responseOutput,
                 envVars: envVarsForExec,
               })
@@ -2156,6 +2486,7 @@ export default function App(): JSX.Element {
           setNodeRunOutputs(prev => ({ ...prev, [nodeId]: isHttpError ? stringifyNodeOutput(errorOutput) : errStr }))
           updateLog(entryId, { status: 'error', output: errorOutput, error: errStr, duration: Date.now() - startedAt, apiDetail: lastApiDetail, scriptLogs: currentScriptLogs })
           setNodeStatuses(prev => ({ ...prev, [nodeId]: 'error' }))
+          if (handleLoopFailure(nodeId, errStr)) return
           setCanvasExecution(null)
           return
         }
@@ -2165,20 +2496,60 @@ export default function App(): JSX.Element {
       step++
     }
 
+    if (continueLoopIfNeeded()) return
     setCanvasExecution(null)
-  }, [activeNodes, activeEdges, activeProjectWs, activeProjectEnvVars, activeProject?.name, rememberSelectSelection, setScriptLogsForNode])
+  }, [activeNodes, activeEdges, activeProjectWs, activeProjectEnvVars, activeProjectEnvDisplayVars, activeProject?.name, rememberSelectSelection, setScriptLogsForNode])
 
   const handleCanvasRun = useCallback(() => {
     if (!activeProject || canvasExecution) return
     const plan = buildExecutionPlan(activeNodes, activeEdges)
     if (plan.length === 0) return
+    const startNode = activeNodes.find(n => n.id === plan[0] && n.type === 'start')
+    const repeatRowsResult = buildRepeatRows(startNode)
+    if (!repeatRowsResult.ok) {
+      alert(repeatRowsResult.error)
+      return
+    }
+    const startedAt = Date.now()
+    const loop = repeatRowsResult.rows
+      ? {
+          startNodeId: startNode?.id ?? '',
+          rows: repeatRowsResult.rows,
+          index: 0,
+          total: repeatRowsResult.rows.length,
+          stopOnFailure: repeatRowsResult.stopOnFailure,
+          logStartIndex: 0,
+          iterationStartedAt: startedAt,
+        } satisfies ExecutionLoopContext
+      : undefined
     setExecLogs([])
     setNodeStatuses({})
     setActiveBranchRoutes({})
-    setEndNodePnrValues({})
+    setEndNodeDisplayValues({})
     setActiveLogNodeId(null)
     setNodeScriptLogs({})
-    const execution: CanvasExecution = { nodeOutputs: {}, moduleVars: {}, branchRoutes: {}, envVars: { ...activeProjectEnvVars }, usedVariables: {}, execLogs: [], startedAt: Date.now(), plan, step: 0, pendingSelectInput: null, pendingBranchChoice: null }
+    setStartRepeatRowStates(loop && startNode
+      ? {
+          [startNode.id]: Object.fromEntries(loop.rows.map((row, index) => {
+            const no = Math.max(1, Math.floor(Number(row.no) || index + 1))
+            return [no, { status: 'pending' as StartRepeatRowStatus, updatedAt: startedAt }]
+          })),
+        }
+      : {})
+    const execution: CanvasExecution = {
+      nodeOutputs: {},
+      moduleVars: {},
+      branchRoutes: {},
+      envVars: { ...activeProjectEnvVars },
+      usedVariables: {},
+      execLogs: [],
+      startedAt,
+      plan,
+      step: 0,
+      loop,
+      pendingSelectInput: null,
+      pendingBranchChoice: null,
+    }
     advanceExecution(execution)
   }, [activeNodes, activeEdges, activeProject, activeProjectEnvVars, advanceExecution, canvasExecution])
 
@@ -2186,13 +2557,57 @@ export default function App(): JSX.Element {
     setExecLogs([])
     setNodeStatuses({})
     setActiveBranchRoutes({})
-    setEndNodePnrValues({})
+    setEndNodeDisplayValues({})
     setActiveLogNodeId(null)
     setLogState('collapsed')
     setNodeRunInputs({})
     setNodeRunOutputs({})
     setNodeScriptLogs({})
+    setStartRepeatRowStates({})
   }, [])
+
+  const handleExportFailedRepeatRows = useCallback(async (nodeId: string): Promise<string> => {
+    const startNode = activeNodes.find(node => node.id === nodeId && node.type === 'start')
+    if (!startNode) throw new Error('START 모듈을 찾을 수 없습니다.')
+
+    const repeat = parseStartConfig(startNode.config).repeat
+    if (!repeat?.data || repeat.data.rows.length === 0) {
+      throw new Error('첨부된 반복 데이터가 없습니다.')
+    }
+
+    const states = startRepeatRowStates[nodeId] ?? {}
+    const failedRows = repeat.data.rows
+      .map((row, index) => {
+        const no = Math.max(1, Math.floor(Number(row.no) || index + 1))
+        return { row, no, state: states[no] }
+      })
+      .filter(item => item.state?.status === 'failed')
+
+    if (failedRows.length === 0) {
+      throw new Error('실패한 데이터가 없습니다.')
+    }
+
+    const nodeLabelById = new Map(activeNodes.map(node => [node.id, node.label]))
+    const sourceColumns = repeat.data.columns.length > 0
+      ? repeat.data.columns
+      : Array.from(new Set(repeat.data.rows.flatMap(row => Object.keys(row))))
+    const exportColumns = Array.from(new Set(['no', ...sourceColumns, '실패상태', '실패모듈', '실패사유']))
+    const exportRows = failedRows.map(({ row, state }) => ({
+      ...row,
+      실패상태: '실패',
+      실패모듈: state?.failedNodeId ? (nodeLabelById.get(state.failedNodeId) ?? state.failedNodeId) : '',
+      실패사유: state?.error ?? '',
+    }))
+
+    const workbookBase64 = await buildExcelWorkbookBase64(exportColumns, exportRows, 'failed')
+    const timestamp = new Date().toISOString().replace(/[:.]/g, '').replace('T', '_').replace('Z', '')
+    const projectName = safeDownloadFilePart(activeProject?.name ?? 'project')
+    const nodeName = safeDownloadFilePart(startNode.label || 'START')
+    const fileName = `a8a_failed_${projectName}_${nodeName}_${timestamp}.xlsx`
+    const result = await window.api.file.writeXlsxDownload(fileName, workbookBase64)
+    if (!result.ok) throw new Error(result.error)
+    return result.path
+  }, [activeNodes, activeProject?.name, startRepeatRowStates])
 
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent): void => {
@@ -2533,7 +2948,7 @@ export default function App(): JSX.Element {
   }
 
   return (
-    <div className="app" data-theme={theme}>
+    <div className={`app${isCanvasFullscreen ? ' app-canvas-fullscreen' : ''}`} data-theme={theme}>
       {updateNoticeVisible && updateState && (
         <div className="update-notice no-drag">
           <div className="update-notice-main">
@@ -2771,8 +3186,11 @@ export default function App(): JSX.Element {
                   onModuleDrop={handleModuleDrop}
                   nodeStatuses={nodeStatuses}
                   branchRoutes={activeBranchRoutes}
-                  endNodePnrValues={endNodePnrValues}
+                  endNodeDisplayValues={endNodeDisplayValues}
+                  startNodeLoopProgress={startNodeLoopProgress}
                   onNodeStatusClick={onNodeStatusClick}
+                  isCanvasFullscreen={isCanvasFullscreen}
+                  onCanvasFullscreenChange={setCanvasFullscreen}
                 />
             </div>
           ) : (
@@ -2827,7 +3245,7 @@ export default function App(): JSX.Element {
       </div>
 
       {/* ── Env Dropdown (fixed) ── */}
-      {envDropdownOpen && activeProjectWs && (
+      {envDropdownOpen && !isCanvasFullscreen && activeProjectWs && (
         <div
           ref={envDropdownRef}
           className="topbar-env-dropdown"
@@ -2956,6 +3374,16 @@ export default function App(): JSX.Element {
           node={editingNode}
           onSave={handleNodeSave}
           onClose={() => setEditingNode(null)}
+          repeatRowStates={startRepeatRowStates[editingNode.id]}
+          onResetRepeatRowStates={nodeId => {
+            setStartRepeatRowStates(prev => {
+              if (!prev[nodeId]) return prev
+              const next = { ...prev }
+              delete next[nodeId]
+              return next
+            })
+          }}
+          onExportFailedRows={handleExportFailedRepeatRows}
         />
       )}
 
@@ -2973,6 +3401,7 @@ export default function App(): JSX.Element {
             key={editingNode.id}
             node={editingNode}
             moduleNodes={ordered}
+            envVarKeys={activeProjectEnvDisplayKeys}
             onSave={handleDataNodeSave}
             onClose={() => setEditingNode(null)}
           />
@@ -2984,10 +3413,6 @@ export default function App(): JSX.Element {
           key={editingNode.id}
           node={editingNode}
           initialInput={nodeRunInputs[editingNode.id]}
-          initialOutput={nodeRunOutputs[editingNode.id]}
-          initialPreConsoleLogs={nodeScriptLogs[editingNode.id]?.pre}
-          initialPostConsoleLogs={nodeScriptLogs[editingNode.id]?.post}
-          envVars={activeProjectEnvVars}
           onRun={() => previewUpToNode(editingNode.id)}
           onSave={handleDataNodeSave}
           onDelete={async () => {
@@ -3027,6 +3452,7 @@ export default function App(): JSX.Element {
             setNodeRunInputs(prev => ({ ...prev, [editingNode.id]: inputJson }))
             return inputJson
           }}
+          dataVars={startRepeatPreviewData}
           onSave={handleDataNodeSave}
           onDelete={async () => {
             await window.api.node.delete(editingNode.id)
@@ -3047,6 +3473,7 @@ export default function App(): JSX.Element {
           initialPreConsoleLogs={nodeScriptLogs[editingNode.id]?.pre}
           initialPostConsoleLogs={nodeScriptLogs[editingNode.id]?.post}
           envVars={activeProjectEnvVars}
+          dataVars={startRepeatPreviewData}
           onRun={() => previewUpToNode(editingNode.id)}
           onSave={handleDataNodeSave}
           onDelete={async () => {

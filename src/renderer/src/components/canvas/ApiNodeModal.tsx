@@ -163,6 +163,7 @@ interface Props {
   initialPreConsoleLogs?: ScriptConsoleEntry[]
   initialPostConsoleLogs?: ScriptConsoleEntry[]
   envVars?: Record<string, string>
+  dataVars?: Record<string, unknown>
   onRun?: () => string | Promise<string>
   onSave: (nodeId: string, label: string, config: string) => Promise<void>
   onDelete?: () => Promise<void>
@@ -172,7 +173,7 @@ interface Props {
 type ResizeDir = 'n' | 'ne' | 'e' | 'se' | 's' | 'sw' | 'w' | 'nw'
 type SettingsTab = 'auth' | 'headers' | 'params' | 'body'
 type ScriptPaneTab = 'script' | 'console'
-type UsedVariable = { kind: 'env' | 'input'; name: string; resolved: string | null; mappedPath?: string }
+type UsedVariable = { kind: 'env' | 'input' | 'data'; name: string; resolved: string | null; mappedPath?: string }
 type ResolvedApiRequest = {
   method: ApiConfig['method']
   url: string
@@ -281,7 +282,7 @@ function hasBody(method: string): boolean {
 }
 
 function hasVars(text: string): boolean {
-  return text.includes('{{') || text.includes('[[')
+  return text.includes('{{') || text.includes('[[') || text.includes('<<')
 }
 
 function parseInputValue(raw: string): unknown {
@@ -290,6 +291,13 @@ function parseInputValue(raw: string): unknown {
   } catch {
     return null
   }
+}
+
+function withDataVarsForScript(input: unknown, dataVars: Record<string, unknown>): unknown {
+  if (Object.keys(dataVars).length === 0) return input
+  if (Array.isArray(input)) return Object.assign([...input], dataVars)
+  if (input && typeof input === 'object') return { ...(input as Record<string, unknown>), ...dataVars }
+  return { value: input, ...dataVars }
 }
 
 function parseResponseValue(raw: string): unknown {
@@ -776,6 +784,14 @@ function TokenDisplay({
             onMouseLeave={() => onHover(null)}
           >{`{{${tok.name}}}`}</span>
         )
+        if (tok.type === 'data') return (
+          <span
+            key={i}
+            className={`api-var-token api-data-token${tok.resolved !== null ? ' api-var-ok' : ' api-var-err'}`}
+            onMouseEnter={e => onHover(tok.resolved !== null ? `= ${tok.resolved}` : 'DATA 값 없음', e.currentTarget.getBoundingClientRect())}
+            onMouseLeave={() => onHover(null)}
+          >{`<<${tok.key}>>`}</span>
+        )
         return (
           <span
             key={i}
@@ -792,21 +808,22 @@ function TokenDisplay({
 // ?? KV editor row ??????????????????????????????????
 
 function KvRow({
-  item, onChange, onRemove, envVars, inputData, onHover,
+  item, onChange, onRemove, envVars, inputData, dataVars, onHover,
 }: {
   item: ApiKvItem
   onChange: (id: string, field: 'key' | 'value' | 'enabled', val: string | boolean) => void
   onRemove: (id: string) => void
   envVars: Record<string, string>
   inputData: Record<string, unknown>
+  dataVars: Record<string, unknown>
   onHover: (text: string | null, rect?: DOMRect) => void
 }): JSX.Element {
   const envVarNames = useMemo(() => Object.keys(envVars), [envVars])
   const inputKeys = useMemo(() => getInputPathSuggestions(inputData), [inputData])
   const showPreview = hasVars(item.value)
   const previewTokens = useMemo(
-    () => showPreview ? parseTemplate(item.value, envVars, inputData) : [],
-    [item.value, envVars, inputData, showPreview],
+    () => showPreview ? parseTemplate(item.value, envVars, inputData, dataVars) : [],
+    [item.value, envVars, inputData, dataVars, showPreview],
   )
 
   return (
@@ -849,7 +866,7 @@ function KvRow({
 
 export default function ApiNodeModal({
   node, isNew, initialInput, initialOutput, initialPreConsoleLogs, initialPostConsoleLogs,
-  envVars = {}, onRun, onSave, onDelete, onClose,
+  envVars = {}, dataVars, onRun, onSave, onDelete, onClose,
 }: Props): JSX.Element {
   const initial = parseConfig(node.config)
   const inputPickerExpandedStorageKey = `api-input-picker-expanded-${node.id}`
@@ -873,6 +890,7 @@ export default function ApiNodeModal({
   const [postPaneTab, setPostPaneTab] = useState<ScriptPaneTab>('script')
   const [saving, setSaving] = useState(false)
   const [confirmDelete, setConfirmDelete] = useState(false)
+  const [isBodyFullscreen, setIsBodyFullscreen] = useState(false)
 
   const [inputJson, setInputJson] = useState(initialInput ?? '')
   const [inputError, setInputError] = useState(false)
@@ -931,6 +949,19 @@ export default function ApiNodeModal({
   }, [activeTab, method])
 
   useEffect(() => {
+    if (!hasBody(method)) setIsBodyFullscreen(false)
+  }, [method])
+
+  useEffect(() => {
+    if (!isBodyFullscreen) return
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') setIsBodyFullscreen(false)
+    }
+    window.addEventListener('keydown', handleKeyDown)
+    return () => window.removeEventListener('keydown', handleKeyDown)
+  }, [isBodyFullscreen])
+
+  useEffect(() => {
     localStorage.setItem(inputPickerExpandedStorageKey, JSON.stringify(Array.from(inputPickerExpandedIds)))
   }, [inputPickerExpandedIds, inputPickerExpandedStorageKey])
 
@@ -961,6 +992,7 @@ export default function ApiNodeModal({
     () => applyInputMappings(baseInputData, inputMappings),
     [baseInputData, inputMappings],
   )
+  const dataInputData = useMemo<Record<string, unknown>>(() => dataVars ?? {}, [dataVars])
 
   const envVarNames = useMemo(() => Object.keys(envVars), [envVars])
   const inputKeys = useMemo(() => getInputPathSuggestions(inputData), [inputData])
@@ -973,7 +1005,7 @@ export default function ApiNodeModal({
     const allTemplates = [url, ...headers.map(h => h.value), ...params.map(p => p.value), body, ...getApiAuthTemplateValues(auth)]
     const seen = new Map<string, UsedVariable>()
     allTemplates.forEach(template => {
-      parseTemplate(template, envVars, inputData).forEach(tok => {
+      parseTemplate(template, envVars, inputData, dataInputData).forEach(tok => {
         if (tok.type === 'env') {
           const key = `env:${tok.name}`
           if (!seen.has(key)) seen.set(key, { kind: 'env', name: tok.name, resolved: tok.resolved })
@@ -982,21 +1014,25 @@ export default function ApiNodeModal({
           const key = `input:${tok.key}`
           if (!seen.has(key)) seen.set(key, { kind: 'input', name: tok.key, resolved: tok.resolved, mappedPath: inputMappings[tok.key] })
         }
+        if (tok.type === 'data') {
+          const key = `data:${tok.key}`
+          if (!seen.has(key)) seen.set(key, { kind: 'data', name: tok.key, resolved: tok.resolved })
+        }
       })
     })
     return Array.from(seen.values())
-  }, [url, headers, params, body, auth, envVars, inputData, inputMappings])
+  }, [url, headers, params, body, auth, envVars, inputData, dataInputData, inputMappings])
 
   // URL preview tokens
   const urlTokens = useMemo(
-    () => hasVars(url) ? parseTemplate(url, envVars, inputData) : [],
-    [url, envVars, inputData],
+    () => hasVars(url) ? parseTemplate(url, envVars, inputData, dataInputData) : [],
+    [url, envVars, inputData, dataInputData],
   )
 
   // Body vars summary: collect all tokens that are env/input
   const bodyTokens = useMemo(
-    () => hasVars(body) ? parseTemplate(body, envVars, inputData) : [],
-    [body, envVars, inputData],
+    () => hasVars(body) ? parseTemplate(body, envVars, inputData, dataInputData) : [],
+    [body, envVars, inputData, dataInputData],
   )
   const bodyVarTokens = useMemo(
     () => bodyTokens.filter(t => t.type !== 'text'),
@@ -1154,26 +1190,26 @@ export default function ApiNodeModal({
     requestInputData: Record<string, unknown> = baseInputData,
   ): ResolvedApiRequest => {
     const mappedRequestInputData = applyInputMappings(requestInputData, inputMappings)
-    let fullUrl = resolveTemplate(url.trim(), requestEnvVars, mappedRequestInputData)
+    let fullUrl = resolveTemplate(url.trim(), requestEnvVars, mappedRequestInputData, dataInputData)
     const enabledParams = params.filter(p => p.enabled && p.key)
     if (enabledParams.length > 0) {
-      const qs = new URLSearchParams(enabledParams.map(p => [p.key, resolveTemplate(p.value, requestEnvVars, mappedRequestInputData)]))
+      const qs = new URLSearchParams(enabledParams.map(p => [p.key, resolveTemplate(p.value, requestEnvVars, mappedRequestInputData, dataInputData)]))
       fullUrl += (fullUrl.includes('?') ? '&' : '?') + qs.toString()
     }
     const hdrs: Record<string, string> = {}
     headers.filter(h => h.enabled && h.key).forEach(h => {
-      hdrs[h.key] = resolveTemplate(h.value, requestEnvVars, mappedRequestInputData)
+      hdrs[h.key] = resolveTemplate(h.value, requestEnvVars, mappedRequestInputData, dataInputData)
     })
     let bodyStr: string | undefined
     if (hasBody(method) && body.trim()) {
       if (bodyType === 'json' && !hdrs['Content-Type'] && !hdrs['content-type']) {
         hdrs['Content-Type'] = 'application/json'
       }
-      bodyStr = resolveTemplate(body, requestEnvVars, mappedRequestInputData)
+      bodyStr = resolveTemplate(body, requestEnvVars, mappedRequestInputData, dataInputData)
     }
-    const authedRequest = applyApiAuth({ url: fullUrl, headers: hdrs }, auth, requestEnvVars, mappedRequestInputData)
+    const authedRequest = applyApiAuth({ url: fullUrl, headers: hdrs }, auth, requestEnvVars, mappedRequestInputData, dataInputData)
     return { method, url: authedRequest.url, headers: authedRequest.headers, body: bodyStr }
-  }, [auth, baseInputData, body, bodyType, envVars, headers, inputMappings, method, params, url])
+  }, [auth, baseInputData, body, bodyType, envVars, headers, inputMappings, method, params, url, dataInputData])
 
   // Test API call (resolves vars before sending)
   const handleTest = async () => {
@@ -1193,7 +1229,7 @@ export default function ApiNodeModal({
     try {
       const requestEnvVars = { ...envVars }
       let requestInputData = { ...baseInputData }
-      const scriptInput = parseInputValue(inputJson)
+      const scriptInput = withDataVarsForScript(parseInputValue(inputJson), dataInputData)
 
       if (preScript.trim()) {
         scriptPhase = 'pre'
@@ -1612,6 +1648,7 @@ export default function ApiNodeModal({
                               onRemove={id => removeKv(setHeaders, id)}
                               envVars={envVars}
                               inputData={inputData}
+                              dataVars={dataInputData}
                               onHover={handleHover}
                             />
                           ))
@@ -1627,6 +1664,7 @@ export default function ApiNodeModal({
                               onRemove={id => removeKv(setParams, id)}
                               envVars={envVars}
                               inputData={inputData}
+                              dataVars={dataInputData}
                               onHover={handleHover}
                             />
                           ))
@@ -1639,14 +1677,24 @@ export default function ApiNodeModal({
                   <div className="dm-field dm-field-grow">
                     <div className="dm-field-hd">
                       <label className="dm-field-label">Body (JSON)</label>
-                      <button
-                        className="btn ghost icon dm-format-btn"
-                        style={{ width: 20, height: 20 }}
-                        onClick={handleFormatBody}
-                        title="JSON 정렬"
-                      >
-                        <FormatIcon />
-                      </button>
+                      <div className="api-body-actions">
+                        <button
+                          className="btn ghost icon dm-format-btn"
+                          onClick={() => setIsBodyFullscreen(true)}
+                          title="Body 전체화면 편집"
+                          aria-label="Body 전체화면 편집"
+                        >
+                          <IcoMaximize size={13} />
+                        </button>
+                        <button
+                          className="btn ghost icon dm-format-btn"
+                          onClick={handleFormatBody}
+                          title="JSON 정렬"
+                          aria-label="JSON 정렬"
+                        >
+                          <FormatIcon />
+                        </button>
+                      </div>
                     </div>
                     <JsonMonacoEditor
                       path={`${node.id}/body.json`}
@@ -1660,7 +1708,7 @@ export default function ApiNodeModal({
 
                 {usedVariables.length > 0 && (
                   <div className="dm-field">
-                    <label className="dm-field-label">사용된 환경변수 / INPUT 변수</label>
+                    <label className="dm-field-label">사용된 환경변수 / INPUT / DATA</label>
                     <table className="api-env-vars-table">
                       <thead>
                         <tr>
@@ -1672,12 +1720,17 @@ export default function ApiNodeModal({
                       <tbody>
                         {usedVariables.map(({ kind, name, resolved, mappedPath }) => {
                           const isInput = kind === 'input'
+                          const isData = kind === 'data'
                           const valueText = resolved !== null
                             ? resolved
                             : isInput
                               ? '클릭하여 INPUT JSON에서 선택'
-                              : '환경변수 없음'
+                              : isData
+                                ? 'DATA 값 없음'
+                                : '환경변수 없음'
                           const valueTooltipText = getUsedVariableTooltipText(valueText, mappedPath)
+                          const tokenText = isInput ? `[[${name}]]` : isData ? `<<${name}>>` : `{{${name}}}`
+                          const kindLabel = isInput ? 'INPUT' : isData ? 'DATA' : '환경'
                           return (
                             <tr
                               key={`${kind}:${name}`}
@@ -1691,12 +1744,12 @@ export default function ApiNodeModal({
                             >
                               <td>
                                 <span className={`api-var-kind api-var-kind-${kind}`}>
-                                  {isInput ? 'INPUT' : '환경'}
+                                  {kindLabel}
                                 </span>
                               </td>
                               <td>
                                 <span className={`api-var-token${isInput ? ' api-input-token' : ''}${resolved !== null ? ' api-var-ok' : ' api-var-err'}`}>
-                                  {isInput ? `[[${name}]]` : `{{${name}}}`}
+                                  {tokenText}
                                 </span>
                               </td>
                               <td
@@ -1845,6 +1898,45 @@ export default function ApiNodeModal({
 
         </div>
       </div>
+
+      {isBodyFullscreen && (
+        <div
+          className="api-body-fullscreen"
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="api-body-fullscreen-title"
+          onClick={() => setIsBodyFullscreen(false)}
+        >
+          <div className="api-body-fullscreen-panel" onClick={event => event.stopPropagation()}>
+            <div className="api-body-fullscreen-hd">
+              <div className="api-body-fullscreen-title-wrap">
+                <div id="api-body-fullscreen-title" className="api-body-fullscreen-title">Body (JSON)</div>
+                <div className="api-body-fullscreen-meta">{method} 요청 Body</div>
+              </div>
+              <div className="api-body-fullscreen-actions">
+                <button className="btn ghost" onClick={handleFormatBody}>JSON 정렬</button>
+                <button
+                  className="btn ghost icon api-body-fullscreen-close"
+                  onClick={() => setIsBodyFullscreen(false)}
+                  title="닫기"
+                  aria-label="닫기"
+                >
+                  <IcoX size={14} />
+                </button>
+              </div>
+            </div>
+            <div className="api-body-fullscreen-editor">
+              <JsonMonacoEditor
+                path={`${node.id}/body.fullscreen.json`}
+                value={body}
+                onChange={setBody}
+                placeholder='{"key": "value"}'
+                templateSuggestions={{ envVarNames, inputKeys }}
+              />
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Tooltip */}
       {tooltip && (

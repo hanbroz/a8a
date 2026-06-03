@@ -5,6 +5,7 @@ import { useModalMaximize } from './useModalMaximize'
 interface Props {
   node: ApiNode
   moduleNodes: Array<{ id: string; label: string; type: string }>
+  envVarKeys: string[]
   onSave: (nodeId: string, label: string, config: string) => Promise<void>
   onClose: () => void
 }
@@ -28,19 +29,21 @@ function parseConfig(raw: string): ParsedEndConfig {
       savePath: typeof p.savePath === 'string' ? p.savePath : '',
       filenameTemplate: typeof p.filenameTemplate === 'string' && p.filenameTemplate ? p.filenameTemplate : DEFAULT_TEMPLATE,
       selectedModuleIds: Array.isArray(p.selectedModuleIds) ? p.selectedModuleIds : [],
+      displayEnvKeys: Array.isArray(p.displayEnvKeys) ? p.displayEnvKeys.map(String).filter(Boolean) : [],
       selectedModuleIdsExplicit,
     }
   } catch {
-    return { reportFormat: 'none', savePath: '', filenameTemplate: DEFAULT_TEMPLATE, selectedModuleIds: [], selectedModuleIdsExplicit: false }
+    return { reportFormat: 'none', savePath: '', filenameTemplate: DEFAULT_TEMPLATE, selectedModuleIds: [], displayEnvKeys: [], selectedModuleIdsExplicit: false }
   }
 }
 
-export default function EndNodeModal({ node, moduleNodes, onSave, onClose }: Props): JSX.Element {
+export default function EndNodeModal({ node, moduleNodes, envVarKeys, onSave, onClose }: Props): JSX.Element {
   const initial = parseConfig(node.config)
   const [label, setLabel] = useState(node.label)
   const [reportFormat, setReportFormat] = useState<EndNodeConfig['reportFormat']>(initial.reportFormat)
   const [savePath, setSavePath] = useState<string>(initial.savePath)
   const [filenameTemplate, setFilenameTemplate] = useState<string>(initial.filenameTemplate || DEFAULT_TEMPLATE)
+  const [displayEnvKeys, setDisplayEnvKeys] = useState<Set<string>>(() => new Set(initial.displayEnvKeys ?? []))
   const [selectedIds, setSelectedIds] = useState<Set<string>>(() => {
     const allIds = moduleNodes.map(n => n.id)
     if (!initial.selectedModuleIdsExplicit) return new Set(allIds)
@@ -129,6 +132,14 @@ export default function EndNodeModal({ node, moduleNodes, onSave, onClose }: Pro
     })
   }
 
+  const handleToggleDisplayEnv = (key: string): void => {
+    setDisplayEnvKeys(prev => {
+      const next = new Set(prev)
+      if (next.has(key)) next.delete(key); else next.add(key)
+      return next
+    })
+  }
+
   const handleSave = async (): Promise<void> => {
     setSaving(true)
     const cfg: EndNodeConfig = {
@@ -136,6 +147,7 @@ export default function EndNodeModal({ node, moduleNodes, onSave, onClose }: Pro
       savePath: savePath.trim(),
       filenameTemplate: filenameTemplate.trim() || DEFAULT_TEMPLATE,
       selectedModuleIds: Array.from(selectedIds),
+      displayEnvKeys: Array.from(displayEnvKeys).filter(key => envVarKeys.includes(key)),
     }
     await onSave(node.id, label.trim() || 'End', JSON.stringify(cfg))
     setSaving(false)
@@ -265,6 +277,29 @@ export default function EndNodeModal({ node, moduleNodes, onSave, onClose }: Pro
                         )
                       })
                     )}
+                  </div>
+                </div>
+
+                <div className="dm-field">
+                  <label className="dm-field-label">END 모듈에 표시할 환경 변수</label>
+                  <div className="end-env-key-list">
+                    {envVarKeys.length === 0 ? (
+                      <div className="dm-empty-hint">선택할 환경 변수가 없습니다.</div>
+                    ) : (
+                      envVarKeys.map(key => (
+                        <label key={key} className="end-env-key-item">
+                          <input
+                            type="checkbox"
+                            checked={displayEnvKeys.has(key)}
+                            onChange={() => handleToggleDisplayEnv(key)}
+                          />
+                          <span>{key}</span>
+                        </label>
+                      ))
+                    )}
+                  </div>
+                  <div className="end-field-hint">
+                    선택한 값은 실행 완료 후 END 모듈 안에 표시되고 복사할 수 있습니다.
                   </div>
                 </div>
 

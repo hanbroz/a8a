@@ -9,7 +9,7 @@ interface ScriptHelpButtonProps {
 
 const PRE_REQUEST_EXAMPLE = `const input = getInput()
 
-// API URL, Header, Body에서 [[customerId]]로 사용할 수 있습니다.
+// API URL, Header, Body에서 [[customerId]] 또는 <<customerId>>로 사용할 수 있습니다.
 setInput("customerId", input.customerId)
 
 // 이후 요청에서 {{token}}으로 사용할 수 있습니다.
@@ -21,12 +21,12 @@ const POST_RESPONSE_EXAMPLE = `const output = getOutput()
 
 // OUTPUT 전체를 단순한 객체로 교체합니다.
 setOutput({
-  recordLocator: output.recordLocator,
+  orderId: output.orderId,
   currencyCode: output.currencyCode
 })
 
 // 또는 이름/값 형태로 OUTPUT 필드를 추가할 수 있습니다.
-setOutput("pnr", output.recordLocator)`
+setOutput("orderId", output.orderId)`
 
 const POST_OUTPUT_OBJECT_EXAMPLE = `const output = getOutput()
 const next = new Output()

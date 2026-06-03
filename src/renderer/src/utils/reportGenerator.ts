@@ -46,7 +46,7 @@ export interface ReportNode {
 }
 
 export interface ReportVariable {
-  kind: 'env' | 'input'
+  kind: 'env' | 'input' | 'data'
   name: string
   value: unknown
 }
@@ -183,6 +183,12 @@ function formatVariableValue(value: unknown): string {
   try { return JSON.stringify(value, null, 2) } catch { return String(value) }
 }
 
+function variableKindLabel(kind: ReportVariable['kind']): string {
+  if (kind === 'env') return 'ENV'
+  if (kind === 'data') return 'DATA'
+  return 'INPUT'
+}
+
 function hasReportValue(value: unknown): boolean {
   return value !== null && value !== undefined
 }
@@ -270,7 +276,7 @@ function htmlVariablesSection(variables?: ReportVariable[]): string {
   if (!variables || variables.length === 0) return ''
   const rows = variables.map(variable => `
     <tr>
-      <td><span class="var-kind var-kind-${escapeHtml(variable.kind)}">${variable.kind === 'env' ? 'ENV' : 'INPUT'}</span></td>
+      <td><span class="var-kind var-kind-${escapeHtml(variable.kind)}">${variableKindLabel(variable.kind)}</span></td>
       <th>${escapeHtml(variable.name)}</th>
       <td><pre>${escapeHtml(formatVariableValue(variable.value))}</pre></td>
     </tr>
@@ -375,6 +381,7 @@ table.kv td { padding: 6px 10px; border: 1px solid #d1d9e0; color: #1f2328; font
 .var-kind { display: inline-flex; align-items: center; justify-content: center; min-width: 48px; height: 22px; padding: 0 8px; border-radius: 4px; font-size: 10px; font-weight: 700; border: 1px solid; }
 .var-kind-env { color: #3fb950; background: #3fb9501c; border-color: #3fb95055; }
 .var-kind-input { color: #8957e5; background: #8957e51c; border-color: #8957e555; }
+.var-kind-data { color: #1f6feb; background: #1f6feb1c; border-color: #1f6feb55; }
 
 .script-log { border: 1px solid #d1d9e0; border-radius: 6px; overflow: hidden; background: #0f1720; }
 .script-log-row { display: grid; grid-template-columns: 90px 64px minmax(0, 1fr); gap: 10px; align-items: start; padding: 7px 10px; border-bottom: 1px solid #263241; font-family: "JetBrains Mono", monospace; font-size: 12px; line-height: 1.5; }
@@ -547,7 +554,7 @@ function buildMarkdown(input: ReportInput): string {
     lines.push('|---|---|---|')
     for (const variable of input.variables) {
       const value = formatVariableValue(variable.value).replace(/\|/g, '\\|').replace(/\n/g, '<br>')
-      lines.push(`| ${variable.kind === 'env' ? 'ENV' : 'INPUT'} | \`${variable.name.replace(/`/g, '\\`')}\` | ${value} |`)
+      lines.push(`| ${variableKindLabel(variable.kind)} | \`${variable.name.replace(/`/g, '\\`')}\` | ${value} |`)
     }
     lines.push('')
     lines.push('</details>')
