@@ -40,6 +40,7 @@ const config = {
     ...(packageJson.build.mac ?? {}),
     category: 'public.app-category.developer-tools',
     darkModeSupport: true,
+    identity: '-',
     icon: 'build/icon.icns',
     target: [
       {
