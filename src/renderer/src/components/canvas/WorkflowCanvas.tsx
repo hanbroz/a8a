@@ -1174,6 +1174,23 @@ export default function WorkflowCanvas({
     return !!node && node.type !== 'start' && node.type !== 'end'
   })
 
+  const focusNodeOnCanvas = useCallback((nodeId: string): void => {
+    setSelectedNodeIds([nodeId])
+
+    const node = liveNodes.find(item => item.id === nodeId)
+    const rect = canvasRect()
+    if (node && rect) {
+      const nodeCenterX = node.x + nW(node) / 2
+      const nodeCenterY = node.y + nH(node) / 2
+      setViewport({
+        x: rect.width / 2 - nodeCenterX * zoom,
+        y: rect.height / 2 - nodeCenterY * zoom,
+      })
+    }
+
+    canvasRef.current?.focus({ preventScroll: true })
+  }, [liveNodes, zoom])
+
   const onCanvasKeyDown = useCallback((e: React.KeyboardEvent<HTMLDivElement>) => {
     const key = e.key.toLowerCase()
     if (key === 'escape' && zoomMenuOpen) {
@@ -1517,10 +1534,7 @@ export default function WorkflowCanvas({
                       type="button"
                       className={`wf-api-flow-item${selected ? ' active' : ''}`}
                       title={`${item.label} ${item.method} ${item.url}${item.url !== displayApiUrl(item.rawUrl) ? `\n원본: ${item.rawUrl}` : ''}`}
-                      onClick={() => {
-                        setSelectedNodeIds([item.id])
-                        canvasRef.current?.focus({ preventScroll: true })
-                      }}
+                      onClick={() => focusNodeOnCanvas(item.id)}
                     >
                       <span className="wf-api-flow-index">{item.index}</span>
                       <span className="wf-api-flow-name">{item.label}</span>

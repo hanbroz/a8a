@@ -153,9 +153,8 @@
   min-width: 100%;
   max-width: min(820px, calc(100vw - 24px));
   box-sizing: border-box;
-  max-height: min(360px, calc(100vh - 92px));
-  overflow-y: auto;
-  overflow-x: hidden;
+  max-height: none;
+  overflow: visible;
   padding: 6px;
   border: 1px solid var(--border-2);
   border-radius: 8px;
