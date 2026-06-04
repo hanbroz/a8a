@@ -82,6 +82,7 @@ function rowStatusKey(status: StartRepeatRowStatus): TranslationKey {
   if (status === 'running') return 'module.start.status.running'
   if (status === 'success') return 'module.start.status.success'
   if (status === 'failed') return 'module.start.status.failed'
+  if (status === 'stopped') return 'module.start.status.stopped'
   return 'module.start.status.pending'
 }
 

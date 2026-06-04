@@ -5,6 +5,22 @@ import * as db from './db'
 import type { EnvRow } from './db'
 
 const allowedWriteDirs = new Set<string>()
+const httpFetchControllersByRunId = new Map<string, Set<AbortController>>()
+
+function registerHttpFetchController(runId: string | undefined, controller: AbortController): void {
+  if (!runId) return
+  const controllers = httpFetchControllersByRunId.get(runId) ?? new Set<AbortController>()
+  controllers.add(controller)
+  httpFetchControllersByRunId.set(runId, controllers)
+}
+
+function unregisterHttpFetchController(runId: string | undefined, controller: AbortController): void {
+  if (!runId) return
+  const controllers = httpFetchControllersByRunId.get(runId)
+  if (!controllers) return
+  controllers.delete(controller)
+  if (controllers.size === 0) httpFetchControllersByRunId.delete(runId)
+}
 
 function normalizePath(path: string): string {
   return resolve(path)
@@ -199,11 +215,14 @@ export function registerIpcHandlers(): void {
   })
 
   // ── HTTP Fetch (CORS-free via main process) ──
-  ipcMain.handle('http:fetch', async (_, url: string, options: { method: string; headers: Record<string, string>; body?: string }) => {
+  ipcMain.handle('http:fetch', async (_, url: string, options: { method: string; headers: Record<string, string>; body?: string; runId?: string }) => {
     // 타임아웃(30초)으로 무한 대기를 막고, 실패는 throw 대신 ok:false로 돌려준다.
     // (IPC 경계 밖으로 throw하면 렌더러에 불투명한 "remote method" 에러로 전달됨)
     const controller = new AbortController()
-    const timeout = setTimeout(() => controller.abort(), 30_000)
+    registerHttpFetchController(options.runId, controller)
+    const timeout = setTimeout(() => {
+      controller.abort()
+    }, 30_000)
     try {
       const res = await fetch(url, {
         method: options.method,
@@ -220,7 +239,15 @@ export function registerIpcHandlers(): void {
       return { status: 0, statusText: message, text: '', ok: false }
     } finally {
       clearTimeout(timeout)
+      unregisterHttpFetchController(options.runId, controller)
     }
+  })
+
+  ipcMain.handle('http:cancel-run', (_, runId: string) => {
+    const controllers = httpFetchControllersByRunId.get(runId)
+    if (!controllers) return
+    controllers.forEach(controller => controller.abort())
+    httpFetchControllersByRunId.delete(runId)
   })
 
   // ── Dialog (folder picker) ──

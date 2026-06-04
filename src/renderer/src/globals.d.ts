@@ -89,7 +89,7 @@ declare global {
     rows: Record<string, unknown>[]
   }
 
-  type StartRepeatRowStatus = 'pending' | 'running' | 'success' | 'failed'
+  type StartRepeatRowStatus = 'pending' | 'running' | 'success' | 'failed' | 'stopped'
 
   interface StartRepeatRowRunState {
     status: StartRepeatRowStatus
@@ -284,7 +284,8 @@ declare global {
       importProject: (workspaceId: string, language?: string) => Promise<A8aTransferImportResult>
     }
     http: {
-      fetch: (url: string, options: { method: string; headers: Record<string, string>; body?: string }) => Promise<{ status: number; statusText: string; text: string; ok: boolean }>
+      fetch: (url: string, options: { method: string; headers: Record<string, string>; body?: string; runId?: string }) => Promise<{ status: number; statusText: string; text: string; ok: boolean }>
+      cancelRun: (runId: string) => Promise<void>
     }
     update: {
       getState: () => Promise<AppUpdateState>

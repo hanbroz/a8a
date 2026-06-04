@@ -33,6 +33,7 @@ interface Props {
 
 type ResizeDir = 'n' | 'ne' | 'e' | 'se' | 's' | 'sw' | 'w' | 'nw'
 type ScriptPaneTab = 'script' | 'console'
+type ScriptPhase = 'pre' | 'post'
 type SelectInputViewMode = 'json' | 'tree' | 'table'
 
 const MIN_W = 600
@@ -329,6 +330,7 @@ export default function SelectNodeModal({
   const [postConsoleLogs, setPostConsoleLogs] = useState<ScriptConsoleEntry[]>(initialPostConsoleLogs)
   const [scriptError, setScriptError] = useState<string | null>(null)
   const [scriptTesting, setScriptTesting] = useState(false)
+  const [fullscreenScriptPhase, setFullscreenScriptPhase] = useState<ScriptPhase | null>(null)
 
   useEffect(() => {
     const nextInitial = parseConfig(node.config)
@@ -358,6 +360,15 @@ export default function SelectNodeModal({
     }
     if (selectionType === 'script') setSelectionType('multiple')
   }, [preScript, selectionType])
+
+  useEffect(() => {
+    if (!fullscreenScriptPhase) return
+    const handleKeyDown = (event: KeyboardEvent): void => {
+      if (event.key === 'Escape') setFullscreenScriptPhase(null)
+    }
+    window.addEventListener('keydown', handleKeyDown)
+    return () => window.removeEventListener('keydown', handleKeyDown)
+  }, [fullscreenScriptPhase])
 
   const inputRows = parseTableData(inputJson)
   const columns = inputRows && inputRows.length > 0 ? Object.keys(inputRows[0]) : []
@@ -633,6 +644,20 @@ export default function SelectNodeModal({
     }
   }
 
+  useEffect(() => {
+    const handleKeyDown = (event: KeyboardEvent): void => {
+      if (event.defaultPrevented || !(event.ctrlKey || event.metaKey) || event.altKey) return
+      if (event.key.toLowerCase() !== 'enter') return
+      if (scriptTesting || (!preScript.trim() && !postScript.trim())) return
+
+      event.preventDefault()
+      void handleTestScripts()
+    }
+
+    window.addEventListener('keydown', handleKeyDown)
+    return () => window.removeEventListener('keydown', handleKeyDown)
+  }, [handleTestScripts, postScript, preScript, scriptTesting])
+
   const totalRows = inputRows?.length ?? 0
 
   return (
@@ -792,6 +817,14 @@ export default function SelectNodeModal({
                   <span className="dm-pane-label dm-pane-label-pre">PRE REQUEST</span>
                   <div className="dm-pane-hd-actions">
                     <ScriptHelpButton phase="pre" />
+                    <button
+                      className="btn ghost icon dm-format-btn"
+                      onClick={() => setFullscreenScriptPhase('pre')}
+                      title={t('module.common.fullscreenAria', { title: 'PRE REQUEST' })}
+                      aria-label={t('module.common.fullscreenAria', { title: 'PRE REQUEST' })}
+                    >
+                      <IcoMaximize size={13} />
+                    </button>
                     <div className="api-script-pane-tabs">
                       <button
                         className={`api-script-pane-tab${prePaneTab === 'script' ? ' api-script-pane-tab-active' : ''}`}
@@ -975,6 +1008,14 @@ export default function SelectNodeModal({
                   <span className="dm-pane-label dm-pane-label-post">POST RESPONSE</span>
                   <div className="dm-pane-hd-actions">
                     <ScriptHelpButton phase="post" />
+                    <button
+                      className="btn ghost icon dm-format-btn"
+                      onClick={() => setFullscreenScriptPhase('post')}
+                      title={t('module.common.fullscreenAria', { title: 'POST RESPONSE' })}
+                      aria-label={t('module.common.fullscreenAria', { title: 'POST RESPONSE' })}
+                    >
+                      <IcoMaximize size={13} />
+                    </button>
                     <div className="api-script-pane-tabs">
                       <button
                         className={`api-script-pane-tab${postPaneTab === 'script' ? ' api-script-pane-tab-active' : ''}`}
@@ -1047,6 +1088,55 @@ export default function SelectNodeModal({
           </div>
         </div>
       </div>
+
+      {fullscreenScriptPhase && (
+        <div
+          className="api-body-fullscreen api-script-fullscreen"
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="select-script-fullscreen-title"
+          onClick={() => setFullscreenScriptPhase(null)}
+        >
+          <div className="api-body-fullscreen-panel" onClick={event => event.stopPropagation()}>
+            <div className="api-body-fullscreen-hd">
+              <div className="api-body-fullscreen-title-wrap">
+                <div id="select-script-fullscreen-title" className="api-body-fullscreen-title">
+                  {fullscreenScriptPhase === 'pre' ? 'PRE REQUEST' : 'POST RESPONSE'}
+                </div>
+                <div className="api-body-fullscreen-meta">JavaScript</div>
+              </div>
+              <div className="api-body-fullscreen-actions">
+                <ScriptHelpButton phase={fullscreenScriptPhase} />
+                <button
+                  className="btn ghost icon api-body-fullscreen-close"
+                  onClick={() => setFullscreenScriptPhase(null)}
+                  title={t('common.close')}
+                  aria-label={t('common.close')}
+                >
+                  <IcoX size={14} />
+                </button>
+              </div>
+            </div>
+            <div className="api-body-fullscreen-editor api-script-fullscreen-editor">
+              <Suspense fallback={<MonacoFallback />}>
+                <MonacoEditor
+                  height="100%"
+                  language="javascript"
+                  path={`a8a://select-script/${node.id}/${fullscreenScriptPhase === 'pre' ? 'pre-request.fullscreen.js' : 'post-response.fullscreen.js'}`}
+                  theme={monacoTheme}
+                  value={fullscreenScriptPhase === 'pre' ? preScript : postScript}
+                  beforeMount={beforeApiScriptEditorMount}
+                  onChange={(v: string | undefined) => {
+                    if (fullscreenScriptPhase === 'pre') setPreScript(v ?? '')
+                    else setPostScript(v ?? '')
+                  }}
+                  options={MONACO_OPTIONS}
+                />
+              </Suspense>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   )
 }

@@ -205,6 +205,7 @@ interface Props {
 type ResizeDir = 'n' | 'ne' | 'e' | 'se' | 's' | 'sw' | 'w' | 'nw'
 type SettingsTab = 'auth' | 'headers' | 'params' | 'body'
 type ScriptPaneTab = 'script' | 'console'
+type ScriptPhase = 'pre' | 'post'
 type UsedVariable = { kind: 'env' | 'input' | 'data'; name: string; resolved: string | null; mappedPath?: string }
 type ResolvedApiRequest = {
   method: ApiConfig['method']
@@ -929,6 +930,7 @@ export default function ApiNodeModal({
   const [saving, setSaving] = useState(false)
   const [confirmDelete, setConfirmDelete] = useState(false)
   const [isBodyFullscreen, setIsBodyFullscreen] = useState(false)
+  const [fullscreenScriptPhase, setFullscreenScriptPhase] = useState<ScriptPhase | null>(null)
 
   const [inputJson, setInputJson] = useState(initialInput ?? '')
   const [inputError, setInputError] = useState(false)
@@ -991,13 +993,15 @@ export default function ApiNodeModal({
   }, [method])
 
   useEffect(() => {
-    if (!isBodyFullscreen) return
+    if (!isBodyFullscreen && !fullscreenScriptPhase) return
     const handleKeyDown = (event: KeyboardEvent) => {
-      if (event.key === 'Escape') setIsBodyFullscreen(false)
+      if (event.key !== 'Escape') return
+      setIsBodyFullscreen(false)
+      setFullscreenScriptPhase(null)
     }
     window.addEventListener('keydown', handleKeyDown)
     return () => window.removeEventListener('keydown', handleKeyDown)
-  }, [isBodyFullscreen])
+  }, [fullscreenScriptPhase, isBodyFullscreen])
 
   useEffect(() => {
     localStorage.setItem(inputPickerExpandedStorageKey, JSON.stringify(Array.from(inputPickerExpandedIds)))
@@ -1343,6 +1347,20 @@ export default function ApiNodeModal({
     }
   }
 
+  useEffect(() => {
+    const handleKeyDown = (event: KeyboardEvent): void => {
+      if (event.defaultPrevented || !(event.ctrlKey || event.metaKey) || event.altKey) return
+      if (event.key.toLowerCase() !== 'enter') return
+      if (testing || !url.trim()) return
+
+      event.preventDefault()
+      void handleTest()
+    }
+
+    window.addEventListener('keydown', handleKeyDown)
+    return () => window.removeEventListener('keydown', handleKeyDown)
+  }, [testing, url, handleTest])
+
   const handleFormatInput = () => {
     const result = formatJson(inputJson)
     setInputJson(result.value); setInputError(result.error)
@@ -1486,6 +1504,14 @@ export default function ApiNodeModal({
                   <span className="dm-pane-label dm-pane-label-pre">PRE REQUEST</span>
                   <div className="dm-pane-hd-actions">
                     <ScriptHelpButton phase="pre" />
+                    <button
+                      className="btn ghost icon dm-format-btn"
+                      onClick={() => setFullscreenScriptPhase('pre')}
+                      title={t('module.common.fullscreenAria', { title: 'PRE REQUEST' })}
+                      aria-label={t('module.common.fullscreenAria', { title: 'PRE REQUEST' })}
+                    >
+                      <IcoMaximize size={13} />
+                    </button>
                     <div className="api-script-pane-tabs">
                       <button
                         className={`api-script-pane-tab${prePaneTab === 'script' ? ' api-script-pane-tab-active' : ''}`}
@@ -1858,6 +1884,14 @@ export default function ApiNodeModal({
                   <span className="dm-pane-label dm-pane-label-post">POST RESPONSE</span>
                   <div className="dm-pane-hd-actions">
                     <ScriptHelpButton phase="post" />
+                    <button
+                      className="btn ghost icon dm-format-btn"
+                      onClick={() => setFullscreenScriptPhase('post')}
+                      title={t('module.common.fullscreenAria', { title: 'POST RESPONSE' })}
+                      aria-label={t('module.common.fullscreenAria', { title: 'POST RESPONSE' })}
+                    >
+                      <IcoMaximize size={13} />
+                    </button>
                     <div className="api-script-pane-tabs">
                       <button
                         className={`api-script-pane-tab${postPaneTab === 'script' ? ' api-script-pane-tab-active' : ''}`}
@@ -1972,6 +2006,55 @@ export default function ApiNodeModal({
                 placeholder='{"key": "value"}'
                 templateSuggestions={{ envVarNames, inputKeys }}
               />
+            </div>
+          </div>
+        </div>
+      )}
+
+      {fullscreenScriptPhase && (
+        <div
+          className="api-body-fullscreen api-script-fullscreen"
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="api-script-fullscreen-title"
+          onClick={() => setFullscreenScriptPhase(null)}
+        >
+          <div className="api-body-fullscreen-panel" onClick={event => event.stopPropagation()}>
+            <div className="api-body-fullscreen-hd">
+              <div className="api-body-fullscreen-title-wrap">
+                <div id="api-script-fullscreen-title" className="api-body-fullscreen-title">
+                  {fullscreenScriptPhase === 'pre' ? 'PRE REQUEST' : 'POST RESPONSE'}
+                </div>
+                <div className="api-body-fullscreen-meta">JavaScript</div>
+              </div>
+              <div className="api-body-fullscreen-actions">
+                <ScriptHelpButton phase={fullscreenScriptPhase} />
+                <button
+                  className="btn ghost icon api-body-fullscreen-close"
+                  onClick={() => setFullscreenScriptPhase(null)}
+                  title={t('common.close')}
+                  aria-label={t('common.close')}
+                >
+                  <IcoX size={14} />
+                </button>
+              </div>
+            </div>
+            <div className="api-body-fullscreen-editor api-script-fullscreen-editor">
+              <Suspense fallback={<MonacoFallback />}>
+                <MonacoEditor
+                  height="100%"
+                  language="javascript"
+                  path={`a8a://api-script/${node.id}/${fullscreenScriptPhase === 'pre' ? 'pre-request.fullscreen.js' : 'post-response.fullscreen.js'}`}
+                  theme={monacoTheme}
+                  value={fullscreenScriptPhase === 'pre' ? preScript : postScript}
+                  beforeMount={beforeApiScriptEditorMount}
+                  onChange={(v: string | undefined) => {
+                    if (fullscreenScriptPhase === 'pre') setPreScript(v ?? '')
+                    else setPostScript(v ?? '')
+                  }}
+                  options={MONACO_OPTIONS}
+                />
+              </Suspense>
             </div>
           </div>
         </div>

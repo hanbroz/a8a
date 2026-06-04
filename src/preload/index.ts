@@ -65,8 +65,9 @@ const api = {
     importProject: (workspaceId: string, language?: string): Promise<A8aTransferImportResult> => ipcRenderer.invoke('transfer:import-project', workspaceId, language)
   },
   http: {
-    fetch: (url: string, options: { method: string; headers: Record<string, string>; body?: string }): Promise<{ status: number; statusText: string; text: string; ok: boolean }> =>
-      ipcRenderer.invoke('http:fetch', url, options)
+    fetch: (url: string, options: { method: string; headers: Record<string, string>; body?: string; runId?: string }): Promise<{ status: number; statusText: string; text: string; ok: boolean }> =>
+      ipcRenderer.invoke('http:fetch', url, options),
+    cancelRun: (runId: string): Promise<void> => ipcRenderer.invoke('http:cancel-run', runId)
   },
   update: {
     getState: (): Promise<AppUpdateState> => ipcRenderer.invoke('update:get-state'),

@@ -91,6 +91,7 @@
 }
 
 .wf-floating-action-group {
+  width: 104px;
   height: 26px;
   display: inline-flex;
   align-items: center;
@@ -99,8 +100,12 @@
   border-left: 1px solid var(--border-2);
 }
 
+.wf-floating-action-group .wf-floating-tool-btn {
+  width: 100%;
+  white-space: nowrap;
+}
+
 .wf-floating-run-btn {
-  min-width: 118px;
   justify-content: center;
   border-color: rgba(63, 185, 80, 0.52);
   background: #238636;
@@ -119,29 +124,51 @@
   color: var(--text-3);
 }
 
+.wf-floating-running-btn {
+  opacity: 0.82;
+  border-color: var(--border-2);
+  background: var(--bg-3);
+  color: var(--text-3);
+  cursor: pointer;
+}
+
+.wf-floating-running-btn:hover {
+  opacity: 1;
+  border-color: rgba(88, 166, 255, 0.55);
+  background: rgba(88, 166, 255, 0.12);
+  color: #58a6ff;
+}
+
+.wf-floating-running-btn:disabled,
+.wf-floating-running-btn:disabled:hover {
+  opacity: 0.82;
+  border-color: var(--border-2);
+  background: var(--bg-3);
+  color: var(--text-3);
+  cursor: not-allowed;
+}
+
+.wf-floating-run-spinner {
+  width: 12px;
+  height: 12px;
+  flex: 0 0 12px;
+  border: 2px solid currentColor;
+  border-top-color: transparent;
+  border-radius: 50%;
+  animation: api-spin 0.75s linear infinite;
+}
+
 .wf-floating-reset-btn {
   justify-content: center;
+  border-color: rgba(210, 153, 34, 0.62);
+  background: rgba(210, 153, 34, 0.15);
+  color: #d29922;
 }
 
-.wf-floating-run-shortcut {
-  height: 18px;
-  display: inline-flex;
-  align-items: center;
-  padding: 0 5px;
-  border: 1px solid rgba(255, 255, 255, 0.24);
-  border-radius: 4px;
-  background: rgba(255, 255, 255, 0.14);
-  color: rgba(255, 255, 255, 0.9);
-  font-family: var(--font-mono);
-  font-size: 10px;
-  font-weight: 800;
-  line-height: 1;
-}
-
-.wf-floating-run-btn:disabled .wf-floating-run-shortcut {
-  border-color: var(--border-2);
-  background: var(--bg-2);
-  color: var(--text-4);
+.wf-floating-reset-btn:hover {
+  border-color: rgba(210, 153, 34, 0.9);
+  background: rgba(210, 153, 34, 0.24);
+  color: #f0b84b;
 }
 
 .wf-api-flow-list {
@@ -1959,6 +1986,12 @@
   color: var(--state-error);
 }
 
+.sn-row-status-stopped {
+  border-color: rgba(210, 153, 34, 0.4);
+  background: rgba(210, 153, 34, 0.13);
+  color: #d29922;
+}
+
 .sn-data-empty {
   color: var(--text-4);
   text-align: center;
@@ -2652,8 +2685,9 @@
 
 .api-script-console-row {
   display: grid;
-  grid-template-columns: 68px 46px minmax(0, 1fr);
+  grid-template-columns: max-content 46px minmax(0, 1fr);
   gap: 8px;
+  align-items: start;
   padding: 5px 12px;
   border-bottom: 1px solid rgba(139, 148, 158, 0.14);
   font-family: var(--font-mono);
@@ -2722,7 +2756,7 @@
 }
 
 .log-script-console-list .api-script-console-row {
-  grid-template-columns: 78px 54px minmax(0, 1fr);
+  grid-template-columns: max-content 54px minmax(0, 1fr);
   padding: 5px 10px;
 }
 
@@ -3850,6 +3884,12 @@
 
 .api-body-fullscreen-editor > .json-monaco-wrap {
   flex: 1 1 auto;
+  min-height: 0;
+}
+
+.api-script-fullscreen-editor > div {
+  flex: 1 1 auto;
+  min-width: 0;
   min-height: 0;
 }
 

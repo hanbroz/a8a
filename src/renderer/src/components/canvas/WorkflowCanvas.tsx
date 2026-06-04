@@ -96,6 +96,7 @@ interface Props {
   dataVars?: Record<string, unknown>
   nodeRunInputs?: Record<string, string>
   onCanvasRun?: () => void
+  onCanvasStopRequest?: () => void
   onCanvasReset?: () => void
   onCanvasUndo?: () => void
   onCanvasRedo?: () => void
@@ -585,7 +586,7 @@ export default function WorkflowCanvas({
   onModuleDrop,
   nodeStatuses, branchRoutes, endNodeDisplayValues, startNodeLoopProgress, commonDataModules = [], onNodeStatusClick,
   envVars = {}, dataVars = {}, nodeRunInputs = {},
-  onCanvasRun, onCanvasReset, onCanvasUndo, onCanvasRedo, canCanvasUndo = false, canCanvasRedo = false, showCanvasReset = false, canvasRunDisabled = false,
+  onCanvasRun, onCanvasStopRequest, onCanvasReset, onCanvasUndo, onCanvasRedo, canCanvasUndo = false, canCanvasRedo = false, showCanvasReset = false, canvasRunDisabled = false,
   isCanvasFullscreen = false, onCanvasFullscreenChange,
 }: Props): JSX.Element {
   const { t } = useI18n()
@@ -1492,7 +1493,19 @@ export default function WorkflowCanvas({
           </div>
           {(onCanvasRun || onCanvasReset) && (
             <div className="wf-floating-action-group">
-              {showCanvasReset && onCanvasReset ? (
+              {canvasRunDisabled && onCanvasRun ? (
+                <button
+                  type="button"
+                  className="wf-floating-tool-btn wf-floating-run-btn wf-floating-running-btn"
+                  onClick={onCanvasStopRequest}
+                  disabled={!onCanvasStopRequest}
+                  title={t('workflow.stopTitle')}
+                  aria-label={t('workflow.stopTitle')}
+                >
+                  <span className="wf-floating-run-spinner" aria-hidden="true" />
+                  {t('workflow.status.running')}
+                </button>
+              ) : showCanvasReset && onCanvasReset ? (
                 <button
                   type="button"
                   className="wf-floating-tool-btn wf-floating-reset-btn"
@@ -1512,7 +1525,6 @@ export default function WorkflowCanvas({
                 >
                   <IcoPlay size={13} />
                   {t('workflow.run')}
-                  <kbd className="wf-floating-run-shortcut">Ctrl+Enter</kbd>
                 </button>
               ) : null}
             </div>

@@ -153,6 +153,7 @@ function statusCodeColor(code: number): string {
 }
 
 interface CanvasExecution {
+  runId: string
   nodeOutputs: Record<string, unknown>
   moduleVars: Record<string, Record<string, unknown>>
   branchRoutes?: Record<string, 'true' | 'false'>
@@ -650,13 +651,6 @@ function LogEntryRow({ entry, isActive }: { entry: LogEntry; isActive?: boolean 
                   )}
                 </div>
               )}
-              {hasScriptLogs && (
-                <div className="log-api-section">
-                  <div className="log-api-section-title">SCRIPT CONSOLE</div>
-                  <ExecutionScriptConsole title="PRE REQUEST / INPUT" logs={scriptLogs.pre} />
-                  <ExecutionScriptConsole title="POST RESPONSE" logs={scriptLogs.post} />
-                </div>
-              )}
             </div>
           ) : (
             <div className="log-entry-io">
@@ -670,6 +664,13 @@ function LogEntryRow({ entry, isActive }: { entry: LogEntry; isActive?: boolean 
                   <LogJsonViewer value={entry.output} path={`execution-log/${entry.id}/output.json`} placeholder={t('log.placeholder.output')} />
                 </div>
               )}
+            </div>
+          )}
+          {hasScriptLogs && (
+            <div className="log-api-section">
+              <div className="log-api-section-title">SCRIPT CONSOLE</div>
+              <ExecutionScriptConsole title="PRE REQUEST / INPUT" logs={scriptLogs.pre} />
+              <ExecutionScriptConsole title="POST RESPONSE" logs={scriptLogs.post} />
             </div>
           )}
         </div>
@@ -1261,9 +1262,11 @@ export default function App(): JSX.Element {
   const [confirmDeleteProject, setConfirmDeleteProject] = useState<{ wsId: string; project: ProjectItem } | null>(null)
   const [confirmDeleteEnv, setConfirmDeleteEnv] = useState<{ wsId: string; env: Environment } | null>(null)
   const [confirmDeleteCanvasNodes, setConfirmDeleteCanvasNodes] = useState<ApiNode[]>([])
+  const [confirmStopCanvasExecution, setConfirmStopCanvasExecution] = useState(false)
   const [iconTooltip, setIconTooltip] = useState<{ text: string; x: number; y: number } | null>(null)
 
   // ── Canvas execution ──
+  const canvasStopRequestedRef = useRef(false)
   const [canvasExecution, setCanvasExecution] = useState<CanvasExecution | null>(null)
   const [execLogs, setExecLogs] = useState<LogEntry[]>([])
   const [nodeStatuses, setNodeStatuses] = useState<Record<string, NodeStatus>>({})
@@ -1437,6 +1440,8 @@ export default function App(): JSX.Element {
   const activeCanvasHistory = activeProject ? canvasHistories[activeProject.id] ?? emptyCanvasHistory() : emptyCanvasHistory()
   const canCanvasUndo = !canvasExecution && activeCanvasHistory.undo.length > 0
   const canCanvasRedo = !canvasExecution && activeCanvasHistory.redo.length > 0
+  const hasCanvasRunState = Object.keys(nodeStatuses).length > 0
+  const isCanvasRunning = !!canvasExecution || Object.values(nodeStatuses).some(status => status === 'running')
   const startRepeatPreviewData = useMemo(
     () => getStartRepeatPreviewRow(activeNodes.find(node => node.type === 'start')) ?? undefined,
     [activeNodes],
@@ -1473,6 +1478,8 @@ export default function App(): JSX.Element {
   useEffect(() => {
     // 프로젝트가 바뀌면 이전 프로젝트의 실행 상태(진행 중 실행/로그/상태 배지/분기 경로)를
     // 초기화한다. 노드 id는 프로젝트마다 고유하므로 남겨두면 엉뚱하게 표시된다.
+    canvasStopRequestedRef.current = false
+    setConfirmStopCanvasExecution(false)
     setCanvasExecution(null)
     setExecLogs([])
     setNodeStatuses({})
@@ -2266,6 +2273,66 @@ export default function App(): JSX.Element {
     return plan
   }
 
+  const stopCanvasExecution = useCallback(() => {
+    const stoppedAt = Date.now()
+    const stoppedMessage = t('runtime.executionStopped')
+    const currentNodeId = canvasExecution?.plan[canvasExecution.step]
+      ?? canvasExecution?.plan[canvasExecution.step - 1]
+      ?? canvasExecution?.plan[0]
+
+    canvasStopRequestedRef.current = true
+    setConfirmStopCanvasExecution(false)
+    if (canvasExecution?.runId) void window.api.http.cancelRun(canvasExecution.runId)
+    setCanvasExecution(null)
+    setExecLogs(prev => prev.map(entry => (
+      entry.status === 'running'
+        ? { ...entry, status: 'skip', error: stoppedMessage, duration: stoppedAt - entry.startedAt }
+        : entry
+    )))
+    setNodeStatuses(prev => {
+      let changed = false
+      const next = { ...prev }
+      Object.entries(next).forEach(([nodeId, status]) => {
+        if (status !== 'running') return
+        next[nodeId] = 'skip'
+        changed = true
+      })
+      if (!changed && Object.keys(next).length === 0 && currentNodeId) {
+        next[currentNodeId] = 'skip'
+        changed = true
+      }
+      return changed ? next : prev
+    })
+    setStartRepeatRowStates(prev => {
+      let changed = false
+      const next: Record<string, Record<number, StartRepeatRowRunState>> = {}
+      Object.entries(prev).forEach(([startNodeId, rows]) => {
+        const nextRows: Record<number, StartRepeatRowRunState> = {}
+        Object.entries(rows).forEach(([rowNo, state]) => {
+          const numericRowNo = Number(rowNo)
+          if (state.status === 'running') {
+            nextRows[numericRowNo] = {
+              ...state,
+              status: 'stopped',
+              error: stoppedMessage,
+              updatedAt: stoppedAt,
+            }
+            changed = true
+          } else {
+            nextRows[numericRowNo] = state
+          }
+        })
+        next[startNodeId] = nextRows
+      })
+      return changed ? next : prev
+    })
+  }, [canvasExecution, t])
+
+  const handleCanvasStopRequest = useCallback(() => {
+    if (!isCanvasRunning) return
+    setConfirmStopCanvasExecution(true)
+  }, [isCanvasRunning])
+
   const advanceExecution = useCallback(async (
     exec: CanvasExecution,
     selectedRows?: unknown[],
@@ -2284,6 +2351,12 @@ export default function App(): JSX.Element {
     const loopRow = loop ? (loop.rows[loop.index] ?? { no: loop.index + 1 }) : null
     const loopRowNo = loop ? Math.max(1, Math.floor(Number(loopRow?.no) || loop.index + 1)) : 0
     let { step, plan } = exec
+    const stopIfRequested = (): boolean => {
+      if (!canvasStopRequestedRef.current) return false
+      setCanvasExecution(null)
+      return true
+    }
+    if (stopIfRequested()) return
     const setLoopRowState = (patch: { status: StartRepeatRowStatus; error?: string; failedNodeId?: string }): void => {
       if (!loop) return
       setStartRepeatRowStates(prev => {
@@ -2319,10 +2392,12 @@ export default function App(): JSX.Element {
       })
     }
     const startNextLoopIteration = (): boolean => {
+      if (stopIfRequested()) return true
       if (!loop || loop.index + 1 >= loop.total) return false
       const nextStartedAt = Date.now()
       rememberLoopProgress(loop.index + 1)
       const nextExecution: CanvasExecution = {
+        runId: exec.runId,
         nodeOutputs: {},
         moduleVars: {},
         branchRoutes: {},
@@ -2354,6 +2429,7 @@ export default function App(): JSX.Element {
       return true
     }
     const continueLoopIfNeeded = (): boolean => {
+      if (stopIfRequested()) return true
       if (!loop) return false
       setLoopRowState({ status: 'success' })
       return startNextLoopIteration()
@@ -2370,10 +2446,12 @@ export default function App(): JSX.Element {
       return true
     }
     const pushLog = (entry: LogEntry): void => {
+      if (canvasStopRequestedRef.current) return
       localLogs.push(entry)
       setExecLogs(prev => [...prev, entry])
     }
     const updateLog = (id: string, patch: Partial<LogEntry>): void => {
+      if (canvasStopRequestedRef.current) return
       const idx = localLogs.findIndex(e => e.id === id)
       if (idx >= 0) localLogs[idx] = { ...localLogs[idx], ...patch }
       setExecLogs(prev => prev.map(e => e.id === id ? { ...e, ...patch } : e))
@@ -2413,6 +2491,7 @@ export default function App(): JSX.Element {
               envVars: envVarsForRun,
               language,
             })
+            if (stopIfRequested()) return
             selectedScriptLogs = { ...selectedScriptLogs, post: postResult.logs }
             setScriptLogsForNode(prevNodeId, 'post', postResult.logs)
             if (postResult.hasOutputOverride) selectedOutput = postResult.outputOverride
@@ -2420,7 +2499,9 @@ export default function App(): JSX.Element {
             for (const [k, v] of Object.entries(postResult.envUpdates)) envVarsForRun[k] = v
             recordUpdatedEnvVariables(usedVariables, envVarsForRun, postResult.envUpdates)
             if (Object.keys(postResult.envUpdates).length > 0) await persistEnvUpdatesForRun(postResult.envUpdates)
+            if (stopIfRequested()) return
           } catch (err) {
+            if (stopIfRequested()) return
             if (isScriptRuntimeError(err)) {
               selectedScriptLogs = { ...selectedScriptLogs, post: err.logs }
               setScriptLogsForNode(prevNodeId, 'post', err.logs)
@@ -2444,6 +2525,7 @@ export default function App(): JSX.Element {
       }
       nodeOutputs[prevNodeId] = selectedOutput
       if (selection) await rememberSelectSelection(prevNodeId, selection)
+      if (stopIfRequested()) return
       setNodeRunOutputs(prev => ({ ...prev, [prevNodeId]: JSON.stringify(selectedOutput, null, 2) }))
       if (exec.pendingLogEntryId) {
         const entry = localLogs.find(e => e.id === exec.pendingLogEntryId)
@@ -2453,6 +2535,7 @@ export default function App(): JSX.Element {
     }
 
     if (selectedBranchRoute !== undefined && step > 0) {
+      if (stopIfRequested()) return
       const prevNodeId = plan[step - 1]
       const route = selectedBranchRoute
       const passThroughOutput = exec.pendingBranchChoice?.input ?? null
@@ -2468,6 +2551,7 @@ export default function App(): JSX.Element {
     }
 
     while (step < plan.length) {
+      if (stopIfRequested()) return
       const nodeId = plan[step]
       const node = activeNodes.find(n => n.id === nodeId)
       if (!node) { step++; continue }
@@ -2588,6 +2672,7 @@ export default function App(): JSX.Element {
             const sep = endCfg.savePath.includes('/') && !endCfg.savePath.includes('\\') ? '/' : '\\'
             const fullPath = endCfg.savePath.replace(/[\\/]+$/, '') + sep + filename + ext
             const writeResult = await window.api.file.write(fullPath, content, language)
+            if (stopIfRequested()) return
             if (writeResult.ok) {
               if (!loop) setSavedReport({ path: writeResult.path })
             } else {
@@ -2597,6 +2682,7 @@ export default function App(): JSX.Element {
             }
           }
         } catch (err) {
+          if (stopIfRequested()) return
           endStatus = 'error'
           endErrorMessage = t('runtime.error.reportCreateFailed', { message: String((err as Error)?.message ?? err) })
           console.error('[Report generation failed]', err)
@@ -2660,12 +2746,15 @@ export default function App(): JSX.Element {
           if (selCfg.preScript && selCfg.preScript.trim()) {
             try {
               const preResult = await runPreRequest(selCfg.preScript, { input: preScriptInput, envVars: envVarsForRun, language })
+              if (stopIfRequested()) return
               recordScriptLogs('pre', preResult.logs)
               preInputVars = preResult.inputVars
               for (const [k, v] of Object.entries(preResult.envUpdates)) envVarsForRun[k] = v
               recordUpdatedEnvVariables(usedVariables, envVarsForRun, preResult.envUpdates)
               if (Object.keys(preResult.envUpdates).length > 0) await persistEnvUpdatesForRun(preResult.envUpdates)
+              if (stopIfRequested()) return
             } catch (err) {
+              if (stopIfRequested()) return
               if (isScriptRuntimeError(err)) recordScriptLogs('pre', err.logs)
               throw new Error(t('runtime.error.preScript', { message: String((err as Error)?.message ?? err) }))
             }
@@ -2684,13 +2773,16 @@ export default function App(): JSX.Element {
                   envVars: envVarsForRun,
                   language,
                 })
+                if (stopIfRequested()) return finalOutput
                 recordScriptLogs('post', postResult.logs)
                 postOutputVars = postResult.outputVars
                 if (postResult.hasOutputOverride) finalOutput = postResult.outputOverride
                 for (const [k, v] of Object.entries(postResult.envUpdates)) envVarsForRun[k] = v
                 recordUpdatedEnvVariables(usedVariables, envVarsForRun, postResult.envUpdates)
                 if (Object.keys(postResult.envUpdates).length > 0) await persistEnvUpdatesForRun(postResult.envUpdates)
+                if (stopIfRequested()) return finalOutput
               } catch (err) {
+                if (stopIfRequested()) return finalOutput
                 if (isScriptRuntimeError(err)) recordScriptLogs('post', err.logs)
                 throw new Error(t('runtime.error.postScript', { message: String((err as Error)?.message ?? err) }))
               }
@@ -2701,6 +2793,7 @@ export default function App(): JSX.Element {
 
           if (selCfg.selectionType === 'script') {
             const finalOutput = await applySelectPost(buildSelectScriptOutput(preInputVars))
+            if (stopIfRequested()) return
             nodeOutputs[nodeId] = finalOutput
             setNodeRunOutputs(prev => ({ ...prev, [nodeId]: JSON.stringify(finalOutput, null, 2) }))
             updateLog(entryId, { status: 'success', output: finalOutput, duration: Date.now() - startedAt, scriptLogs: currentScriptLogs })
@@ -2713,6 +2806,7 @@ export default function App(): JSX.Element {
           if (selCfg.autoSelect && selCfg.selectMode === 'json' && selectedJsonPaths.length > 0) {
             const autoJson = buildSelectedJsonOutput(rawInput, selectedJsonPaths)
             const finalOutput = await applySelectPost(autoJson)
+            if (stopIfRequested()) return
             nodeOutputs[nodeId] = finalOutput
             setNodeRunOutputs(prev => ({ ...prev, [nodeId]: JSON.stringify(finalOutput, null, 2) }))
             updateLog(entryId, { status: 'success', output: finalOutput, duration: Date.now() - startedAt, scriptLogs: currentScriptLogs })
@@ -2724,6 +2818,7 @@ export default function App(): JSX.Element {
               .map(index => inputArray[index])
               .filter(value => value !== undefined)
             const finalOutput = await applySelectPost(autoRow)
+            if (stopIfRequested()) return
             nodeOutputs[nodeId] = finalOutput
             setNodeRunOutputs(prev => ({ ...prev, [nodeId]: JSON.stringify(finalOutput, null, 2) }))
             updateLog(entryId, { status: 'success', output: finalOutput, duration: Date.now() - startedAt, scriptLogs: currentScriptLogs })
@@ -2732,6 +2827,7 @@ export default function App(): JSX.Element {
           }
           updateLog(entryId, { scriptLogs: currentScriptLogs })
           setCanvasExecution({
+            runId: exec.runId,
             nodeOutputs,
             moduleVars,
             branchRoutes,
@@ -2749,6 +2845,7 @@ export default function App(): JSX.Element {
           })
           return
         } catch (err) {
+          if (stopIfRequested()) return
           nodeOutputs[nodeId] = null
           const errStr = String(err)
           setNodeRunOutputs(prev => ({ ...prev, [nodeId]: errStr }))
@@ -2767,6 +2864,7 @@ export default function App(): JSX.Element {
           const branchInput = buildRuntimeInputContext(rawInput, upstreamModuleVars)
           if (branchCfg.mode === 'manual' && branchCfg.manualSource === 'runtime') {
             setCanvasExecution({
+              runId: exec.runId,
               nodeOutputs,
               moduleVars,
               branchRoutes,
@@ -2800,6 +2898,7 @@ export default function App(): JSX.Element {
           updateLog(entryId, { status: 'success', output: rawInput, duration: Date.now() - startedAt })
           setNodeStatuses(prev => ({ ...prev, [nodeId]: 'success' }))
         } catch (err) {
+          if (stopIfRequested()) return
           nodeOutputs[nodeId] = null
           const errStr = String(err)
           updateLog(entryId, { status: 'error', error: errStr, duration: Date.now() - startedAt })
@@ -2858,12 +2957,15 @@ export default function App(): JSX.Element {
           if (cfg.preScript && cfg.preScript.trim()) {
             try {
               const r = await runPreRequest(cfg.preScript, { input: preScriptInput, envVars: envVarsForExec, language })
+              if (stopIfRequested()) return
               recordScriptLogs('pre', r.logs)
               preInputVars = r.inputVars
               for (const [k, v] of Object.entries(r.envUpdates)) envVarsForExec[k] = v
               recordUpdatedEnvVariables(usedVariables, envVarsForExec, r.envUpdates)
               if (Object.keys(r.envUpdates).length > 0) await persistEnvUpdates(r.envUpdates)
+              if (stopIfRequested()) return
             } catch (err) {
+              if (stopIfRequested()) return
               if (isScriptRuntimeError(err)) recordScriptLogs('pre', err.logs)
               throw new Error(t('runtime.error.preScript', { message: String((err as Error)?.message ?? err) }))
             }
@@ -2916,7 +3018,8 @@ export default function App(): JSX.Element {
 
             lastApiDetail = { method: cfg.method, url: fullUrl, headers: requestHeaders, body: bodyStr }
 
-            const res = await window.api.http.fetch(fullUrl, { method: cfg.method, headers: requestHeaders, body: bodyStr })
+            const res = await window.api.http.fetch(fullUrl, { method: cfg.method, headers: requestHeaders, body: bodyStr, runId: exec.runId })
+            if (stopIfRequested()) return
             lastApiDetail = { ...lastApiDetail, statusCode: res.status, statusText: res.statusText, responseText: res.text }
 
             if (!res.ok) {
@@ -2943,13 +3046,16 @@ export default function App(): JSX.Element {
                 envVars: envVarsForExec,
                 language,
               })
+              if (stopIfRequested()) return
               recordScriptLogs('post', r.logs)
               postOutputVars = r.outputVars
               if (r.hasOutputOverride) finalOutput = r.outputOverride
               for (const [k, v] of Object.entries(r.envUpdates)) envVarsForExec[k] = v
               recordUpdatedEnvVariables(usedVariables, envVarsForExec, r.envUpdates)
               if (Object.keys(r.envUpdates).length > 0) await persistEnvUpdates(r.envUpdates)
+              if (stopIfRequested()) return
             } catch (err) {
+              if (stopIfRequested()) return
               if (isScriptRuntimeError(err)) recordScriptLogs('post', err.logs)
               throw new Error(t('runtime.error.postScript', { message: String((err as Error)?.message ?? err) }))
             }
@@ -2961,6 +3067,7 @@ export default function App(): JSX.Element {
           updateLog(entryId, { status: 'success', output: finalOutput, duration: Date.now() - startedAt, apiDetail: lastApiDetail, scriptLogs: currentScriptLogs })
           setNodeStatuses(prev => ({ ...prev, [nodeId]: 'success' }))
         } catch (err) {
+          if (stopIfRequested()) return
           const isHttpError = err instanceof ApiHttpError
           const errorOutput = isHttpError ? err.output : null
           const errStr = isHttpError ? err.message : String(err)
@@ -2983,7 +3090,9 @@ export default function App(): JSX.Element {
   }, [activeNodes, activeEdges, activeProjectWs, activeProjectEnvVars, activeProjectEnvDisplayVars, activeProject?.name, rememberSelectSelection, setScriptLogsForNode, t])
 
   const handleCanvasRun = useCallback(() => {
-    if (!activeProject || canvasExecution) return
+    if (!activeProject || isCanvasRunning) return
+    canvasStopRequestedRef.current = false
+    setConfirmStopCanvasExecution(false)
     const plan = buildExecutionPlan(activeNodes, activeEdges)
     if (plan.length === 0) return
     const startNode = activeNodes.find(n => n.id === plan[0] && n.type === 'start')
@@ -3027,6 +3136,7 @@ export default function App(): JSX.Element {
         }
       : {})
     const execution: CanvasExecution = {
+      runId: randomId(),
       nodeOutputs: {},
       moduleVars: {},
       branchRoutes: {},
@@ -3040,10 +3150,13 @@ export default function App(): JSX.Element {
       pendingSelectInput: null,
       pendingBranchChoice: null,
     }
+    setCanvasExecution(execution)
     advanceExecution(execution)
-  }, [activeNodes, activeEdges, activeProject, activeProjectEnvVars, advanceExecution, canvasExecution, t])
+  }, [activeNodes, activeEdges, activeProject, activeProjectEnvVars, advanceExecution, isCanvasRunning, t])
 
   const handleCanvasReset = useCallback(() => {
+    canvasStopRequestedRef.current = false
+    setConfirmStopCanvasExecution(false)
     setExecLogs([])
     setNodeStatuses({})
     setActiveBranchRoutes({})
@@ -3105,18 +3218,20 @@ export default function App(): JSX.Element {
 
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent): void => {
-      if (!(e.ctrlKey || e.metaKey)) return
+      if (e.defaultPrevented || !(e.ctrlKey || e.metaKey) || e.altKey) return
 
       const target = e.target as HTMLElement | null
       const tagName = target?.tagName.toLowerCase()
       if (target?.isContentEditable || tagName === 'input' || tagName === 'textarea' || tagName === 'select') return
-      if (target?.closest('.wf-canvas')) return
+      const key = e.key.toLowerCase()
+      if (target?.closest('.wf-canvas') && key !== 'enter') return
 
       const hasOpenModal = editingNode
         || modalEnv !== undefined
         || modalProject
         || modalProjectClone
         || modalWorkspace
+        || confirmStopCanvasExecution
         || confirmDeleteWsId
         || confirmDeleteProject
         || confirmDeleteEnv
@@ -3128,7 +3243,6 @@ export default function App(): JSX.Element {
 
       if (!activeProject || hasOpenModal) return
 
-      const key = e.key.toLowerCase()
       if (!canvasExecution && key === 'z') {
         e.preventDefault()
         if (e.shiftKey) {
@@ -3148,6 +3262,7 @@ export default function App(): JSX.Element {
       if (canvasExecution || key !== 'enter') return
 
       e.preventDefault()
+      if (hasCanvasRunState) handleCanvasReset()
       handleCanvasRun()
     }
 
@@ -3163,11 +3278,14 @@ export default function App(): JSX.Element {
     confirmDeleteEnv,
     confirmDeleteProject,
     confirmDeleteWsId,
+    confirmStopCanvasExecution,
     editingNode,
     envDropdownOpen,
     handleCanvasRedo,
     handleCanvasRun,
+    handleCanvasReset,
     handleCanvasUndo,
+    hasCanvasRunState,
     modalEnv,
     modalProject,
     modalProjectClone,
@@ -3940,13 +4058,14 @@ export default function App(): JSX.Element {
                   dataVars={startRepeatPreviewData}
                   nodeRunInputs={nodeRunInputs}
                   onCanvasRun={handleCanvasRun}
+                  onCanvasStopRequest={handleCanvasStopRequest}
                   onCanvasReset={handleCanvasReset}
                   onCanvasUndo={handleCanvasUndo}
                   onCanvasRedo={handleCanvasRedo}
                   canCanvasUndo={canCanvasUndo}
                   canCanvasRedo={canCanvasRedo}
-                  showCanvasReset={Object.keys(nodeStatuses).length > 0}
-                  canvasRunDisabled={!!canvasExecution}
+                  showCanvasReset={hasCanvasRunState}
+                  canvasRunDisabled={isCanvasRunning}
                   onNodeStatusClick={onNodeStatusClick}
                   isCanvasFullscreen={isCanvasFullscreen}
                   onCanvasFullscreenChange={setCanvasFullscreen}
@@ -4141,6 +4260,17 @@ export default function App(): JSX.Element {
       )}
 
       {/* ── Node Settings Modal ── */}
+      {confirmStopCanvasExecution && (
+        <ConfirmDialog
+          title={t('confirm.canvasStop.title')}
+          message={t('confirm.canvasStop.message')}
+          warning={t('confirm.canvasStop.warning')}
+          confirmLabel={t('confirm.canvasStop.confirm')}
+          onConfirm={stopCanvasExecution}
+          onCancel={() => setConfirmStopCanvasExecution(false)}
+        />
+      )}
+
       {editingNode?.type === 'start' && (
         <StartNodeModal
           key={editingNode.id}
@@ -4208,6 +4338,8 @@ export default function App(): JSX.Element {
           key={editingNode.id}
           node={editingNode}
           initialInput={nodeRunInputs[editingNode.id]}
+          initialPreConsoleLogs={nodeScriptLogs[editingNode.id]?.pre}
+          initialPostConsoleLogs={nodeScriptLogs[editingNode.id]?.post}
           onRun={() => previewUpToNode(editingNode.id)}
           onSave={handleDataNodeSave}
           onDelete={async () => {
