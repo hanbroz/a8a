@@ -3619,6 +3619,19 @@ export default function App(): JSX.Element {
     }
   }, [activeLogNodeId, logState])
 
+  useEffect(() => {
+    if (logState !== 'fullscreen') return
+
+    const handleKeyDown = (e: KeyboardEvent): void => {
+      if (e.key !== 'Escape') return
+      e.preventDefault()
+      setLogState('collapsed')
+    }
+
+    window.addEventListener('keydown', handleKeyDown)
+    return () => window.removeEventListener('keydown', handleKeyDown)
+  }, [logState])
+
   const toggleTheme = (): void => setTheme(t => (t === 'dark' ? 'light' : 'dark'))
   const toggleLog = (): void => setLogState(s => (s === 'collapsed' ? 'fullscreen' : 'collapsed'))
 
@@ -4233,14 +4246,24 @@ export default function App(): JSX.Element {
                 {t('common.html')}
               </button>
             )}
-            <IcoChevD
-              size={14}
-              style={{
-                color: 'var(--text-3)',
-                transform: logState === 'fullscreen' ? 'rotate(180deg)' : 'none',
-                transition: 'transform 0.15s'
+            <button
+              className="btn ghost log-action-btn"
+              onClick={(e) => {
+                e.stopPropagation()
+                toggleLog()
               }}
-            />
+              title={logState === 'fullscreen' ? t('log.action.closeEsc') : t('log.action.open')}
+            >
+              {logState === 'fullscreen' ? t('log.action.closeEsc') : t('log.action.open')}
+              <IcoChevD
+                size={14}
+                style={{
+                  color: 'var(--text-3)',
+                  transform: logState === 'fullscreen' ? 'rotate(180deg)' : 'none',
+                  transition: 'transform 0.15s'
+                }}
+              />
+            </button>
           </div>
           {logState === 'fullscreen' && (
             <div className="log-body">

@@ -975,6 +975,15 @@
   flex-shrink: 0;
 }
 
+.log-action-btn {
+  height: 26px !important;
+  min-width: 78px;
+  padding: 0 8px 0 10px !important;
+  gap: 5px !important;
+  font-size: 11px !important;
+  flex-shrink: 0;
+}
+
 .log-toggle-hint {
   font-size: 14px;
   color: var(--text-3);

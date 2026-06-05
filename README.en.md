@@ -340,6 +340,8 @@ Run the full canvas with the `Run` button on the far right of the canvas floatin
 
 While running, the same button shows `Running` with a loading indicator. Clicking it asks whether to stop; confirming stops at the current state and changes the button to `Reset`. `Ctrl+Enter` runs on Windows/Linux and `Cmd+Enter` runs on macOS. If results are already visible, the shortcut resets first and then starts a new run.
 
+The execution log action button shows `Open` while the log is closed and `Close (Esc)` while it is open. When the execution log is open, press `Esc` to close it.
+
 Execution rules:
 
 - Only modules connected from `Start` are executed.
