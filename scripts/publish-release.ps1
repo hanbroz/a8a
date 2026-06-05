@@ -123,8 +123,13 @@ Invoke-Step "Push current branch" {
 }
 
 Invoke-Step "Create GitHub Release: $tag" {
-  gh release view $tag --repo $Repo *> $null
-  $releaseViewExitCode = $LASTEXITCODE
+  $releaseViewExitCode = 0
+  try {
+    gh release view $tag --repo $Repo *> $null
+    $releaseViewExitCode = $LASTEXITCODE
+  } catch {
+    $releaseViewExitCode = if ($LASTEXITCODE -is [int]) { $LASTEXITCODE } else { 1 }
+  }
   if ($releaseViewExitCode -eq 0) {
     throw "Release already exists: $tag"
   }
