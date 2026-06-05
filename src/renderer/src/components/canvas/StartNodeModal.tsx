@@ -1,5 +1,7 @@
 import { useMemo, useRef, useState } from 'react'
 import { IcoX } from '../Icon'
+import ShortcutSaveButtonLabel from './ShortcutSaveButtonLabel'
+import { useShortcutSave } from './useShortcutSave'
 import { parseTableFile } from '../../utils/tabularData'
 import { useI18n, type TranslationKey } from '../../i18n'
 
@@ -190,15 +192,21 @@ export default function StartNodeModal({
     }
   }
 
-  const handleSave = (): void => {
+  const handleSave = (closeAfterSave = true): boolean => {
     const normalizedRepeat = normalizeRepeat(repeat)
     const nextCfg: StartConfig = {
       ...cfg,
       repeat: normalizedRepeat.enabled ? normalizedRepeat : { ...DEFAULT_REPEAT },
     }
     onSave(node.id, JSON.stringify(nextCfg))
-    onClose()
+    if (closeAfterSave) onClose()
+    return true
   }
+
+  const { shortcutSaveDialog } = useShortcutSave({
+    onClose,
+    onSave: handleSave,
+  })
 
   const preview = cfg.mode === 'schedule' ? cronPreview(cfg.schedule) : ''
 
@@ -478,7 +486,7 @@ export default function StartNodeModal({
 
         <div className="sn-modal-ft">
           <button className="btn" onClick={onClose}>{t('common.cancel')}</button>
-          <button className="btn primary" onClick={handleSave}>{t('common.save')}</button>
+          <button className="btn primary" onClick={() => handleSave(true)}><ShortcutSaveButtonLabel /></button>
         </div>
 
         {fullscreen && repeatData && (
@@ -503,6 +511,7 @@ export default function StartNodeModal({
             </div>
           </div>
         )}
+        {shortcutSaveDialog}
       </div>
     </div>
   )

@@ -635,6 +635,24 @@ function defaultNodeHeight(type: string): number {
   return type === 'data' || type === 'select' || type === 'api' || type === 'branch' ? 72 : 52
 }
 
+function defaultNodeConfig(type: string): string {
+  if (type !== 'api') return ''
+  return JSON.stringify({
+    method: 'GET',
+    url: '',
+    headers: [
+      { id: randomUUID(), key: 'Content-Type', value: 'application/json', enabled: true },
+    ],
+    params: [],
+    body: '',
+    bodyType: 'json',
+    auth: { type: 'noAuth', addTo: 'header' },
+    preScript: '',
+    postScript: '',
+    inputMappings: {},
+  })
+}
+
 function mergeNodeModuleConfig(moduleConfig: string | null, nodeConfig: string | null): string {
   const base = moduleConfig ?? ''
   const override = nodeConfig ?? ''
@@ -732,9 +750,10 @@ export function createNode(projectId: string, type: string, label: string, x: nu
   const id = randomUUID()
   const width = defaultNodeWidth(type)
   const height = defaultNodeHeight(type)
-  db.run('INSERT INTO nodes (id, project_id, type, label, x, y, width, height, config) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)', [id, projectId, type, label, x, y, width, height, ''])
+  const config = defaultNodeConfig(type)
+  db.run('INSERT INTO nodes (id, project_id, type, label, x, y, width, height, config) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)', [id, projectId, type, label, x, y, width, height, config])
   save()
-  return { id, projectId, type, label, x, y, width, height, config: '' }
+  return { id, projectId, type, label, x, y, width, height, config }
 }
 
 export function updateNodePosition(id: string, x: number, y: number): void {

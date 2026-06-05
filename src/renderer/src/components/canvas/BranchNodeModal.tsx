@@ -2,15 +2,18 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { IcoMaximize, IcoRestore, IcoTrash, IcoX } from '../Icon'
 import JsonMonacoEditor from './JsonMonacoEditor'
 import JsonInspectorButton from './JsonInspector'
+import ShortcutSaveButtonLabel from './ShortcutSaveButtonLabel'
 import { useModalMaximize } from './useModalMaximize'
+import { useShortcutSave } from './useShortcutSave'
 import { evaluateBranch, parseBranchConfig } from '../../utils/branch'
-import { getInputPathSuggestions, parseTemplate, resolveInputExpression } from '../../utils/interpolate'
+import { getInputPathSuggestions, parseTemplate, resolveInputExpression, resolveTemplateExpression } from '../../utils/interpolate'
 import { useI18n } from '../../i18n'
 
 interface Props {
   node: ApiNode
   isNew?: boolean
   initialInput?: string
+  envVars?: Record<string, string>
   dataVars?: Record<string, unknown>
   onRun?: () => string | Promise<string>
   onSave: (nodeId: string, label: string, config: string) => Promise<void>
@@ -91,7 +94,7 @@ function isEmptyBranchConfig(raw: string): boolean {
   return !source || source === '{}'
 }
 
-export default function BranchNodeModal({ node, isNew, initialInput, dataVars, onRun, onSave, onDelete, onClose }: Props): JSX.Element {
+export default function BranchNodeModal({ node, isNew, initialInput, envVars = {}, dataVars, onRun, onSave, onDelete, onClose }: Props): JSX.Element {
   const { t, language } = useI18n()
   const initial = parseBranchConfig(node.config)
   const emptyConfig = isEmptyBranchConfig(node.config)
@@ -147,7 +150,7 @@ export default function BranchNodeModal({ node, isNew, initialInput, dataVars, o
     falseLabel,
     defaultRoute,
     selectedRoute,
-  }, inputValue, dataInputRecord, language), [dataInputRecord, defaultRoute, expression, falseLabel, inputValue, language, mode, selectedRoute, trueLabel])
+  }, inputValue, dataInputRecord, envVars, language), [dataInputRecord, defaultRoute, envVars, expression, falseLabel, inputValue, language, mode, selectedRoute, trueLabel])
 
   const variableRows = useMemo<BranchVariableRow[]>(() => {
     const rows: BranchVariableRow[] = []
@@ -159,7 +162,7 @@ export default function BranchNodeModal({ node, isNew, initialInput, dataVars, o
       rows.push(row)
     }
 
-    parseTemplate(expression, {}, inputRecord, dataInputRecord).forEach(token => {
+    parseTemplate(expression, envVars, inputRecord, dataInputRecord).forEach(token => {
       if (token.type === 'input') {
         addRow({
           kind: 'input',
@@ -179,10 +182,12 @@ export default function BranchNodeModal({ node, isNew, initialInput, dataVars, o
         })
       }
       if (token.type === 'env') {
+        const rawValue = resolveTemplateExpression(envVars, token.name)
         addRow({
           kind: 'env',
           name: token.name,
-          resolved: null,
+          resolved: token.resolved,
+          rawValue,
           source: 'used',
         })
       }
@@ -205,7 +210,7 @@ export default function BranchNodeModal({ node, isNew, initialInput, dataVars, o
     }
 
     return rows
-  }, [dataInputRecord, expression, inputRecord, parsedInput.hasInput])
+  }, [dataInputRecord, envVars, expression, inputRecord, parsedInput.hasInput])
 
   const handleUseVariable = (row: BranchVariableRow): void => {
     if (row.kind !== 'input' || row.resolved === null) return
@@ -289,7 +294,7 @@ export default function BranchNodeModal({ node, isNew, initialInput, dataVars, o
     }
   }, [rect.w])
 
-  const handleSave = async (): Promise<void> => {
+  const handleSave = async (closeAfterSave = true): Promise<boolean> => {
     setSaving(true)
     try {
       const config: BranchConfig = {
@@ -303,11 +308,18 @@ export default function BranchNodeModal({ node, isNew, initialInput, dataVars, o
       }
       const nextModuleName = moduleName.trim() || 'BRANCH'
       await onSave(node.id, nextModuleName, JSON.stringify(config, null, 2))
-      onClose()
+      if (closeAfterSave) onClose()
+      return true
     } finally {
       setSaving(false)
     }
   }
+
+  const { shortcutSaveDialog } = useShortcutSave({
+    disabled: saving,
+    onClose,
+    onSave: handleSave,
+  })
 
   const handleRun = async (): Promise<void> => {
     if (!onRun) return
@@ -572,12 +584,13 @@ export default function BranchNodeModal({ node, isNew, initialInput, dataVars, o
             ) : (
               <>
                 <button className="btn ghost" onClick={onClose}>{t('common.cancel')}</button>
-                <button className="btn primary" onClick={handleSave} disabled={saving}>{saving ? t('common.saving') : t('common.save')}</button>
+                <button className="btn primary" onClick={() => void handleSave(true)} disabled={saving}><ShortcutSaveButtonLabel saving={saving} /></button>
               </>
             )}
           </div>
         </div>
       </div>
+      {shortcutSaveDialog}
     </div>
   )
 }

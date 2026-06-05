@@ -43,6 +43,11 @@ $portableExe = "dist/a8a-Portable-$Version.exe"
 $setupChecksum = "$setupExe.sha256"
 $setupBlockmapChecksum = "$setupBlockmap.sha256"
 $portableChecksum = "$portableExe.sha256"
+$releaseNotes = "build/release-notes.md"
+
+if (-not (Test-Path $releaseNotes)) {
+  throw "Release notes file not found: $releaseNotes"
+}
 
 Invoke-Step "Stamp version: $Version" {
   $env:A8A_UPDATE_GITHUB_REPO = $Repo
@@ -139,7 +144,7 @@ Invoke-Step "Create GitHub Release: $tag" {
     --target $head `
     --latest `
     --title $Version `
-    --notes "a8a $Version`n`n- Manually published from local Windows build output"
+    --notes-file $releaseNotes
   Assert-LastExitCode 'gh release create'
 }
 

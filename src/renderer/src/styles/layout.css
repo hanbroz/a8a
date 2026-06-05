@@ -740,6 +740,10 @@
   padding: 20px;
 }
 
+.settings-section + .settings-section {
+  margin-top: 16px;
+}
+
 .settings-section-header h2 {
   margin: 0;
   color: var(--text-1);
@@ -1206,6 +1210,63 @@
   display: flex;
   flex-direction: column;
   gap: 4px;
+}
+
+.log-curl-shell {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.log-curl-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.log-curl-copy {
+  height: 24px;
+  padding: 0 9px;
+  border: 1px solid var(--border-2);
+  border-radius: 5px;
+  background: var(--bg-2);
+  color: var(--text-2);
+  font-size: 11px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.log-curl-copy:hover {
+  background: var(--bg-3);
+  color: var(--text-1);
+}
+
+.log-curl-copy.copied {
+  border-color: rgba(63,185,80,0.55);
+  background: rgba(63,185,80,0.14);
+  color: #3fb950;
+}
+
+.log-curl-copy.failed {
+  border-color: rgba(248,81,73,0.55);
+  background: rgba(248,81,73,0.14);
+  color: #f85149;
+}
+
+.log-curl-command {
+  margin: 0;
+  padding: 8px 10px;
+  border: 1px solid var(--border-1);
+  border-radius: 5px;
+  background: var(--bg-2);
+  color: var(--text-2);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  line-height: 1.55;
+  white-space: pre;
+  overflow-x: auto;
+  max-height: 240px;
 }
 
 .log-api-kv-list {

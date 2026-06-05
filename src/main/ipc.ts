@@ -6,6 +6,21 @@ import type { EnvRow } from './db'
 
 const allowedWriteDirs = new Set<string>()
 const httpFetchControllersByRunId = new Map<string, Set<AbortController>>()
+let httpFetchExclusiveQueue: Promise<void> = Promise.resolve()
+
+async function runExclusiveHttpFetch<T>(task: () => Promise<T>): Promise<T> {
+  const previous = httpFetchExclusiveQueue
+  let release!: () => void
+  httpFetchExclusiveQueue = new Promise<void>(resolve => {
+    release = resolve
+  })
+  await previous
+  try {
+    return await task()
+  } finally {
+    release()
+  }
+}
 
 function registerHttpFetchController(runId: string | undefined, controller: AbortController): void {
   if (!runId) return
@@ -220,27 +235,29 @@ export function registerIpcHandlers(): void {
     // (IPC 경계 밖으로 throw하면 렌더러에 불투명한 "remote method" 에러로 전달됨)
     const controller = new AbortController()
     registerHttpFetchController(options.runId, controller)
-    const timeout = setTimeout(() => {
-      controller.abort()
-    }, 30_000)
-    try {
-      const res = await fetch(url, {
-        method: options.method,
-        headers: options.headers,
-        body: options.body,
-        signal: controller.signal,
-      })
-      const text = await res.text()
-      return { status: res.status, statusText: res.statusText, text, ok: res.ok }
-    } catch (err) {
-      const message = (err as Error)?.name === 'AbortError'
-        ? '요청 시간 초과 (30초)'
-        : String((err as Error)?.message ?? err)
-      return { status: 0, statusText: message, text: '', ok: false }
-    } finally {
-      clearTimeout(timeout)
-      unregisterHttpFetchController(options.runId, controller)
-    }
+    return runExclusiveHttpFetch(async () => {
+      const timeout = setTimeout(() => {
+        controller.abort()
+      }, 30_000)
+      try {
+        const res = await fetch(url, {
+          method: options.method,
+          headers: options.headers,
+          body: options.body,
+          signal: controller.signal,
+        })
+        const text = await res.text()
+        return { status: res.status, statusText: res.statusText, text, ok: res.ok }
+      } catch (err) {
+        const message = (err as Error)?.name === 'AbortError'
+          ? '요청 시간 초과 (30초)'
+          : String((err as Error)?.message ?? err)
+        return { status: 0, statusText: message, text: '', ok: false }
+      } finally {
+        clearTimeout(timeout)
+        unregisterHttpFetchController(options.runId, controller)
+      }
+    })
   })
 
   ipcMain.handle('http:cancel-run', (_, runId: string) => {

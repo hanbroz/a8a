@@ -2,7 +2,9 @@ import { Suspense, useState, useRef, useCallback, useEffect } from 'react'
 import { IcoMaximize, IcoRestore, IcoX, IcoTrash } from '../Icon'
 import JsonMonacoEditor from './JsonMonacoEditor'
 import JsonInspectorButton from './JsonInspector'
+import SelectionPopup from './SelectionPopup'
 import ScriptHelpButton from './ScriptHelpButton'
+import ShortcutSaveButtonLabel from './ShortcutSaveButtonLabel'
 import {
   MonacoEditor,
   MonacoFallback,
@@ -12,9 +14,11 @@ import {
   useApiScriptAssistantLabels,
 } from './ApiNodeModal'
 import { useModalMaximize } from './useModalMaximize'
+import { useShortcutSave } from './useShortcutSave'
 import { isScriptRuntimeError, runPostResponse, runPreRequest } from '../../utils/scriptRuntime'
 import { useMonacoTheme } from '../../utils/useMonacoTheme'
 import type { ScriptConsoleEntry } from '../../utils/scriptRuntime'
+import type { SelectionPopupSelection } from './SelectionPopup'
 import { useI18n } from '../../i18n'
 
 interface Props {
@@ -331,6 +335,7 @@ export default function SelectNodeModal({
   const [scriptError, setScriptError] = useState<string | null>(null)
   const [scriptTesting, setScriptTesting] = useState(false)
   const [fullscreenScriptPhase, setFullscreenScriptPhase] = useState<ScriptPhase | null>(null)
+  const [inputSelectionOpen, setInputSelectionOpen] = useState(false)
 
   useEffect(() => {
     const nextInitial = parseConfig(node.config)
@@ -351,6 +356,7 @@ export default function SelectNodeModal({
     setPreConsoleLogs(initialPreConsoleLogs)
     setPostConsoleLogs(initialPostConsoleLogs)
     setScriptError(null)
+    setInputSelectionOpen(false)
   }, [node.id, node.label, node.config, initialInput, initialOutput, initialPreConsoleLogs, initialPostConsoleLogs])
 
   useEffect(() => {
@@ -374,9 +380,10 @@ export default function SelectNodeModal({
   const columns = inputRows && inputRows.length > 0 ? Object.keys(inputRows[0]) : []
   let jsonNodes: SelectJsonNode[] = []
   let jsonParseError = false
+  let parsedInputData: unknown = null
   try {
-    const parsed = inputJson.trim() ? JSON.parse(inputJson) : null
-    jsonNodes = flattenJsonPaths(selectJsonData(parsed))
+    parsedInputData = inputJson.trim() ? JSON.parse(inputJson) : null
+    jsonNodes = flattenJsonPaths(selectJsonData(parsedInputData))
   } catch {
     jsonParseError = true
   }
@@ -499,6 +506,7 @@ export default function SelectNodeModal({
 
   const preRequestScriptEnabled = hasPreRequestScript(preScript)
   const activeSelectionType = resolveSelectionType(selectionType, preScript)
+  const canOpenInputSelection = activeSelectionType !== 'script' && inputJson.trim().length > 0 && !jsonParseError
 
   const setSelectionTypeMode = (nextType: SelectSelectionType) => {
     if (preRequestScriptEnabled && nextType !== 'script') return
@@ -519,6 +527,24 @@ export default function SelectNodeModal({
     setSelectedRowIndices(prev => {
       if (activeSelectionType === 'single') return prev.includes(idx) ? [] : [idx]
       return prev.includes(idx) ? prev.filter(item => item !== idx) : [...prev, idx]
+    })
+  }
+
+  const applyInputSelection = (selection: SelectionPopupSelection): void => {
+    setScriptOutputOverride(null)
+    setScriptError(null)
+    if (selection.mode === 'table') {
+      setViewMode('table')
+      setSelectedRowIndices(normalizeSelection(selection.selectedRowIndices, activeSelectionType))
+      return
+    }
+    const selectedPaths = normalizeSelection(selection.selectedJsonPaths, activeSelectionType)
+    setViewMode('tree')
+    setSelectedJsonPathIds(selectedPaths)
+    setExpandedJsonIds(prev => {
+      const next = new Set(prev)
+      expandedIdsForSelectedPaths(selectedPaths).forEach(path => next.add(path))
+      return next
     })
   }
 
@@ -565,7 +591,7 @@ export default function SelectNodeModal({
     setScriptError(null)
   }
 
-  const handleSave = async () => {
+  const handleSave = async (closeAfterSave = true): Promise<boolean> => {
     setSaving(true)
     const effectiveSelectionType = activeSelectionType
     const config: SelectConfig = {
@@ -581,8 +607,15 @@ export default function SelectNodeModal({
     const nextModuleName = moduleName.trim() || 'SELECT'
     await onSave(node.id, nextModuleName, JSON.stringify(config))
     setSaving(false)
-    onClose()
+    if (closeAfterSave) onClose()
+    return true
   }
+
+  const { shortcutSaveDialog } = useShortcutSave({
+    disabled: saving,
+    onClose,
+    onSave: handleSave,
+  })
 
   const outputJson = activeSelectionType === 'script'
     ? '[]'
@@ -701,6 +734,16 @@ export default function SelectNodeModal({
                     defaultMode={viewMode === 'tree' ? 'tree' : 'json'}
                     disabled={!inputJson.trim()}
                   />
+                  <button
+                    type="button"
+                    className="btn ghost icon dm-format-btn dm-select-input-btn"
+                    onClick={() => setInputSelectionOpen(true)}
+                    disabled={!canOpenInputSelection}
+                    title={t('module.select.openInputSelection')}
+                    aria-label={t('module.select.openInputSelection')}
+                  >
+                    <SelectIcon size={12} />
+                  </button>
                   <div className="sm-view-toggle">
                     <button
                       className={`sm-view-btn${viewMode === 'json' ? ' active' : ''}`}
@@ -1080,8 +1123,8 @@ export default function SelectNodeModal({
                 >
                   {t('common.cancel')}
                 </button>
-                <button className="btn primary" onClick={handleSave} disabled={saving}>
-                  {saving ? t('common.saving') : t('common.save')}
+                <button className="btn primary" onClick={() => void handleSave(true)} disabled={saving}>
+                  <ShortcutSaveButtonLabel saving={saving} />
                 </button>
               </>
             )}
@@ -1137,6 +1180,23 @@ export default function SelectNodeModal({
           </div>
         </div>
       )}
+      {inputSelectionOpen && canOpenInputSelection && (
+        <SelectionPopup
+          data={parsedInputData}
+          storageKey={`${node.id}:select-input`}
+          initialSelectedRowIndices={selectedRowIndices}
+          initialSelectedJsonPaths={selectedJsonPathIds}
+          initialMode={selectModeFromViewMode(viewMode)}
+          selectionType={activeSelectionType === 'single' ? 'single' : 'multiple'}
+          preferInitialSelection
+          onConfirm={(_, selection) => {
+            applyInputSelection(selection)
+            setInputSelectionOpen(false)
+          }}
+          onCancel={() => setInputSelectionOpen(false)}
+        />
+      )}
+      {shortcutSaveDialog}
     </div>
   )
 }

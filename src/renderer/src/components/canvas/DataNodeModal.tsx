@@ -3,7 +3,9 @@ import ExcelJS from 'exceljs'
 import { IcoMaximize, IcoRestore, IcoTrash, IcoX } from '../Icon'
 import JsonMonacoEditor from './JsonMonacoEditor'
 import JsonInspectorButton from './JsonInspector'
+import ShortcutSaveButtonLabel from './ShortcutSaveButtonLabel'
 import { useModalMaximize } from './useModalMaximize'
+import { useShortcutSave } from './useShortcutSave'
 import { useI18n } from '../../i18n'
 
 interface Props {
@@ -276,20 +278,28 @@ export default function DataNodeModal({ node, isNew, sharedDataModule, initialIn
     setOutputJson(result.value); setOutputError(result.error)
   }
 
-  const handleSave = async () => {
+  const handleSave = async (closeAfterSave = true): Promise<boolean> => {
     setSaving(true)
     const result = formatJson(outputJson)
     if (result.error) {
       setOutputJson(result.value)
       setOutputError(result.error)
       setSaving(false)
-      return
+      return false
     }
     const config: DataConfig = { output: result.value }
     const nextModuleName = moduleName.trim() || 'DATA'
     await onSave(node.id, nextModuleName, JSON.stringify(config), { shareAsCommonData })
-    setSaving(false); onClose()
+    setSaving(false)
+    if (closeAfterSave) onClose()
+    return true
   }
+
+  const { shortcutSaveDialog } = useShortcutSave({
+    disabled: saving,
+    onClose,
+    onSave: handleSave,
+  })
 
   return (
     <div className="dm-overlay">
@@ -517,13 +527,14 @@ export default function DataNodeModal({ node, isNew, sharedDataModule, initialIn
                 >
                   {t('common.cancel')}
                 </button>
-                <button className="btn primary" onClick={handleSave} disabled={saving}>{saving ? t('common.saving') : t('common.save')}</button>
+                <button className="btn primary" onClick={() => void handleSave(true)} disabled={saving}><ShortcutSaveButtonLabel saving={saving} /></button>
               </>
             )}
           </div>
 
         </div>
       </div>
+      {shortcutSaveDialog}
     </div>
   )
 }

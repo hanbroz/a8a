@@ -137,6 +137,9 @@ jobs:
       GH_TOKEN: ${{ github.token }}
 
     steps:
+      - name: Checkout release notes
+        uses: actions/checkout@v4
+
       - name: Download release assets
         uses: actions/download-artifact@v4
         with:
@@ -151,4 +154,4 @@ jobs:
           if (-not $assets) {
             throw "No release assets found."
           }
-          gh release create $tag @assets --latest --title $version --notes "a8a $version"
+          gh release create $tag @assets --latest --title $version --notes-file build/release-notes.md

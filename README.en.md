@@ -160,7 +160,7 @@ Clicking a project's environment entry is only for viewing or editing environmen
 
 ### 5. Place Modules On The Canvas
 
-The common module area contains the `DATA`, `SELECT`, `API`, and `BRANCH` types. Drag one onto the canvas to create a new module.
+The Modules area contains the `DATA`, `SELECT`, `API`, and `BRANCH` types. Drag one onto the canvas to create a new module.
 
 Every module placed on the canvas is independent. Even if two modules were created from the same type or copied from another module, each module has separate settings, INPUT, OUTPUT, and execution logs.
 
@@ -237,7 +237,7 @@ The DATA module creates OUTPUT by direct JSON input or by loading Excel/CSV data
 
 DATA modules are independent by default for each node on the canvas. If multiple projects need to share the same customer information, reference data, or code list, enable `Share as common DATA` in the DATA settings screen and save.
 
-Shared DATA appears under `DATA` in the left `Common Modules` area. Dragging it onto another project canvas creates a new DATA node, but the actual OUTPUT data references the shared DATA source. Editing and saving the shared data from any node updates the data used by every project node that references the same shared DATA.
+Shared DATA appears under `DATA` in the left `Modules` area. Dragging it onto another project canvas creates a new DATA node, but the actual OUTPUT data references the shared DATA source. Editing and saving the shared data from any node updates the data used by every project node that references the same shared DATA.
 
 If shared DATA is no longer needed, disable `Share as common DATA` in the DATA settings screen and save. The current canvas DATA node copies the current data into an independent DATA node, while the existing shared DATA source remains available.
 
@@ -266,9 +266,13 @@ Common uses:
 
 Use `Select without asking` to automatically select with the saved criteria.
 
+The JSON selection window can be expanded to fullscreen. When you open the same SELECT module again, the previous selection and JSON tree expand/collapse state are preserved, so complex JSON does not need to be reopened path by path during repeated tests.
+
 #### API
 
 The API module calls HTTP APIs. It supports URL, Method, Header, Query Parameter, Body, authentication, Pre Request, and Post Response settings.
+
+New API modules include a default `Content-Type: application/json` header. Header and Query rows give more space to Value than Key so long values are easier to inspect.
 
 For long JSON bodies, click the fullscreen icon in the Body area to edit in a wider screen. Changes in the fullscreen editor are applied directly to the API module Body, and `Format JSON` can make the body easier to read.
 
@@ -282,6 +286,8 @@ API URLs often start with an environment variable:
 
 On canvas API cards and in the API list, `{{environment}}`, `[[INPUT]]`, and `<<DATA>>` variables are replaced with values when a value can be determined. However, the first `{{environment}}` variable in the URL is hidden. This keeps repeated base URLs such as `{{baseUrl}}` from obscuring the endpoint. Remaining variables are shown as real values when they can be found from the module execution INPUT, the current START repeat row, or the preview row.
 
+When you choose a JSON value in API INPUT mappings, the saved default path uses a node-independent form such as `output[0]` instead of being tied to the upstream module ID. This keeps the same field usable when a conditional flow changes which SELECT module provides the input. After selecting from the tree, you can still edit the path manually, for example `[[amount * -1]]` or `$get("amount")`.
+
 When you give a module a long name, the initial canvas card width expands automatically to fit the name when saved. Modules that have already been resized wider are not reduced.
 
 #### BRANCH
@@ -291,6 +297,8 @@ The BRANCH module evaluates TRUE/FALSE and splits execution paths.
 BRANCH does not create new data. It only evaluates the condition and passes the previous module's OUTPUT DATA unchanged to the next module.
 
 After execution, the selected TRUE/FALSE path is shown with the same color as the BRANCH module on ports and labels. The selected path remains visible in the light theme.
+
+If the BRANCH value is already fixed to TRUE or FALSE instead of using a condition or user choice, the matching TRUE/FALSE port is emphasized before execution so the fixed path is visible from the canvas card.
 
 Common uses:
 
@@ -330,12 +338,15 @@ Click the zoom ratio button, such as `100%`, to choose `Fullscreen`, `200%`, `10
 
 Run the full canvas with the `Run` button on the far right of the canvas floating menu. After execution results are visible, the same area shows `Reset`, which clears execution state and logs.
 
+While running, the same button shows `Running` with a loading indicator. Clicking it asks whether to stop; confirming stops at the current state and changes the button to `Reset`. `Ctrl+Enter` runs on Windows/Linux and `Cmd+Enter` runs on macOS. If results are already visible, the shortcut resets first and then starts a new run.
+
 Execution rules:
 
 - Only modules connected from `Start` are executed.
 - Unconnected modules are not executed.
 - If an error occurs, the full execution stops immediately.
 - You can inspect per-node INPUT, OUTPUT, status, and execution logs.
+- API module execution logs include the actual request as a cURL command.
 - The Run button inside a module settings dialog only runs the path from `Start` to that module and refreshes the INPUT/OUTPUT preview.
 
 ## API Script Guide
@@ -363,6 +374,8 @@ console.log(input);
 Values set with `setInput(name, value)` can be used in URL, Header, Query, and Body templates as `[[passengerCount]]`.
 
 The current START repeat row values can be referenced with `<<columnName>>`.
+
+Template values inside `{{ }}`, `[[ ]]`, and `<< >>` support simple expressions as well as direct references. For example, use `[[passengerCount * 1]]` for numbers, `[[passengerName.replace(/\s+/g, '')]]` for strings, `{{baseUrl.replace(/\/$/, '')}}` for environment variables, and `<<no * 1>>` for repeat data. Keys with spaces or special characters can still be used as direct references, and expressions can read them with `$get("columnName")`.
 
 ```javascript
 const input = getInput();
@@ -544,7 +557,7 @@ The current GitHub Actions Release workflow may fail because of billing or spend
 The release process is always the same:
 
 1. Commit and push feature and documentation changes first.
-2. Update `build/installer-release-notes.nsh` with the release notes for this version.
+2. Update `build/installer-release-notes.nsh` and `build/release-notes.md` with the release notes for this version.
 3. Run the manual release command below.
 4. The command calculates the current time as `yyyy.MM.dd.HH.mm`.
 5. The app display version is stamped with that date version.
@@ -552,7 +565,7 @@ The release process is always the same:
 7. If macOS files are required, build `.dmg` and `.zip` on macOS with the same version number.
 8. Commit and push the version stamp.
 9. Create a GitHub Release with the `vyyyy.MM.dd.HH.mm` tag.
-10. Upload installer, blockmap, portable, and macOS files as Release assets.
+10. Upload installer, blockmap, portable, and macOS files as Release assets with the `build/release-notes.md` body.
 
 ```powershell
 npm run release:manual
@@ -576,7 +589,7 @@ The manual release command performs these actions. It targets Windows installer 
 2. Build installer and portable versions with `npm run build:win`.
 3. Commit only the `src/main/appVersion.ts` version change.
 4. Push the current branch.
-5. Create the latest Release and upload assets with `gh release create`.
+5. Create the latest Release and upload assets with `gh release create`, using `build/release-notes.md` as the Release body.
 
 Release assets include:
 
@@ -605,7 +618,7 @@ Share files depending on how developers will use the app:
 - For Intel Mac users, share `a8a-Mac-x64-yyyy.MM.dd.HH.mm.dmg`.
 - `.blockmap` files are for automatic updates, and `.sha256` files are for update verification, so they do not need to be shared directly with users.
 
-The Windows installer update notes screen is configured by `build/installer.nsh` and `build/installer-release-notes.nsh`. For each new version, replace only the `A8A_INSTALLER_RELEASE_NOTES` text in `build/installer-release-notes.nsh` with the new update summary before building. Use NSIS line breaks: `$\r$\n`.
+The Windows installer update notes screen is configured by `build/installer.nsh` and `build/installer-release-notes.nsh`. For each new version, replace the `A8A_INSTALLER_RELEASE_NOTES` text in `build/installer-release-notes.nsh` with the new update summary before building. GitHub Release uses `build/release-notes.md`, so keep the change list in both files aligned. Use NSIS line breaks: `$\r$\n`.
 
 If GitHub Actions becomes available again, pushing to `main` or `master` can automatically build Windows and macOS installers and create GitHub Releases. However, the official release process for this project is local build plus manual Release publication. Treat automated release flow as reference only.
 

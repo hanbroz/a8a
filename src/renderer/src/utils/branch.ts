@@ -1,4 +1,4 @@
-import { resolveInputExpression } from './interpolate'
+import { resolveInputExpression, resolveTemplateExpression } from './interpolate'
 
 export type BranchRouteKey = 'true' | 'false'
 export type BranchLanguage = 'ko' | 'en'
@@ -75,6 +75,29 @@ function compare(left: unknown, op: string, right: unknown): boolean {
   return false
 }
 
+function resolveBranchToken(
+  inputExpression: string | undefined,
+  dataExpression: string | undefined,
+  envExpression: string | undefined,
+  inputRecord: Record<string, unknown>,
+  dataRecord: Record<string, unknown>,
+  envVars: Record<string, string>,
+): unknown {
+  if (envExpression !== undefined) return resolveTemplateExpression(envVars, envExpression.trim())
+  return resolveInputExpression(dataExpression !== undefined ? dataRecord : inputRecord, (inputExpression ?? dataExpression ?? '').trim())
+}
+
+function parseBranchRightValue(
+  raw: string,
+  inputRecord: Record<string, unknown>,
+  dataRecord: Record<string, unknown>,
+  envVars: Record<string, string>,
+): unknown {
+  const token = raw.match(/^\s*(?:\[\[([\s\S]*?)\]\]|<<([\s\S]*?)>>|\{\{([\s\S]*?)\}\})\s*$/)
+  if (!token) return parseLiteral(raw)
+  return resolveBranchToken(token[1], token[2], token[3], inputRecord, dataRecord, envVars)
+}
+
 export function parseBranchConfig(raw: string): BranchConfig {
   try {
     const parsed = JSON.parse(raw || '{}') as Partial<BranchConfig> & { mode?: string }
@@ -99,7 +122,13 @@ export function parseBranchConfig(raw: string): BranchConfig {
   }
 }
 
-export function evaluateBranch(config: BranchConfig, input: unknown, dataVars?: Record<string, unknown>, language: BranchLanguage = 'ko'): BranchEvalResult {
+export function evaluateBranch(
+  config: BranchConfig,
+  input: unknown,
+  dataVars?: Record<string, unknown>,
+  envVars: Record<string, string> = {},
+  language: BranchLanguage = 'ko',
+): BranchEvalResult {
   if (config.mode === 'manual') {
     const route: BranchRouteKey = config.selectedRoute === 'false' ? 'false' : 'true'
     return { route, matched: route === 'true', value: route === 'true' }
@@ -119,16 +148,16 @@ export function evaluateBranch(config: BranchConfig, input: unknown, dataVars?: 
   try {
     const inputRecord = inputAsRecord(input)
     const dataRecord = dataVars ?? inputRecord
-    const comparison = expression.match(/^\s*(?:\[\[([\s\S]*?)\]\]|<<([\s\S]*?)>>)\s*(===|!==|==|!=|>=|<=|>|<)\s*([\s\S]+?)\s*$/)
+    const comparison = expression.match(/^\s*(?:\[\[([\s\S]*?)\]\]|<<([\s\S]*?)>>|\{\{([\s\S]*?)\}\})\s*(===|!==|==|!=|>=|<=|>|<)\s*([\s\S]+?)\s*$/)
     if (comparison) {
-      const value = resolveInputExpression(comparison[2] !== undefined ? dataRecord : inputRecord, (comparison[1] ?? comparison[2]).trim())
-      const matched = compare(value, comparison[3], parseLiteral(comparison[4]))
+      const value = resolveBranchToken(comparison[1], comparison[2], comparison[3], inputRecord, dataRecord, envVars)
+      const matched = compare(value, comparison[4], parseBranchRightValue(comparison[5], inputRecord, dataRecord, envVars))
       return { route: matched ? 'true' : 'false', matched, value }
     }
 
-    const singleValue = expression.match(/^\s*(?:\[\[([\s\S]*?)\]\]|<<([\s\S]*?)>>)\s*$/)
+    const singleValue = expression.match(/^\s*(?:\[\[([\s\S]*?)\]\]|<<([\s\S]*?)>>|\{\{([\s\S]*?)\}\})\s*$/)
     const value = singleValue
-      ? resolveInputExpression(singleValue[2] !== undefined ? dataRecord : inputRecord, (singleValue[1] ?? singleValue[2]).trim())
+      ? resolveBranchToken(singleValue[1], singleValue[2], singleValue[3], inputRecord, dataRecord, envVars)
       : resolveInputExpression(inputRecord, expression)
     const matched = isTruthy(value)
     return { route: matched ? 'true' : 'false', matched, value }

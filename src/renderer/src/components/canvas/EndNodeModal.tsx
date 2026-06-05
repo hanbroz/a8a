@@ -1,6 +1,8 @@
 import { useState, useRef, useCallback, useEffect, useMemo } from 'react'
 import { IcoMaximize, IcoRestore, IcoX } from '../Icon'
+import ShortcutSaveButtonLabel from './ShortcutSaveButtonLabel'
 import { useModalMaximize } from './useModalMaximize'
+import { useShortcutSave } from './useShortcutSave'
 import { resolveEndReportSelectedModuleIds } from '../../utils/endReportSelection'
 import { useI18n } from '../../i18n'
 
@@ -143,7 +145,7 @@ export default function EndNodeModal({ node, moduleNodes, envVarKeys, onSave, on
     })
   }
 
-  const handleSave = async (): Promise<void> => {
+  const handleSave = async (closeAfterSave = true): Promise<boolean> => {
     setSaving(true)
     const cfg: EndNodeConfig = {
       reportFormat,
@@ -155,8 +157,15 @@ export default function EndNodeModal({ node, moduleNodes, envVarKeys, onSave, on
     }
     await onSave(node.id, label.trim() || 'End', JSON.stringify(cfg))
     setSaving(false)
-    onClose()
+    if (closeAfterSave) onClose()
+    return true
   }
+
+  const { shortcutSaveDialog } = useShortcutSave({
+    disabled: saving,
+    onClose,
+    onSave: handleSave,
+  })
 
   const disabled = reportFormat === 'none'
   const ext = reportFormat === 'html' ? '.html' : reportFormat === 'markdown' ? '.md' : ''
@@ -313,13 +322,14 @@ export default function EndNodeModal({ node, moduleNodes, envVarKeys, onSave, on
 
           <div className="dm-ft">
             <button className="btn ghost" onClick={onClose}>{t('common.cancel')}</button>
-            <button className="btn primary" onClick={handleSave} disabled={saving}>
-              {saving ? t('common.saving') : t('common.save')}
+            <button className="btn primary" onClick={() => void handleSave(true)} disabled={saving}>
+              <ShortcutSaveButtonLabel saving={saving} />
             </button>
           </div>
 
         </div>
       </div>
+      {shortcutSaveDialog}
     </div>
   )
 }

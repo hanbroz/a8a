@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef, useCallback, useMemo } from 'react'
 import { flushSync } from 'react-dom'
-import { applyInputMappings, mergeEnvVars, parseTemplate, resolveInputExpression, resolveTemplate } from './utils/interpolate'
+import { applyInputMappings, mergeEnvVars, parseTemplate, resolveInputExpression, resolveTemplate, resolveTemplateExpression } from './utils/interpolate'
 import { applyApiAuth, getApiAuthTemplateValues } from './utils/apiAuth'
 import { isScriptRuntimeError, runPreRequest, runPostResponse } from './utils/scriptRuntime'
 import { generateReport, fillFilenameTemplate } from './utils/reportGenerator'
@@ -150,6 +150,52 @@ function statusCodeColor(code: number): string {
   if (code >= 300 && code < 400) return '#d29922'
   if (code >= 400) return '#f85149'
   return '#8b949e'
+}
+
+function shellSingleQuote(value: string): string {
+  return `'${value.replace(/'/g, "'\\''")}'`
+}
+
+function joinCurlArguments(args: string[]): string {
+  return args
+    .map((arg, index) => `${index === 0 ? `curl ${arg}` : `  ${arg}`}${index < args.length - 1 ? ' \\' : ''}`)
+    .join('\n')
+}
+
+function buildCurlCommand(api: ApiLogDetail): string {
+  const args = [
+    '--location',
+    `--request ${shellSingleQuote(api.method.toUpperCase())}`,
+    `--url ${shellSingleQuote(api.url)}`,
+    ...Object.entries(api.headers).map(([key, value]) => `--header ${shellSingleQuote(`${key}: ${value}`)}`),
+  ]
+  if (api.body && api.body.trim()) {
+    args.push(`--data-raw ${shellSingleQuote(api.body)}`)
+  }
+  return joinCurlArguments(args)
+}
+
+function copyTextFallback(text: string): Promise<void> {
+  const textarea = document.createElement('textarea')
+  textarea.value = text
+  textarea.setAttribute('readonly', '')
+  textarea.style.position = 'fixed'
+  textarea.style.top = '-1000px'
+  textarea.style.opacity = '0'
+  document.body.appendChild(textarea)
+  textarea.select()
+  try {
+    return document.execCommand('copy') ? Promise.resolve() : Promise.reject(new Error('copy failed'))
+  } finally {
+    document.body.removeChild(textarea)
+  }
+}
+
+function copyText(text: string): Promise<void> {
+  if (navigator.clipboard?.writeText) {
+    return navigator.clipboard.writeText(text).catch(() => copyTextFallback(text))
+  }
+  return copyTextFallback(text)
 }
 
 interface CanvasExecution {
@@ -373,11 +419,11 @@ function recordUsedTemplateVariables(
           usedVariables[usedVariableKey('env', token.name)] = {
             kind: 'env',
             name: token.name,
-            value: Object.prototype.hasOwnProperty.call(envVars, token.name) ? envVars[token.name] : null,
+            value: resolveTemplateExpression(envVars, token.name) ?? null,
           }
         }
         if (token.type === 'input') {
-          const value = resolveInputExpression(inputData, token.key)
+          const value = resolveTemplateExpression(inputData, token.key)
           usedVariables[usedVariableKey('input', token.key)] = {
             kind: 'input',
             name: token.key,
@@ -385,7 +431,7 @@ function recordUsedTemplateVariables(
           }
         }
         if (token.type === 'data') {
-          const value = resolveInputExpression(dataVars, token.key)
+          const value = resolveTemplateExpression(dataVars, token.key)
           usedVariables[usedVariableKey('data', token.key)] = {
             kind: 'data',
             name: token.key,
@@ -418,11 +464,25 @@ function recordUsedInputVariable(
 ): void {
   const trimmed = name.trim()
   if (!trimmed) return
-  const value = resolveInputExpression(inputData, trimmed)
+  const value = resolveTemplateExpression(inputData, trimmed)
   usedVariables[usedVariableKey(kind, trimmed)] = {
     kind,
     name: trimmed,
     value: value === undefined ? null : value,
+  }
+}
+
+function recordUsedEnvVariable(
+  usedVariables: Record<string, ReportVariable>,
+  name: string,
+  envVars: Record<string, string>,
+): void {
+  const trimmed = name.trim()
+  if (!trimmed) return
+  usedVariables[usedVariableKey('env', trimmed)] = {
+    kind: 'env',
+    name: trimmed,
+    value: resolveTemplateExpression(envVars, trimmed) ?? null,
   }
 }
 
@@ -431,23 +491,37 @@ function recordUsedBranchVariables(
   expression: string,
   input: unknown,
   dataVars?: Record<string, unknown>,
+  envVars: Record<string, string> = {},
 ): void {
   const inputData = input && typeof input === 'object' ? input as Record<string, unknown> : { value: input }
   const dataInput = dataVars ?? inputData
-  const comparison = expression.match(/^\s*(?:\[\[([\s\S]*?)\]\]|<<([\s\S]*?)>>)\s*(?:===|!==|==|!=|>=|<=|>|<)\s*([\s\S]+?)\s*$/)
+  const recordToken = (inputExpression: string | undefined, dataExpression: string | undefined, envExpression: string | undefined): void => {
+    if (envExpression !== undefined) {
+      recordUsedEnvVariable(usedVariables, envExpression, envVars)
+      return
+    }
+    const isData = dataExpression !== undefined
+    recordUsedInputVariable(usedVariables, inputExpression ?? dataExpression ?? '', isData ? dataInput : inputData, isData ? 'data' : 'input')
+  }
+
+  const comparison = expression.match(/^\s*(?:\[\[([\s\S]*?)\]\]|<<([\s\S]*?)>>|\{\{([\s\S]*?)\}\})\s*(?:===|!==|==|!=|>=|<=|>|<)\s*([\s\S]+?)\s*$/)
   if (comparison) {
-    const isData = comparison[2] !== undefined
-    recordUsedInputVariable(usedVariables, comparison[1] ?? comparison[2], isData ? dataInput : inputData, isData ? 'data' : 'input')
+    recordToken(comparison[1], comparison[2], comparison[3])
+    const rightToken = comparison[4].match(/^\s*(?:\[\[([\s\S]*?)\]\]|<<([\s\S]*?)>>|\{\{([\s\S]*?)\}\})\s*$/)
+    if (rightToken) recordToken(rightToken[1], rightToken[2], rightToken[3])
     return
   }
 
-  const singleValue = expression.match(/^\s*(?:\[\[([\s\S]*?)\]\]|<<([\s\S]*?)>>)\s*$/)
-  const isData = singleValue?.[2] !== undefined
+  const singleValue = expression.match(/^\s*(?:\[\[([\s\S]*?)\]\]|<<([\s\S]*?)>>|\{\{([\s\S]*?)\}\})\s*$/)
+  if (singleValue) {
+    recordToken(singleValue[1], singleValue[2], singleValue[3])
+    return
+  }
   recordUsedInputVariable(
     usedVariables,
-    singleValue ? (singleValue[1] ?? singleValue[2]) : expression,
-    isData ? dataInput : inputData,
-    isData ? 'data' : 'input',
+    expression,
+    inputData,
+    'input',
   )
 }
 
@@ -537,12 +611,52 @@ function LogJsonViewer({
   )
 }
 
+function CurlCommandBlock({ command }: { command: string }): JSX.Element {
+  const { t } = useI18n()
+  const [copyState, setCopyState] = useState<'idle' | 'copied' | 'failed'>('idle')
+  const copyLabel = copyState === 'copied'
+    ? t('common.copied')
+    : copyState === 'failed'
+      ? t('common.copyFailed')
+      : t('log.curl.copy')
+
+  const handleCopy = async (): Promise<void> => {
+    try {
+      await copyText(command)
+      setCopyState('copied')
+    } catch {
+      setCopyState('failed')
+    } finally {
+      window.setTimeout(() => setCopyState('idle'), 1400)
+    }
+  }
+
+  return (
+    <div className="log-curl-shell">
+      <div className="log-curl-header">
+        <div className="log-entry-io-label">cURL</div>
+        <button
+          type="button"
+          className={`log-curl-copy${copyState !== 'idle' ? ` ${copyState}` : ''}`}
+          onClick={() => void handleCopy()}
+          title={copyLabel}
+          aria-label={copyLabel}
+        >
+          {copyLabel}
+        </button>
+      </div>
+      <pre className="log-curl-command">{command}</pre>
+    </div>
+  )
+}
+
 function LogEntryRow({ entry, isActive }: { entry: LogEntry; isActive?: boolean }): JSX.Element {
   const { t } = useI18n()
   const [open, setOpen] = useState(false)
   const cfg = NODE_TYPE_COLORS[entry.type] ?? { color: '#8b949e', bg: 'rgba(139,148,158,0.15)', label: entry.type.toUpperCase() }
   const statusColor = entry.status === 'success' ? '#3fb950' : entry.status === 'error' ? '#f85149' : entry.status === 'skip' ? '#8b949e' : '#d29922'
   const api = entry.apiDetail
+  const curlCommand = api ? buildCurlCommand(api) : ''
   const scriptLogs = entry.scriptLogs
   const hasScriptLogs = !!scriptLogs && (scriptLogs.pre.length > 0 || scriptLogs.post.length > 0)
 
@@ -633,6 +747,9 @@ function LogEntryRow({ entry, isActive }: { entry: LogEntry; isActive?: boolean 
                     <LogJsonViewer value={api.body} path={`execution-log/${entry.id}/request-body.json`} placeholder={t('log.placeholder.requestBody')} />
                   </div>
                 )}
+                <div className="log-api-block">
+                  <CurlCommandBlock command={curlCommand} />
+                </div>
               </div>
 
               {/* RESPONSE */}
@@ -1039,8 +1156,10 @@ function buildApiTemplateItems(
     const rowVars = row && typeof row === 'object' && !Array.isArray(row)
       ? row as Record<string, unknown>
       : {}
+    const valueVars = Object.keys(rowVars).length === 0 && row !== null && row !== undefined ? { value: row } : {}
     return {
       ...rowVars,
+      ...valueVars,
       ...upstreamModuleVars,
       ...preInputVars,
       output: outputMap,
@@ -1048,10 +1167,7 @@ function buildApiTemplateItems(
   })
 }
 
-function appendApiExecutionResult(
-  results: unknown[],
-  value: unknown,
-): void {
+function appendApiExecutionResult(results: unknown[], value: unknown): void {
   if (Array.isArray(value)) {
     results.push(...value)
     return
@@ -1267,6 +1383,8 @@ export default function App(): JSX.Element {
 
   // ── Canvas execution ──
   const canvasStopRequestedRef = useRef(false)
+  const canvasRunLockRef = useRef(false)
+  const appApiRequestLockRef = useRef(false)
   const [canvasExecution, setCanvasExecution] = useState<CanvasExecution | null>(null)
   const [execLogs, setExecLogs] = useState<LogEntry[]>([])
   const [nodeStatuses, setNodeStatuses] = useState<Record<string, NodeStatus>>({})
@@ -1442,6 +1560,20 @@ export default function App(): JSX.Element {
   const canCanvasRedo = !canvasExecution && activeCanvasHistory.redo.length > 0
   const hasCanvasRunState = Object.keys(nodeStatuses).length > 0
   const isCanvasRunning = !!canvasExecution || Object.values(nodeStatuses).some(status => status === 'running')
+  const fetchAppApiRequest = useCallback(async (
+    url: string,
+    options: Parameters<typeof window.api.http.fetch>[1],
+  ): Promise<Awaited<ReturnType<typeof window.api.http.fetch>>> => {
+    if (appApiRequestLockRef.current) {
+      throw new Error(t('runtime.error.apiRequestAlreadyRunning'))
+    }
+    appApiRequestLockRef.current = true
+    try {
+      return await window.api.http.fetch(url, options)
+    } finally {
+      appApiRequestLockRef.current = false
+    }
+  }, [t])
   const startRepeatPreviewData = useMemo(
     () => getStartRepeatPreviewRow(activeNodes.find(node => node.type === 'start')) ?? undefined,
     [activeNodes],
@@ -2142,10 +2274,10 @@ export default function App(): JSX.Element {
         }
 
         const items = buildApiTemplateItems(upstream, upstreamEdges, upstreamModuleVars, preInputVars)
-
         const allResults: unknown[] = []
+
         for (const row of items) {
-          const item: Record<string, unknown> = applyInputMappings(row, cfg.inputMappings ?? {})
+          const item = applyInputMappings(row, cfg.inputMappings ?? {})
           const templateDataVars = previewDataVars
           let fullUrl = resolveTemplate(cfg.url.trim(), envVars, item, templateDataVars)
           const enabledParams = (cfg.params ?? []).filter(p => p.enabled && p.key)
@@ -2167,12 +2299,9 @@ export default function App(): JSX.Element {
           const authedRequest = applyApiAuth({ url: fullUrl, headers: hdrs }, cfg.auth, envVars, item, templateDataVars)
           fullUrl = authedRequest.url
           const requestHeaders = authedRequest.headers
-          const res = await window.api.http.fetch(fullUrl, { method: cfg.method, headers: requestHeaders, body: bodyStr })
+          const res = await fetchAppApiRequest(fullUrl, { method: cfg.method, headers: requestHeaders, body: bodyStr })
           if (!res.ok) throw new ApiHttpError(res.status, res.statusText, res.text)
-          try {
-            const data = JSON.parse(res.text) as unknown
-            appendApiExecutionResult(allResults, data)
-          } catch { appendApiExecutionResult(allResults, res.text) }
+          appendApiExecutionResult(allResults, parseHttpResponseOutput(res.text))
         }
 
         let postOutputVars: Record<string, unknown> = {}
@@ -2223,7 +2352,7 @@ export default function App(): JSX.Element {
       }
       return JSON.stringify({ __previewError: String((err as Error)?.message ?? err) }, null, 2)
     }
-  }, [activeNodes, activeEdges, activeProjectWs, activeProjectEnvVars, commonDataModules, language, rememberSelectSelection, setScriptLogsForNode, t])
+  }, [activeNodes, activeEdges, activeProjectWs, activeProjectEnvVars, commonDataModules, fetchAppApiRequest, language, rememberSelectSelection, setScriptLogsForNode, t])
 
   const handleNodeRun = useCallback(async (nodeId: string) => {
     const inputJson = await previewUpToNode(nodeId)
@@ -2283,6 +2412,9 @@ export default function App(): JSX.Element {
     canvasStopRequestedRef.current = true
     setConfirmStopCanvasExecution(false)
     if (canvasExecution?.runId) void window.api.http.cancelRun(canvasExecution.runId)
+    if (!Object.values(nodeStatuses).some(status => status === 'running')) {
+      canvasRunLockRef.current = false
+    }
     setCanvasExecution(null)
     setExecLogs(prev => prev.map(entry => (
       entry.status === 'running'
@@ -2326,7 +2458,7 @@ export default function App(): JSX.Element {
       })
       return changed ? next : prev
     })
-  }, [canvasExecution, t])
+  }, [canvasExecution, nodeStatuses, t])
 
   const handleCanvasStopRequest = useCallback(() => {
     if (!isCanvasRunning) return
@@ -2351,9 +2483,13 @@ export default function App(): JSX.Element {
     const loopRow = loop ? (loop.rows[loop.index] ?? { no: loop.index + 1 }) : null
     const loopRowNo = loop ? Math.max(1, Math.floor(Number(loopRow?.no) || loop.index + 1)) : 0
     let { step, plan } = exec
+    const finishExecution = (): void => {
+      canvasRunLockRef.current = false
+      setCanvasExecution(null)
+    }
     const stopIfRequested = (): boolean => {
       if (!canvasStopRequestedRef.current) return false
-      setCanvasExecution(null)
+      finishExecution()
       return true
     }
     if (stopIfRequested()) return
@@ -2438,11 +2574,11 @@ export default function App(): JSX.Element {
       if (!loop) return false
       setLoopRowState({ status: 'failed', error: message, failedNodeId })
       if (loop.stopOnFailure) {
-        setCanvasExecution(null)
+        finishExecution()
         return true
       }
       if (startNextLoopIteration()) return true
-      setCanvasExecution(null)
+      finishExecution()
       return true
     }
     const pushLog = (entry: LogEntry): void => {
@@ -2518,7 +2654,7 @@ export default function App(): JSX.Element {
             }
             setNodeStatuses(prev => ({ ...prev, [prevNodeId]: 'error' }))
             if (handleLoopFailure(prevNodeId, t('runtime.error.postScript', { message: String((err as Error)?.message ?? err) }))) return
-            setCanvasExecution(null)
+            finishExecution()
             return
           }
         }
@@ -2696,7 +2832,7 @@ export default function App(): JSX.Element {
         setNodeStatuses(prev => ({ ...prev, [nodeId]: endStatus }))
         if (endStatus === 'error') {
           if (handleLoopFailure(nodeId, endErrorMessage)) return
-          setCanvasExecution(null)
+          finishExecution()
           return
         }
         if (continueLoopIfNeeded()) return
@@ -2724,7 +2860,7 @@ export default function App(): JSX.Element {
           updateLog(entryId, { status: 'error', error: errStr, duration: Date.now() - startedAt })
           setNodeStatuses(prev => ({ ...prev, [nodeId]: 'error' }))
           if (handleLoopFailure(nodeId, errStr)) return
-          setCanvasExecution(null)
+          finishExecution()
           return
         }
         step++; continue
@@ -2852,7 +2988,7 @@ export default function App(): JSX.Element {
           updateLog(entryId, { status: 'error', error: errStr, duration: Date.now() - startedAt, scriptLogs: currentScriptLogs })
           setNodeStatuses(prev => ({ ...prev, [nodeId]: 'error' }))
           if (handleLoopFailure(nodeId, errStr)) return
-          setCanvasExecution(null)
+          finishExecution()
           return
         }
       }
@@ -2888,9 +3024,9 @@ export default function App(): JSX.Element {
             return
           }
           if (branchCfg.mode !== 'manual') {
-            recordUsedBranchVariables(usedVariables, branchCfg.expression, branchInput, loopRow ? { ...loopRow } : upstreamModuleVars)
+            recordUsedBranchVariables(usedVariables, branchCfg.expression, branchInput, loopRow ? { ...loopRow } : upstreamModuleVars, envVarsForRun)
           }
-          const result = evaluateBranch(branchCfg, branchInput, loopRow ? { ...loopRow } : upstreamModuleVars, language)
+          const result = evaluateBranch(branchCfg, branchInput, loopRow ? { ...loopRow } : upstreamModuleVars, envVarsForRun, language)
           branchRoutes[nodeId] = result.route
           setActiveBranchRoutes(prev => ({ ...prev, [nodeId]: result.route }))
           nodeOutputs[nodeId] = rawInput
@@ -2904,7 +3040,7 @@ export default function App(): JSX.Element {
           updateLog(entryId, { status: 'error', error: errStr, duration: Date.now() - startedAt })
           setNodeStatuses(prev => ({ ...prev, [nodeId]: 'error' }))
           if (handleLoopFailure(nodeId, errStr)) return
-          setCanvasExecution(null)
+          finishExecution()
           return
         }
         step++; continue
@@ -2972,11 +3108,10 @@ export default function App(): JSX.Element {
           }
 
           const items = buildApiTemplateItems(rawInput, incomingEdges, upstreamModuleVars, preInputVars)
-
           const allResults: unknown[] = []
 
           for (const row of items) {
-            const item: Record<string, unknown> = applyInputMappings(row, cfg.inputMappings ?? {})
+            const item = applyInputMappings(row, cfg.inputMappings ?? {})
             const templateDataVars = loopRow ? { ...loopRow } : item
             const enabledParams = (cfg.params ?? []).filter(p => p.enabled && p.key)
             const enabledHeaders = (cfg.headers ?? []).filter(h => h.enabled && h.key)
@@ -3018,21 +3153,15 @@ export default function App(): JSX.Element {
 
             lastApiDetail = { method: cfg.method, url: fullUrl, headers: requestHeaders, body: bodyStr }
 
-            const res = await window.api.http.fetch(fullUrl, { method: cfg.method, headers: requestHeaders, body: bodyStr, runId: exec.runId })
+            const res = await fetchAppApiRequest(fullUrl, { method: cfg.method, headers: requestHeaders, body: bodyStr, runId: exec.runId })
             if (stopIfRequested()) return
             lastApiDetail = { ...lastApiDetail, statusCode: res.status, statusText: res.statusText, responseText: res.text }
 
             if (!res.ok) {
               throw new ApiHttpError(res.status, res.statusText, res.text)
             }
-            try {
-              const data = JSON.parse(res.text) as unknown
-              appendApiExecutionResult(allResults, data)
-            } catch {
-              appendApiExecutionResult(allResults, res.text)
-            }
+            appendApiExecutionResult(allResults, parseHttpResponseOutput(res.text))
           }
-
           // ── Post Response script ───────────────────────
           let postOutputVars: Record<string, unknown> = {}
           const responseOutput = normalizeApiExecutionOutput(allResults)
@@ -3076,7 +3205,7 @@ export default function App(): JSX.Element {
           updateLog(entryId, { status: 'error', output: errorOutput, error: errStr, duration: Date.now() - startedAt, apiDetail: lastApiDetail, scriptLogs: currentScriptLogs })
           setNodeStatuses(prev => ({ ...prev, [nodeId]: 'error' }))
           if (handleLoopFailure(nodeId, errStr)) return
-          setCanvasExecution(null)
+          finishExecution()
           return
         }
         step++; continue
@@ -3086,13 +3215,11 @@ export default function App(): JSX.Element {
     }
 
     if (continueLoopIfNeeded()) return
-    setCanvasExecution(null)
-  }, [activeNodes, activeEdges, activeProjectWs, activeProjectEnvVars, activeProjectEnvDisplayVars, activeProject?.name, rememberSelectSelection, setScriptLogsForNode, t])
+    finishExecution()
+  }, [activeNodes, activeEdges, activeProjectWs, activeProjectEnvVars, activeProjectEnvDisplayVars, activeProject?.name, fetchAppApiRequest, rememberSelectSelection, setScriptLogsForNode, t])
 
   const handleCanvasRun = useCallback(() => {
-    if (!activeProject || isCanvasRunning) return
-    canvasStopRequestedRef.current = false
-    setConfirmStopCanvasExecution(false)
+    if (!activeProject || canvasRunLockRef.current || isCanvasRunning) return
     const plan = buildExecutionPlan(activeNodes, activeEdges)
     if (plan.length === 0) return
     const startNode = activeNodes.find(n => n.id === plan[0] && n.type === 'start')
@@ -3101,6 +3228,9 @@ export default function App(): JSX.Element {
       alert(repeatRowsResult.error)
       return
     }
+    canvasRunLockRef.current = true
+    canvasStopRequestedRef.current = false
+    setConfirmStopCanvasExecution(false)
     const startedAt = Date.now()
     const loop = repeatRowsResult.rows
       ? {
@@ -3151,10 +3281,15 @@ export default function App(): JSX.Element {
       pendingBranchChoice: null,
     }
     setCanvasExecution(execution)
-    advanceExecution(execution)
+    void advanceExecution(execution).catch(err => {
+      canvasRunLockRef.current = false
+      setCanvasExecution(null)
+      console.error(err)
+    })
   }, [activeNodes, activeEdges, activeProject, activeProjectEnvVars, advanceExecution, isCanvasRunning, t])
 
   const handleCanvasReset = useCallback(() => {
+    canvasRunLockRef.current = false
     canvasStopRequestedRef.current = false
     setConfirmStopCanvasExecution(false)
     setExecLogs([])
@@ -4355,6 +4490,7 @@ export default function App(): JSX.Element {
           key={editingNode.id}
           node={editingNode}
           initialInput={nodeRunInputs[editingNode.id]}
+          envVars={activeProjectEnvVars}
           onRun={async () => {
             const inputJson = await previewUpToNode(editingNode.id)
             setNodeRunInputs(prev => ({ ...prev, [editingNode.id]: inputJson }))
@@ -4398,6 +4534,7 @@ export default function App(): JSX.Element {
         return (
           <SelectionPopup
             data={canvasExecution.pendingSelectInput}
+            storageKey={activeProject ? `${activeProject.id}:${pendingNodeId}` : pendingNodeId}
             initialSelectedRowIndices={pendingConfig.selectedRowIndices}
             initialSelectedJsonPaths={pendingConfig.selectedJsonPaths}
             initialMode={pendingConfig.selectMode}
@@ -4413,11 +4550,18 @@ export default function App(): JSX.Element {
               })
               window.requestAnimationFrame(() => {
                 window.requestAnimationFrame(() => {
-                  void advanceExecution(executionToResume, selectedRows, selection)
+                  void advanceExecution(executionToResume, selectedRows, selection).catch(err => {
+                    canvasRunLockRef.current = false
+                    setCanvasExecution(null)
+                    console.error(err)
+                  })
                 })
               })
             }}
-            onCancel={() => setCanvasExecution(null)}
+            onCancel={() => {
+              canvasRunLockRef.current = false
+              setCanvasExecution(null)
+            }}
           />
         )
       })()}
@@ -4442,11 +4586,18 @@ export default function App(): JSX.Element {
               })
               window.requestAnimationFrame(() => {
                 window.requestAnimationFrame(() => {
-                  void advanceExecution(executionToResume, undefined, undefined, route)
+                  void advanceExecution(executionToResume, undefined, undefined, route).catch(err => {
+                    canvasRunLockRef.current = false
+                    setCanvasExecution(null)
+                    console.error(err)
+                  })
                 })
               })
             }}
-            onCancel={() => setCanvasExecution(null)}
+            onCancel={() => {
+              canvasRunLockRef.current = false
+              setCanvasExecution(null)
+            }}
           />
         )
       })()}
@@ -4455,6 +4606,7 @@ export default function App(): JSX.Element {
       {pendingPreviewSelect && (
         <SelectionPopup
           data={pendingPreviewSelect.data}
+          storageKey={activeProject ? `${activeProject.id}:${pendingPreviewSelect.nodeId}` : pendingPreviewSelect.nodeId}
           initialSelectedRowIndices={pendingPreviewSelect.config.selectedRowIndices}
           initialSelectedJsonPaths={pendingPreviewSelect.config.selectedJsonPaths}
           initialMode={pendingPreviewSelect.config.selectMode}

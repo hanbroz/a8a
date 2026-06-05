@@ -1283,22 +1283,27 @@ export default function WorkflowCanvas({
     if (node.type === 'branch') {
       const cfg = parseBranchConfig(node.config)
       const selectedRoute = branchRoutes?.[node.id]
-      const trueSelected = selectedRoute === 'true'
-      const falseSelected = selectedRoute === 'false'
+      const fixedRoute = cfg.mode === 'manual' && cfg.manualSource !== 'runtime'
+        ? (cfg.selectedRoute === 'false' ? 'false' : 'true')
+        : undefined
+      const trueFixed = fixedRoute === 'true'
+      const falseFixed = fixedRoute === 'false'
+      const trueSelected = selectedRoute === 'true' || (!selectedRoute && trueFixed)
+      const falseSelected = selectedRoute === 'false' || (!selectedRoute && falseFixed)
       return (
         <>
           <div
-            className={`wf-port wf-port-output wf-port-output-branch wf-port-output-branch-true${active}${trueSelected ? ' wf-port-output-branch-selected' : ''}`}
+            className={`wf-port wf-port-output wf-port-output-branch wf-port-output-branch-true${active}${trueSelected ? ' wf-port-output-branch-selected' : ''}${trueFixed ? ' wf-port-output-branch-fixed' : ''}`}
             onMouseDown={e => onOutputPortDown(e, node.id, node.type, 'right', 'true')}
             title={cfg.trueLabel ?? 'TRUE'}
           />
-          <span className={`wf-branch-port-label wf-branch-port-label-true${trueSelected ? ' wf-branch-port-label-selected' : ''}`}>{cfg.trueLabel ?? 'TRUE'}</span>
+          <span className={`wf-branch-port-label wf-branch-port-label-true${trueSelected ? ' wf-branch-port-label-selected' : ''}${trueFixed ? ' wf-branch-port-label-fixed' : ''}`}>{cfg.trueLabel ?? 'TRUE'}</span>
           <div
-            className={`wf-port wf-port-output wf-port-output-branch wf-port-output-branch-false${active}${falseSelected ? ' wf-port-output-branch-selected' : ''}`}
+            className={`wf-port wf-port-output wf-port-output-branch wf-port-output-branch-false${active}${falseSelected ? ' wf-port-output-branch-selected' : ''}${falseFixed ? ' wf-port-output-branch-fixed' : ''}`}
             onMouseDown={e => onOutputPortDown(e, node.id, node.type, 'right', 'false')}
             title={cfg.falseLabel ?? 'FALSE'}
           />
-          <span className={`wf-branch-port-label wf-branch-port-label-false${falseSelected ? ' wf-branch-port-label-selected' : ''}`}>{cfg.falseLabel ?? 'FALSE'}</span>
+          <span className={`wf-branch-port-label wf-branch-port-label-false${falseSelected ? ' wf-branch-port-label-selected' : ''}${falseFixed ? ' wf-branch-port-label-fixed' : ''}`}>{cfg.falseLabel ?? 'FALSE'}</span>
         </>
       )
     }
@@ -1844,11 +1849,13 @@ export default function WorkflowCanvas({
 
         if (node.type === 'branch') {
           const cfg = parseBranchConfig(node.config)
-          const modeLabel = cfg.mode === 'manual' ? t('workflow.branch.manual') : t('workflow.branch.condition')
+          const fixedRoute = cfg.mode === 'manual' && cfg.manualSource !== 'runtime'
+            ? (cfg.selectedRoute === 'false' ? 'false' : 'true')
+            : undefined
           return (
             <div
               key={node.id}
-              className={`wf-node wf-node-branch${selectedNodeIdSet.has(node.id) ? ' wf-node-selected' : ''}`}
+              className={`wf-node wf-node-branch${fixedRoute ? ` wf-node-branch-fixed wf-node-branch-fixed-${fixedRoute}` : ''}${selectedNodeIdSet.has(node.id) ? ' wf-node-selected' : ''}`}
               data-dragging={draggingNodeIdSet.has(node.id) ? 'true' : undefined}
               style={nodeStyle(node)}
               onMouseDown={e => onNodeDown(e, node.id)}
@@ -1858,7 +1865,6 @@ export default function WorkflowCanvas({
               <div className="wf-node-icon wf-node-icon-branch"><BranchIcon /></div>
               <div className="wf-node-data-content">
                 <span className="wf-node-label wf-node-label-branch">{node.label}</span>
-                <div className="wf-node-branch-meta">{modeLabel}</div>
               </div>
               {statusBullet}
               {renderOutputPorts(node)}

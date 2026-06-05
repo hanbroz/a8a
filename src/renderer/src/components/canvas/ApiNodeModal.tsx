@@ -3,9 +3,11 @@ import { IcoMaximize, IcoPlus, IcoRestore, IcoTrash, IcoX } from '../Icon'
 import JsonMonacoEditor from './JsonMonacoEditor'
 import JsonInspectorButton from './JsonInspector'
 import ScriptHelpButton from './ScriptHelpButton'
+import ShortcutSaveButtonLabel from './ShortcutSaveButtonLabel'
 import { useModalMaximize } from './useModalMaximize'
+import { useShortcutSave } from './useShortcutSave'
 import { randomId } from '../../utils/id'
-import { applyInputMappings, getInputPathSuggestions, parseTemplate, resolveInputExpression, resolveTemplate } from '../../utils/interpolate'
+import { applyInputMappings, getInputMappingAlias, getInputPathSuggestions, parseTemplate, resolveInputExpression, resolveTemplate } from '../../utils/interpolate'
 import { API_AUTH_TYPES, DEFAULT_API_AUTH, applyApiAuth, getApiAuthTemplateValues, normalizeApiAuth } from '../../utils/apiAuth'
 import { isScriptRuntimeError, runPostResponse, runPreRequest } from '../../utils/scriptRuntime'
 import { useMonacoTheme } from '../../utils/useMonacoTheme'
@@ -510,6 +512,37 @@ function expandedIdsForJsonPath(
   return expanded
 }
 
+function normalizeInputPickerPath(path: string, data: Record<string, unknown>): string {
+  const trimmed = path.trim()
+  const output = data.output
+  if (!trimmed || !output || typeof output !== 'object' || Array.isArray(output)) return trimmed
+
+  const match = trimmed.match(/^(\$?\.?output)\[(["'])(.*?)\2\]([\s\S]*)$/)
+  if (!match) return trimmed
+
+  const outputKeys = Object.keys(output as Record<string, unknown>)
+  const outputIndex = outputKeys.indexOf(match[3])
+  if (outputIndex < 0 && outputKeys.length === 0) return trimmed
+
+  const prefix = match[1].startsWith('$') ? '$.output' : 'output'
+  return `${prefix}[${outputIndex >= 0 ? outputIndex : 0}]${match[4]}`
+}
+
+function denormalizeInputPickerPath(path: string, data: Record<string, unknown>): string {
+  const trimmed = path.trim()
+  const output = data.output
+  if (!trimmed || !output || typeof output !== 'object' || Array.isArray(output)) return trimmed
+
+  const match = trimmed.match(/^(\$?\.?output)\[(\d+)\]([\s\S]*)$/)
+  if (!match) return trimmed
+
+  const outputKey = Object.keys(output as Record<string, unknown>)[Number(match[2])]
+  if (!outputKey) return trimmed
+
+  const prefix = match[1].startsWith('$') ? '$.output' : 'output'
+  return `${prefix}[${JSON.stringify(outputKey)}]${match[3]}`
+}
+
 function JsonPathPicker({
   data,
   variableName,
@@ -529,13 +562,16 @@ function JsonPathPicker({
 }): JSX.Element {
   const { t } = useI18n()
   const nodes = useMemo(() => flattenJsonViewer(data), [data])
-  const [selectedPath, setSelectedPath] = useState<string>(initialPath ?? '')
+  const initialTreePath = useMemo(() => denormalizeInputPickerPath(initialPath ?? '', data), [data, initialPath])
+  const [selectedPath, setSelectedPath] = useState<string>(() => normalizeInputPickerPath(initialPath ?? '', data))
+  const [selectedTreePath, setSelectedTreePath] = useState<string>(initialTreePath)
   const visibleNodes = useMemo(() => getVisibleJsonViewerNodes(nodes, expandedIds), [nodes, expandedIds])
   const selectedValue = selectedPath ? resolveInputExpression(data, selectedPath) : undefined
 
   useEffect(() => {
-    setSelectedPath(initialPath ?? '')
-  }, [initialPath])
+    setSelectedPath(normalizeInputPickerPath(initialPath ?? '', data))
+    setSelectedTreePath(initialTreePath)
+  }, [data, initialPath, initialTreePath])
 
   const toggleExpanded = (nodeId: string) => {
     const next = new Set(expandedIds)
@@ -568,7 +604,7 @@ function JsonPathPicker({
         <div className="api-input-picker-body">
           <div className="api-input-picker-tree">
             {visibleNodes.map(node => {
-              const selected = selectedPath === node.id
+              const selected = selectedTreePath === node.id || selectedPath === node.id
               const expanded = expandedIds.has(node.id)
               return (
                 <button
@@ -576,7 +612,10 @@ function JsonPathPicker({
                   type="button"
                   className={`api-json-view-node api-input-picker-node${node.hasChildren ? ' api-json-view-node-parent' : ''}${selected ? ' api-input-picker-node-selected' : ''}`}
                   style={{ paddingLeft: 10 + node.depth * 14 }}
-                  onClick={() => setSelectedPath(node.id)}
+                  onClick={() => {
+                    setSelectedTreePath(node.id)
+                    setSelectedPath(normalizeInputPickerPath(node.id, data))
+                  }}
                 >
                   <span
                     className={`api-json-view-expander${node.hasChildren ? ' api-json-view-expander-visible' : ''}`}
@@ -596,7 +635,17 @@ function JsonPathPicker({
           </div>
           <div className="api-input-picker-preview">
             <div className="api-input-picker-preview-label">{t('module.api.selectedPath')}</div>
-            <code>{selectedPath || t('module.api.notSelected')}</code>
+            <input
+              className="dm-input api-input-picker-path-input"
+              value={selectedPath}
+              onChange={e => {
+                setSelectedPath(e.target.value)
+                setSelectedTreePath('')
+              }}
+              placeholder={t('module.api.notSelected')}
+              spellCheck={false}
+            />
+            <div className="api-input-picker-path-hint">{t('module.api.nodeAgnosticPathHint')}</div>
             <div className="api-input-picker-preview-label">{t('module.api.appliedValue')}</div>
             <pre>{selectedPreview || t('module.api.noSelectedValue')}</pre>
           </div>
@@ -605,8 +654,8 @@ function JsonPathPicker({
           <button className="btn ghost" onClick={onClose}>{t('common.cancel')}</button>
           <button
             className="btn primary"
-            onClick={() => selectedPath && onConfirm(selectedPath)}
-            disabled={!selectedPath}
+            onClick={() => selectedPath.trim() && onConfirm(normalizeInputPickerPath(selectedPath, data))}
+            disabled={!selectedPath.trim()}
           >
             {t('module.api.applySelection')}
           </button>
@@ -937,6 +986,7 @@ export default function ApiNodeModal({
   const [inputViewMode, setInputViewMode] = useState<JsonViewMode>(() => canShowJsonTree(initialInput) ? 'tree' : 'raw')
 
   const [testing, setTesting] = useState(false)
+  const testingLockRef = useRef(false)
   const [testResponse, setTestResponse] = useState<string | null>(initialOutput ?? null)
   const [outputViewMode, setOutputViewMode] = useState<JsonViewMode>(() => canShowJsonTree(initialOutput) ? 'tree' : 'raw')
   const [testStatus, setTestStatus] = useState<{ code: number; text: string; ms: number } | null>(null)
@@ -1054,7 +1104,9 @@ export default function ApiNodeModal({
         }
         if (tok.type === 'input') {
           const key = `input:${tok.key}`
-          if (!seen.has(key)) seen.set(key, { kind: 'input', name: tok.key, resolved: tok.resolved, mappedPath: inputMappings[tok.key] })
+          const mappingAlias = getInputMappingAlias(tok.key)
+          const mappedPath = inputMappings[tok.key] ?? inputMappings[mappingAlias]
+          if (!seen.has(key)) seen.set(key, { kind: 'input', name: tok.key, resolved: tok.resolved, mappedPath })
         }
         if (tok.type === 'data') {
           const key = `data:${tok.key}`
@@ -1255,7 +1307,8 @@ export default function ApiNodeModal({
 
   // Test API call (resolves vars before sending)
   const handleTest = async () => {
-    if (!url.trim()) return
+    if (!url.trim() || testingLockRef.current) return
+    testingLockRef.current = true
     setTesting(true)
     setTestResponse(null)
     setOutputViewMode('raw')
@@ -1343,6 +1396,7 @@ export default function ApiNodeModal({
         request: request ?? { method, url: url.trim(), headers: {} },
       })
     } finally {
+      testingLockRef.current = false
       setTesting(false)
     }
   }
@@ -1351,7 +1405,7 @@ export default function ApiNodeModal({
     const handleKeyDown = (event: KeyboardEvent): void => {
       if (event.defaultPrevented || !(event.ctrlKey || event.metaKey) || event.altKey) return
       if (event.key.toLowerCase() !== 'enter') return
-      if (testing || !url.trim()) return
+      if (testing || testingLockRef.current || !url.trim()) return
 
       event.preventDefault()
       void handleTest()
@@ -1382,17 +1436,24 @@ export default function ApiNodeModal({
   }
 
   const handleApplyInputMapping = (name: string, path: string) => {
-    setInputMappings(prev => ({ ...prev, [name]: path }))
+    const mappingAlias = getInputMappingAlias(name)
+    setInputMappings(prev => {
+      const next = { ...prev, [mappingAlias]: path }
+      if (mappingAlias !== name) delete next[name]
+      return next
+    })
     setMappingPickerName(null)
   }
 
   const handleOpenInputMappingPicker = (name: string) => {
     const nodes = flattenJsonViewer(baseInputData)
-    setInputPickerExpandedIds(prev => expandedIdsForJsonPath(nodes, inputMappings[name], prev))
+    const mappingAlias = getInputMappingAlias(name)
+    const mappingPath = inputMappings[name] ?? inputMappings[mappingAlias]
+    setInputPickerExpandedIds(prev => expandedIdsForJsonPath(nodes, denormalizeInputPickerPath(mappingPath ?? '', baseInputData), prev))
     setMappingPickerName(name)
   }
 
-  const handleSave = async () => {
+  const handleSave = async (closeAfterSave = true): Promise<boolean> => {
     setSaving(true)
     const config: ApiConfig = {
       method, url: url.trim(), headers, params, body, bodyType,
@@ -1404,8 +1465,15 @@ export default function ApiNodeModal({
     const nextModuleName = moduleName.trim() || 'API'
     await onSave(node.id, nextModuleName, JSON.stringify(config))
     setSaving(false)
-    onClose()
+    if (closeAfterSave) onClose()
+    return true
   }
+
+  const { shortcutSaveDialog } = useShortcutSave({
+    disabled: saving,
+    onClose,
+    onSave: handleSave,
+  })
 
   const statusColor = testStatus
     ? testStatus.code >= 200 && testStatus.code < 300
@@ -1962,8 +2030,8 @@ export default function ApiNodeModal({
                 >
                   {t('common.cancel')}
                 </button>
-                <button className="btn primary api-save-btn" onClick={handleSave} disabled={saving}>
-                  {saving ? t('common.saving') : t('common.save')}
+                <button className="btn primary api-save-btn" onClick={() => void handleSave(true)} disabled={saving}>
+                  <ShortcutSaveButtonLabel saving={saving} />
                 </button>
               </>
             )}
@@ -2079,7 +2147,7 @@ export default function ApiNodeModal({
           key={mappingPickerName}
           data={baseInputData}
           variableName={mappingPickerName}
-          initialPath={inputMappings[mappingPickerName]}
+          initialPath={inputMappings[mappingPickerName] ?? inputMappings[getInputMappingAlias(mappingPickerName)]}
           expandedIds={inputPickerExpandedIds}
           onExpandedIdsChange={setInputPickerExpandedIds}
           onConfirm={path => handleApplyInputMapping(mappingPickerName, path)}
@@ -2131,6 +2199,7 @@ export default function ApiNodeModal({
           </div>
         </div>
       )}
+      {shortcutSaveDialog}
     </div>
   )
 }

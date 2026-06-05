@@ -1,13 +1,15 @@
 import { useState, useRef, useEffect, useCallback } from 'react'
-import { IcoX } from '../Icon'
+import { IcoMaximize, IcoRestore, IcoX } from '../Icon'
 import { useI18n } from '../../i18n'
 
 interface Props {
   data: unknown
+  storageKey?: string
   initialSelectedRowIndices?: number[]
   initialSelectedJsonPaths?: string[]
   initialMode?: 'table' | 'json'
   selectionType?: 'multiple' | 'single'
+  preferInitialSelection?: boolean
   onConfirm: (selectedValues: unknown[], selection: SelectionPopupSelection) => void
   onCancel: () => void
 }
@@ -31,8 +33,16 @@ type JsonNode = {
 }
 
 const SIZE_KEY = 'selection-popup-size'
+const STATE_KEY_PREFIX = 'selection-popup-state:'
 const MIN_W = 560
 const MIN_H = 360
+
+type SavedSelectionPopupState = {
+  mode?: 'table' | 'json'
+  selectedRowIndices?: number[]
+  selectedJsonPaths?: string[]
+  expandedJsonPaths?: string[]
+}
 
 function getTableRows(data: unknown): Record<string, unknown>[] | null {
   if (!Array.isArray(data) || data.length === 0) return null
@@ -56,6 +66,40 @@ function readSavedSize(): { w: number; h: number } {
 
 function saveSize(size: { w: number; h: number }): void {
   localStorage.setItem(SIZE_KEY, JSON.stringify(size))
+}
+
+function stateStorageKey(storageKey: string): string {
+  return `${STATE_KEY_PREFIX}${storageKey}`
+}
+
+function readSavedState(storageKey?: string): SavedSelectionPopupState | null {
+  if (!storageKey) return null
+  try {
+    const parsed = JSON.parse(localStorage.getItem(stateStorageKey(storageKey)) ?? '{}') as Partial<SavedSelectionPopupState>
+    return {
+      mode: parsed.mode === 'table' || parsed.mode === 'json' ? parsed.mode : undefined,
+      selectedRowIndices: Array.isArray(parsed.selectedRowIndices)
+        ? parsed.selectedRowIndices.filter(index => Number.isInteger(index) && index >= 0)
+        : undefined,
+      selectedJsonPaths: Array.isArray(parsed.selectedJsonPaths)
+        ? parsed.selectedJsonPaths.filter((path): path is string => typeof path === 'string')
+        : undefined,
+      expandedJsonPaths: Array.isArray(parsed.expandedJsonPaths)
+        ? parsed.expandedJsonPaths.filter((path): path is string => typeof path === 'string')
+        : undefined,
+    }
+  } catch {
+    return null
+  }
+}
+
+function saveState(storageKey: string | undefined, state: SavedSelectionPopupState): void {
+  if (!storageKey) return
+  try {
+    localStorage.setItem(stateStorageKey(storageKey), JSON.stringify(state))
+  } catch {
+    // localStorage 저장 실패는 선택 동작을 막지 않는다.
+  }
 }
 
 function valueType(value: unknown): string {
@@ -156,10 +200,12 @@ function expandedIdsForSelectedNodes(nodes: JsonNode[], selectedIds: Set<string>
 
 export default function SelectionPopup({
   data,
+  storageKey,
   initialSelectedRowIndices = [],
   initialSelectedJsonPaths = [],
   initialMode,
   selectionType = 'multiple',
+  preferInitialSelection = false,
   onConfirm,
   onCancel,
 }: Props): JSX.Element {
@@ -169,25 +215,39 @@ export default function SelectionPopup({
   const jsonData = tableRows && tableRows.length === 1 ? tableRows[0] : data
   const jsonNodes = flattenJson(jsonData)
   const columns = tableRows && tableRows.length > 0 ? Object.keys(tableRows[0]) : []
-  const initialJsonPaths = initialSelectedJsonPaths.filter(path => jsonNodes.some(node => node.id === path && node.selectable))
+  const savedState = readSavedState(storageKey)
+  const savedSelectedJsonPaths = preferInitialSelection ? [] : savedState?.selectedJsonPaths ?? []
+  const configuredJsonPaths = savedSelectedJsonPaths.length > 0 ? savedSelectedJsonPaths : initialSelectedJsonPaths
+  const initialJsonPaths = configuredJsonPaths.filter(path => jsonNodes.some(node => node.id === path && node.selectable))
   const initialJsonNodeIds = new Set(selectionType === 'single' ? initialJsonPaths.slice(0, 1) : initialJsonPaths)
+  const savedSelectedRowIndices = preferInitialSelection ? [] : savedState?.selectedRowIndices ?? []
+  const configuredRowIndices = savedSelectedRowIndices.length > 0 ? savedSelectedRowIndices : initialSelectedRowIndices
   const initialTableIndices = canUseTable
-    ? initialSelectedRowIndices.filter(index => index >= 0 && index < tableRows.length)
+    ? configuredRowIndices.filter(index => index >= 0 && index < tableRows.length)
     : []
+  const savedExpandedIds = new Set((savedState?.expandedJsonPaths ?? []).filter(path =>
+    jsonNodes.some(node => node.id === path && node.hasChildren),
+  ))
+  const hasSavedExpandedIds = savedState?.expandedJsonPaths !== undefined
 
   const [mode, setMode] = useState<'table' | 'json'>(() => {
+    if (!preferInitialSelection && savedState?.mode === 'json') return 'json'
+    if (!preferInitialSelection && savedState?.mode === 'table' && canUseTable) return 'table'
     if (initialMode === 'json' && initialJsonNodeIds.size > 0) return 'json'
     if (initialMode === 'table' && canUseTable) return 'table'
+    if (savedState?.mode === 'json') return 'json'
+    if (savedState?.mode === 'table' && canUseTable) return 'table'
     if (initialJsonNodeIds.size > 0) return 'json'
     return canUseTable && tableRows.length > 1 ? 'table' : 'json'
   })
   const [selectedIndices, setSelectedIndices] = useState<number[]>(selectionType === 'single' ? initialTableIndices.slice(0, 1) : initialTableIndices)
   const [selectedNodeIds, setSelectedNodeIds] = useState<Set<string>>(() => initialJsonNodeIds)
   const [expandedIds, setExpandedIds] = useState<Set<string>>(() =>
-    expandedIdsForSelectedNodes(jsonNodes, initialJsonNodeIds),
+    hasSavedExpandedIds ? savedExpandedIds : expandedIdsForSelectedNodes(jsonNodes, initialJsonNodeIds),
   )
   const [size, setSize] = useState(readSavedSize)
   const [pos, setPos] = useState<{ x: number; y: number } | null>(null)
+  const [isMaximized, setIsMaximized] = useState(false)
   const dragRef = useRef<{ ox: number; oy: number } | null>(null)
   const modalRef = useRef<HTMLDivElement>(null)
 
@@ -205,7 +265,17 @@ export default function SelectionPopup({
     }
   }, [pos, size.h, size.w])
 
+  useEffect(() => {
+    saveState(storageKey, {
+      mode,
+      selectedRowIndices: selectedIndices,
+      selectedJsonPaths: Array.from(selectedNodeIds),
+      expandedJsonPaths: Array.from(expandedIds),
+    })
+  }, [expandedIds, mode, selectedIndices, selectedNodeIds, storageKey])
+
   const onHeaderDown = useCallback((e: React.MouseEvent) => {
+    if (isMaximized) return
     if (!pos) return
     e.preventDefault()
     dragRef.current = { ox: e.clientX - pos.x, oy: e.clientY - pos.y }
@@ -224,9 +294,10 @@ export default function SelectionPopup({
     }
     window.addEventListener('mousemove', onMove)
     window.addEventListener('mouseup', onUp)
-  }, [pos, size.h, size.w])
+  }, [isMaximized, pos, size.h, size.w])
 
   const onResizeDown = useCallback((e: React.MouseEvent) => {
+    if (isMaximized) return
     e.preventDefault()
     e.stopPropagation()
     const startX = e.clientX
@@ -249,7 +320,11 @@ export default function SelectionPopup({
 
     window.addEventListener('mousemove', onMove)
     window.addEventListener('mouseup', onUp)
-  }, [pos?.x, pos?.y, size])
+  }, [isMaximized, pos?.x, pos?.y, size])
+
+  const toggleMaximized = useCallback(() => {
+    setIsMaximized(prev => !prev)
+  }, [])
 
   const toggleRow = (idx: number) => {
     setSelectedIndices(prev => {
@@ -299,18 +374,20 @@ export default function SelectionPopup({
 
   const hasSelection = mode === 'table' && tableRows ? selectedIndices.length > 0 : selectedJsonNodes.length > 0
 
-  const modalStyle: React.CSSProperties = pos
-    ? { position: 'fixed', left: pos.x, top: pos.y, width: size.w, height: size.h, margin: 0 }
-    : { position: 'fixed', left: '50%', top: '50%', width: size.w, height: size.h, transform: 'translate(-50%, -50%)', margin: 0 }
+  const modalStyle: React.CSSProperties = isMaximized
+    ? { position: 'fixed', left: 12, top: 12, width: 'calc(100vw - 24px)', height: 'calc(100vh - 24px)', margin: 0 }
+    : pos
+      ? { position: 'fixed', left: pos.x, top: pos.y, width: size.w, height: size.h, margin: 0 }
+      : { position: 'fixed', left: '50%', top: '50%', width: size.w, height: size.h, transform: 'translate(-50%, -50%)', margin: 0 }
 
   return (
     <div className="sp-overlay" style={{ pointerEvents: 'none' }}>
       <div
         ref={modalRef}
-        className="sp-modal"
+        className={`sp-modal${isMaximized ? ' sp-modal-maximized' : ''}`}
         style={{ ...modalStyle, pointerEvents: 'all' }}
       >
-        <div className="sp-hd" style={{ cursor: 'move' }} onMouseDown={onHeaderDown}>
+        <div className="sp-hd" style={{ cursor: isMaximized ? 'default' : 'move' }} onMouseDown={onHeaderDown}>
           <div className="sp-hd-left">
             <span className="sp-title">{mode === 'table' ? t('module.selection.title.table') : t('module.selection.title.json')}</span>
             <span className="sp-subtitle">
@@ -336,6 +413,14 @@ export default function SelectionPopup({
                 </button>
               </div>
             )}
+            <button
+              className="btn ghost icon dm-window-btn"
+              onClick={toggleMaximized}
+              title={isMaximized ? t('module.common.restoreWindow') : t('module.common.maximizeWindow')}
+              aria-label={isMaximized ? t('module.common.restoreWindow') : t('module.common.maximizeWindow')}
+            >
+              {isMaximized ? <IcoRestore size={13} /> : <IcoMaximize size={13} />}
+            </button>
             <button className="btn ghost icon dm-close-btn" onClick={onCancel}>
               <IcoX size={13} />
             </button>
@@ -421,7 +506,7 @@ export default function SelectionPopup({
             {t('module.selection.complete')}
           </button>
         </div>
-        <div className="sp-resize-handle" onMouseDown={onResizeDown} />
+        {!isMaximized && <div className="sp-resize-handle" onMouseDown={onResizeDown} />}
       </div>
     </div>
   )
