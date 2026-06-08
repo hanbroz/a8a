@@ -6,6 +6,8 @@ a8a is an Electron-based workflow automation tool for visually building and runn
 
 You can manage workspaces, environments, and projects, then connect Data, Select, API, Branch, and End nodes to build API processing pipelines. Execution results are available as per-node INPUT/OUTPUT and logs, and End nodes can save HTML or Markdown reports.
 
+![a8a workflow canvas screen](screenshot/a8a-workflow-canvas.png)
+
 ## Download And Install
 
 The latest installers are available from GitHub Releases.
@@ -317,6 +319,8 @@ In END settings, choose environment variable keys to display inside the module. 
 This feature does not hardcode any specific variable name. For example, an airline reservation workflow may choose `PNR` or `recordLocator`, while another workflow may choose `orderId`, `bookingId`, or `token`. If many values are selected, the End module height increases so all values can be shown.
 
 END report targets can only include modules on connected execution paths from START to END. If you save END settings and later add a new module into the connected execution path, the new module is included in report targets by default. Modules that a user explicitly unchecked remain excluded.
+
+In END report settings, choose whether the report includes `INPUT`, `OUTPUT`, `PRE REQUEST`, `POST RESPONSE`, and `Used variables`. Existing END settings behave as if all items are included. Unchecked items are excluded from future HTML/Markdown reports. API module URL, request headers, request body, and response body are always included as API execution evidence, regardless of the `INPUT` or `OUTPUT` checkbox state.
 
 ### 7. Review API Flow With API List
 

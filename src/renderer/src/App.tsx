@@ -6,6 +6,7 @@ import { isScriptRuntimeError, runPreRequest, runPostResponse } from './utils/sc
 import { generateReport, fillFilenameTemplate } from './utils/reportGenerator'
 import type { ReportNode, ReportApiDetail, ReportVariable } from './utils/reportGenerator'
 import { resolveEndReportSelectedModuleIds } from './utils/endReportSelection'
+import { endReportIncludeOptions } from './utils/endReportInclude'
 import type { ScriptConsoleEntry } from './utils/scriptRuntime'
 import { IcoPanelL, IcoSave, IcoSun, IcoMoon, IcoPanelB, IcoChevD, IcoX, IcoDownload, IcoUpload, IcoSettings } from './components/Icon'
 import WorkspaceHeader from './components/sidebar/WorkspaceHeader'
@@ -2799,6 +2800,7 @@ export default function App(): JSX.Element {
               nodes: reportNodes,
               selectedModuleIds: selectedSet,
               variables: finalVariables,
+              include: endReportIncludeOptions(endCfg),
               language,
             })
             const tpl = endCfg.filenameTemplate && endCfg.filenameTemplate.trim() ? endCfg.filenameTemplate : '{env}_{ws}_{project}_{ts}'

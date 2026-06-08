@@ -53,6 +53,14 @@ export interface ReportVariable {
   value: unknown
 }
 
+export interface ReportIncludeOptions {
+  input: boolean
+  output: boolean
+  preRequest: boolean
+  postResponse: boolean
+  variables: boolean
+}
+
 export interface ReportInput {
   meta: ReportMeta
   // Order matches execution order. Includes Start/End for diagram, but body
@@ -60,7 +68,20 @@ export interface ReportInput {
   nodes: ReportNode[]
   selectedModuleIds: Set<string>
   variables?: ReportVariable[]
+  include?: Partial<ReportIncludeOptions>
   language?: ReportLanguage
+}
+
+const DEFAULT_REPORT_INCLUDE_OPTIONS: ReportIncludeOptions = {
+  input: true,
+  output: true,
+  preRequest: true,
+  postResponse: true,
+  variables: true,
+}
+
+function reportIncludeOptions(input: ReportInput): ReportIncludeOptions {
+  return { ...DEFAULT_REPORT_INCLUDE_OPTIONS, ...(input.include ?? {}) }
 }
 
 const REPORT_LABELS = {
@@ -317,6 +338,10 @@ function htmlValueSection(title: string, value: unknown): string {
   return hasReportValue(value) ? `<h3>${escapeHtml(title)}</h3>${jsonViewerBlock(value)}` : ''
 }
 
+function htmlOptionalBodySection(title: string, value: unknown, present: boolean, labels: ReportLabels): string {
+  return `<h3>${escapeHtml(title)}</h3>${present ? jsonViewerBlock(value) : `<div class="empty">${labels.empty}</div>`}`
+}
+
 function htmlScriptLogSection(title: string, logs: ReportScriptConsoleEntry[] | undefined, language: ReportLanguage): string {
   if (!logs || logs.length === 0) return ''
   const locale = language === 'ko' ? 'ko-KR' : 'en-US'
@@ -333,7 +358,13 @@ function htmlScriptLogSection(title: string, logs: ReportScriptConsoleEntry[] | 
 </div>`
 }
 
-function htmlNodeSection(n: ReportNode, index: number, labels: ReportLabels, language: ReportLanguage): string {
+function htmlNodeSection(
+  n: ReportNode,
+  index: number,
+  labels: ReportLabels,
+  language: ReportLanguage,
+  include: ReportIncludeOptions,
+): string {
   const typeColor = TYPE_COLOR[n.type] || '#6e7781'
   const statusColor = STATUS_COLOR[n.status] || '#8b949e'
   const statusIcon = STATUS_ICON[n.status] || '·'
@@ -350,8 +381,8 @@ function htmlNodeSection(n: ReportNode, index: number, labels: ReportLabels, lan
 
   let body = ''
 
-  body += htmlValueSection('INPUT', n.input)
-  body += htmlValueSection('OUTPUT', n.output)
+  if (include.input) body += htmlValueSection('INPUT', n.input)
+  if (include.output) body += htmlValueSection('OUTPUT', n.output)
 
   if (n.type === 'api' && n.apiDetail) {
     const a = n.apiDetail
@@ -371,19 +402,19 @@ function htmlNodeSection(n: ReportNode, index: number, labels: ReportLabels, lan
 <h3>${labels.requestHeaders}</h3>
 ${kvTable(reqHeaderRows, labels)}
 
-${a.body && a.body.trim() ? `<h3>${labels.requestBody}</h3>${jsonViewerBlock(reqBodyJson)}` : ''}
+${htmlOptionalBodySection(labels.requestBody, reqBodyJson, !!(a.body && a.body.trim()), labels)}
 
-${a.responseText !== undefined ? `<h3>${labels.responseBody}</h3>${jsonViewerBlock(resBodyJson)}` : ''}
+${htmlOptionalBodySection(labels.responseBody, resBodyJson, a.responseText !== undefined, labels)}
 `
   }
 
-  body += htmlScriptLogSection('PRE REQUEST / INPUT CONSOLE', n.scriptLogs?.pre, language)
-  body += htmlScriptLogSection('POST RESPONSE CONSOLE', n.scriptLogs?.post, language)
+  if (include.preRequest) body += htmlScriptLogSection('PRE REQUEST / INPUT CONSOLE', n.scriptLogs?.pre, language)
+  if (include.postResponse) body += htmlScriptLogSection('POST RESPONSE CONSOLE', n.scriptLogs?.post, language)
 
-  if (n.preScript && n.preScript.trim()) {
+  if (include.preRequest && n.preScript && n.preScript.trim()) {
     body += `<h3>${labels.preScript}</h3><pre class="code-block">${escapeHtml(n.preScript)}</pre>`
   }
-  if (n.postScript && n.postScript.trim()) {
+  if (include.postResponse && n.postScript && n.postScript.trim()) {
     body += `<h3>${labels.postScript}</h3><pre class="code-block">${escapeHtml(n.postScript)}</pre>`
   }
   if (n.error) {
@@ -427,9 +458,10 @@ function htmlVariablesSection(variables: ReportVariable[] | undefined, labels: R
 function buildHtml(input: ReportInput): string {
   const language = input.language ?? 'ko'
   const labels = reportLabels(language)
+  const include = reportIncludeOptions(input)
   const reportNodes = input.nodes.filter(n => input.selectedModuleIds.has(n.nodeId) && n.type !== 'start' && n.type !== 'end')
-  const bodyHtml = reportNodes.map((n, i) => htmlNodeSection(n, i + 1, labels, language)).join('')
-  const variablesHtml = htmlVariablesSection(input.variables, labels)
+  const bodyHtml = reportNodes.map((n, i) => htmlNodeSection(n, i + 1, labels, language, include)).join('')
+  const variablesHtml = include.variables ? htmlVariablesSection(input.variables, labels) : ''
 
   return `<!DOCTYPE html>
 <html lang="${language}">
@@ -569,12 +601,44 @@ function mdCodeBlock(content: string, lang = ''): string {
   return '```' + lang + '\n' + content + '\n```'
 }
 
-function mdNodeSection(n: ReportNode, index: number, labels: ReportLabels): string {
+function stringifyReportValue(value: unknown): string {
+  if (typeof value === 'string') return value
+  try { return JSON.stringify(value, null, 2) } catch { return String(value) }
+}
+
+function mdValueSection(title: string, value: unknown): string[] {
+  if (!hasReportValue(value)) return []
+  return [
+    '',
+    `### ${title}`,
+    '',
+    mdCodeBlock(stringifyReportValue(value), 'json'),
+  ]
+}
+
+function mdOptionalBodySection(title: string, value: unknown, present: boolean, labels: ReportLabels): string[] {
+  if (!present) return ['', `### ${title}`, '', `_${labels.empty}_`]
+  return ['', `### ${title}`, '', mdCodeBlock(stringifyReportValue(value), 'json')]
+}
+
+function mdScriptLogSection(title: string, logs: ReportScriptConsoleEntry[] | undefined): string[] {
+  if (!logs || logs.length === 0) return []
+  const lines = ['', `### ${title}`, '']
+  for (const log of logs) {
+    lines.push(`- ${log.timestamp} [${log.level}] ${log.message.replace(/\n/g, ' ')}`)
+  }
+  return lines
+}
+
+function mdNodeSection(n: ReportNode, index: number, labels: ReportLabels, include: ReportIncludeOptions): string {
   const lines: string[] = []
   lines.push(`## ${index}. ${n.type.toUpperCase()} · ${n.label}`)
   lines.push('')
   lines.push(`- ${labels.status}: **${nodeStatusText(n.status, labels)}** ${STATUS_ICON[n.status] || ''}`)
   if (n.duration !== undefined) lines.push(`- ${labels.duration}: ${formatDuration(n.duration)}`)
+
+  if (include.input) lines.push(...mdValueSection('INPUT', n.input))
+  if (include.output) lines.push(...mdValueSection('OUTPUT', n.output))
 
   if (n.type === 'api' && n.apiDetail) {
     const a = n.apiDetail
@@ -590,42 +654,20 @@ function mdNodeSection(n: ReportNode, index: number, labels: ReportLabels): stri
       lines.push('|---|---|')
       for (const [k, v] of Object.entries(a.headers)) lines.push(`| ${k} | ${v} |`)
     }
-    if (a.body && a.body.trim()) {
-      lines.push('')
-      lines.push(`### ${labels.requestBody}`)
-      lines.push('')
-      const parsed = tryParseJson(a.body)
-      lines.push(mdCodeBlock(typeof parsed === 'string' ? parsed : JSON.stringify(parsed, null, 2), 'json'))
-    }
-    if (a.responseText !== undefined) {
-      lines.push('')
-      lines.push(`### ${labels.responseBody}`)
-      lines.push('')
-      const parsed = tryParseJson(a.responseText)
-      lines.push(mdCodeBlock(typeof parsed === 'string' ? parsed : JSON.stringify(parsed, null, 2), 'json'))
-    }
-  } else if (n.type === 'data' || n.type === 'select') {
-    if (n.input !== null && n.input !== undefined) {
-      lines.push('')
-      lines.push('### INPUT')
-      lines.push('')
-      lines.push(mdCodeBlock(JSON.stringify(n.input, null, 2), 'json'))
-    }
-    if (n.output !== null && n.output !== undefined) {
-      lines.push('')
-      lines.push('### OUTPUT')
-      lines.push('')
-      lines.push(mdCodeBlock(JSON.stringify(n.output, null, 2), 'json'))
-    }
+    lines.push(...mdOptionalBodySection(labels.requestBody, tryParseJson(a.body), !!(a.body && a.body.trim()), labels))
+    lines.push(...mdOptionalBodySection(labels.responseBody, tryParseJson(a.responseText), a.responseText !== undefined, labels))
   }
 
-  if (n.preScript && n.preScript.trim()) {
+  if (include.preRequest) lines.push(...mdScriptLogSection('PRE REQUEST / INPUT CONSOLE', n.scriptLogs?.pre))
+  if (include.postResponse) lines.push(...mdScriptLogSection('POST RESPONSE CONSOLE', n.scriptLogs?.post))
+
+  if (include.preRequest && n.preScript && n.preScript.trim()) {
     lines.push('')
     lines.push(`### ${labels.preScript}`)
     lines.push('')
     lines.push(mdCodeBlock(n.preScript, 'js'))
   }
-  if (n.postScript && n.postScript.trim()) {
+  if (include.postResponse && n.postScript && n.postScript.trim()) {
     lines.push('')
     lines.push(`### ${labels.postScript}`)
     lines.push('')
@@ -644,6 +686,7 @@ function mdNodeSection(n: ReportNode, index: number, labels: ReportLabels): stri
 
 function buildMarkdown(input: ReportInput): string {
   const labels = reportLabels(input.language)
+  const include = reportIncludeOptions(input)
   const m = input.meta
   const lines: string[] = []
   lines.push(`# ${m.project} ${labels.reportTitle}`)
@@ -667,11 +710,11 @@ function buildMarkdown(input: ReportInput): string {
   }
 
   bodyNodes.forEach((n, i) => {
-    lines.push(mdNodeSection(n, i + 1, labels))
+    lines.push(mdNodeSection(n, i + 1, labels, include))
     lines.push('')
   })
 
-  if (input.variables && input.variables.length > 0) {
+  if (include.variables && input.variables && input.variables.length > 0) {
     lines.push('<details>')
     lines.push(`<summary>${labels.usedVariables}</summary>`)
     lines.push('')

@@ -176,6 +176,11 @@ declare global {
     selectedModuleIds: string[]
     reportCandidateModuleIds?: string[]
     displayEnvKeys?: string[]
+    reportIncludeInput?: boolean
+    reportIncludeOutput?: boolean
+    reportIncludePreRequest?: boolean
+    reportIncludePostResponse?: boolean
+    reportIncludeVariables?: boolean
   }
 
   interface ApiEdge {

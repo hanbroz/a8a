@@ -4,7 +4,8 @@ import ShortcutSaveButtonLabel from './ShortcutSaveButtonLabel'
 import { useModalMaximize } from './useModalMaximize'
 import { useShortcutSave } from './useShortcutSave'
 import { resolveEndReportSelectedModuleIds } from '../../utils/endReportSelection'
-import { useI18n } from '../../i18n'
+import { endReportIncludeState, type EndReportIncludeConfigKey } from '../../utils/endReportInclude'
+import { useI18n, type TranslationKey } from '../../i18n'
 
 interface Props {
   node: ApiNode
@@ -24,10 +25,19 @@ const DEFAULT_TEMPLATE = '{env}_{ws}_{project}_{ts}'
 
 type ParsedEndConfig = EndNodeConfig & { selectedModuleIdsExplicit: boolean }
 
+const REPORT_INCLUDE_OPTIONS: Array<{ key: EndReportIncludeConfigKey; labelKey: TranslationKey }> = [
+  { key: 'reportIncludeInput', labelKey: 'module.end.includeInput' },
+  { key: 'reportIncludeOutput', labelKey: 'module.end.includeOutput' },
+  { key: 'reportIncludePreRequest', labelKey: 'module.end.includePreRequest' },
+  { key: 'reportIncludePostResponse', labelKey: 'module.end.includePostResponse' },
+  { key: 'reportIncludeVariables', labelKey: 'module.end.includeVariables' },
+]
+
 function parseConfig(raw: string): ParsedEndConfig {
   try {
     const p = JSON.parse(raw) as Partial<EndNodeConfig>
     const selectedModuleIdsExplicit = Object.prototype.hasOwnProperty.call(p, 'selectedModuleIds')
+    const includeState = endReportIncludeState(p)
     return {
       reportFormat: (['none', 'html', 'markdown'].includes(p.reportFormat as string) ? p.reportFormat : 'none') as EndNodeConfig['reportFormat'],
       savePath: typeof p.savePath === 'string' ? p.savePath : '',
@@ -35,10 +45,19 @@ function parseConfig(raw: string): ParsedEndConfig {
       selectedModuleIds: Array.isArray(p.selectedModuleIds) ? p.selectedModuleIds : [],
       reportCandidateModuleIds: Array.isArray(p.reportCandidateModuleIds) ? p.reportCandidateModuleIds.map(String).filter(Boolean) : undefined,
       displayEnvKeys: Array.isArray(p.displayEnvKeys) ? p.displayEnvKeys.map(String).filter(Boolean) : [],
+      ...includeState,
       selectedModuleIdsExplicit,
     }
   } catch {
-    return { reportFormat: 'none', savePath: '', filenameTemplate: DEFAULT_TEMPLATE, selectedModuleIds: [], displayEnvKeys: [], selectedModuleIdsExplicit: false }
+    return {
+      reportFormat: 'none',
+      savePath: '',
+      filenameTemplate: DEFAULT_TEMPLATE,
+      selectedModuleIds: [],
+      displayEnvKeys: [],
+      ...endReportIncludeState(null),
+      selectedModuleIdsExplicit: false,
+    }
   }
 }
 
@@ -50,6 +69,7 @@ export default function EndNodeModal({ node, moduleNodes, envVarKeys, onSave, on
   const [savePath, setSavePath] = useState<string>(initial.savePath)
   const [filenameTemplate, setFilenameTemplate] = useState<string>(initial.filenameTemplate || DEFAULT_TEMPLATE)
   const [displayEnvKeys, setDisplayEnvKeys] = useState<Set<string>>(() => new Set(initial.displayEnvKeys ?? []))
+  const [reportIncludes, setReportIncludes] = useState<Record<EndReportIncludeConfigKey, boolean>>(() => endReportIncludeState(initial))
   const [selectedIds, setSelectedIds] = useState<Set<string>>(() => {
     const allIds = moduleNodes.map(n => n.id)
     return resolveEndReportSelectedModuleIds(initial, allIds)
@@ -145,6 +165,10 @@ export default function EndNodeModal({ node, moduleNodes, envVarKeys, onSave, on
     })
   }
 
+  const handleToggleReportInclude = (key: EndReportIncludeConfigKey): void => {
+    setReportIncludes(prev => ({ ...prev, [key]: !prev[key] }))
+  }
+
   const handleSave = async (closeAfterSave = true): Promise<boolean> => {
     setSaving(true)
     const cfg: EndNodeConfig = {
@@ -154,6 +178,11 @@ export default function EndNodeModal({ node, moduleNodes, envVarKeys, onSave, on
       selectedModuleIds: Array.from(selectedIds),
       reportCandidateModuleIds: moduleNodes.map(n => n.id),
       displayEnvKeys: Array.from(displayEnvKeys).filter(key => envVarKeys.includes(key)),
+      reportIncludeInput: reportIncludes.reportIncludeInput,
+      reportIncludeOutput: reportIncludes.reportIncludeOutput,
+      reportIncludePreRequest: reportIncludes.reportIncludePreRequest,
+      reportIncludePostResponse: reportIncludes.reportIncludePostResponse,
+      reportIncludeVariables: reportIncludes.reportIncludeVariables,
     }
     await onSave(node.id, label.trim() || 'End', JSON.stringify(cfg))
     setSaving(false)
@@ -262,6 +291,29 @@ export default function EndNodeModal({ node, moduleNodes, envVarKeys, onSave, on
                       style={{ flex: 1, fontFamily: 'monospace' }}
                     />
                     {ext && <span className="end-ext-hint">{t('module.end.autoExt', { ext })}</span>}
+                  </div>
+                </div>
+
+                <div className="dm-field">
+                  <label className="dm-field-label">{t('module.end.reportContents')}</label>
+                  <div className="end-report-section-list">
+                    {REPORT_INCLUDE_OPTIONS.map(option => (
+                      <label
+                        key={option.key}
+                        className={`end-report-section-item${disabled ? ' end-report-section-item-disabled' : ''}`}
+                      >
+                        <input
+                          type="checkbox"
+                          checked={reportIncludes[option.key]}
+                          onChange={() => handleToggleReportInclude(option.key)}
+                          disabled={disabled}
+                        />
+                        <span>{t(option.labelKey)}</span>
+                      </label>
+                    ))}
+                  </div>
+                  <div className="end-field-hint">
+                    {t('module.end.reportContentsHint')}
                   </div>
                 </div>
 
