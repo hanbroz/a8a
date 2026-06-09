@@ -107,7 +107,7 @@ window.api.file.{ write, downloadsDir }
 1. Start 노드부터 연결된 노드 목록을 계산합니다.
 2. Data 노드는 JSON 출력을 반환합니다.
 3. Select 노드는 입력 배열에서 선택한 행을 반환합니다.
-4. API 노드는 템플릿 치환 후 main process를 통해 HTTP 요청을 실행합니다.
+4. API 노드는 템플릿 치환 후 main process를 통해 HTTP 요청을 실행합니다. INPUT이 여러 노드에서 합쳐지거나 배열 값을 포함해도 API 노드 실행당 HTTP 요청은 한 번만 수행합니다.
 5. Pre/Post 스크립트는 입력/출력 변수와 환경 변수 업데이트를 반환할 수 있습니다.
 6. End 노드는 선택한 모듈의 실행 결과를 HTML 또는 Markdown 리포트로 저장합니다.
 

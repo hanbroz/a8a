@@ -21,6 +21,17 @@ export interface ReportApiDetail {
   responseText?: string
 }
 
+export interface ReportApiAttempt extends ReportApiDetail {
+  index: number
+  total: number
+  startedAt: number
+  duration?: number
+  status: 'running' | 'success' | 'error'
+  input?: unknown
+  output?: unknown
+  error?: string
+}
+
 export interface ReportScriptConsoleEntry {
   level: string
   message: string
@@ -42,6 +53,7 @@ export interface ReportNode {
   error?: string
   duration?: number
   apiDetail?: ReportApiDetail
+  apiAttempts?: ReportApiAttempt[]
   preScript?: string
   postScript?: string
   scriptLogs?: ReportScriptLogs
@@ -112,6 +124,7 @@ const REPORT_LABELS = {
     status: '상태',
     duration: '소요',
     response: '응답',
+    attempt: '호출',
     key: '키',
     value: '값',
     executionFlow: '실행 흐름',
@@ -143,6 +156,7 @@ const REPORT_LABELS = {
     status: 'Status',
     duration: 'Duration',
     response: 'Response',
+    attempt: 'Attempt',
     key: 'Key',
     value: 'Value',
     executionFlow: 'Execution flow',
@@ -358,6 +372,19 @@ function htmlScriptLogSection(title: string, logs: ReportScriptConsoleEntry[] | 
 </div>`
 }
 
+function reportApiAttempts(n: ReportNode): ReportApiAttempt[] {
+  if (n.apiAttempts?.length) return n.apiAttempts
+  if (!n.apiDetail) return []
+  return [{
+    ...n.apiDetail,
+    index: 1,
+    total: 1,
+    startedAt: 0,
+    status: n.status === 'error' ? 'error' : n.status === 'success' ? 'success' : 'running',
+    duration: n.duration,
+  }]
+}
+
 function htmlNodeSection(
   n: ReportNode,
   index: number,
@@ -384,19 +411,24 @@ function htmlNodeSection(
   if (include.input) body += htmlValueSection('INPUT', n.input)
   if (include.output) body += htmlValueSection('OUTPUT', n.output)
 
-  if (n.type === 'api' && n.apiDetail) {
-    const a = n.apiDetail
-    const mc = methodColor(a.method)
-    const sc = statusCodeColor(a.statusCode)
-    const reqHeaderRows = Object.entries(a.headers).map(([k, v]): [string, string] => [k, v])
-    const reqBodyJson = tryParseJson(a.body)
-    const resBodyJson = tryParseJson(a.responseText)
+  const apiAttempts = n.type === 'api' ? reportApiAttempts(n) : []
+  if (apiAttempts.length > 0) {
+    body += apiAttempts.map(a => {
+      const mc = methodColor(a.method)
+      const sc = statusCodeColor(a.statusCode)
+      const reqHeaderRows = Object.entries(a.headers).map(([k, v]): [string, string] => [k, v])
+      const reqBodyJson = tryParseJson(a.body)
+      const resBodyJson = tryParseJson(a.responseText)
+      const attemptTitle = apiAttempts.length > 1
+        ? `<h3>${labels.attempt} #${a.index}/${a.total} ${formatDuration(a.duration)}</h3>`
+        : ''
 
-    body += `
+      return `
+${attemptTitle}
 <div class="api-line">
   <span class="api-method" style="background:${mc}22; color:${mc}; border-color:${mc}55">${escapeHtml(a.method)}</span>
   <span class="api-url">${escapeHtml(a.url)}</span>
-  ${a.statusCode ? `<span class="api-status" style="color:${sc}; border-color:${sc}55">${a.statusCode} ${escapeHtml(a.statusText || '')}</span>` : ''}
+  ${a.statusCode !== undefined ? `<span class="api-status" style="color:${sc}; border-color:${sc}55">${a.statusCode} ${escapeHtml(a.statusText || '')}</span>` : ''}
 </div>
 
 <h3>${labels.requestHeaders}</h3>
@@ -406,6 +438,7 @@ ${htmlOptionalBodySection(labels.requestBody, reqBodyJson, !!(a.body && a.body.t
 
 ${htmlOptionalBodySection(labels.responseBody, resBodyJson, a.responseText !== undefined, labels)}
 `
+    }).join('')
   }
 
   if (include.preRequest) body += htmlScriptLogSection('PRE REQUEST / INPUT CONSOLE', n.scriptLogs?.pre, language)
@@ -640,12 +673,17 @@ function mdNodeSection(n: ReportNode, index: number, labels: ReportLabels, inclu
   if (include.input) lines.push(...mdValueSection('INPUT', n.input))
   if (include.output) lines.push(...mdValueSection('OUTPUT', n.output))
 
-  if (n.type === 'api' && n.apiDetail) {
-    const a = n.apiDetail
+  const apiAttempts = n.type === 'api' ? reportApiAttempts(n) : []
+  for (const a of apiAttempts) {
+    if (apiAttempts.length > 1) {
+      lines.push('')
+      lines.push(`### ${labels.attempt} #${a.index}/${a.total}`)
+      if (a.duration !== undefined) lines.push(`- ${labels.duration}: ${formatDuration(a.duration)}`)
+    }
     lines.push(`- ${a.method} \`${a.url}\``)
-    if (a.statusCode) lines.push(`- ${labels.response}: ${a.statusCode} ${a.statusText ?? ''}`)
+    if (a.statusCode !== undefined) lines.push(`- ${labels.response}: ${a.statusCode} ${a.statusText ?? ''}`)
     lines.push('')
-    lines.push(`### ${labels.requestHeaders}`)
+    lines.push(`### ${apiAttempts.length > 1 ? `${labels.requestHeaders} #${a.index}/${a.total}` : labels.requestHeaders}`)
     lines.push('')
     if (Object.keys(a.headers).length === 0) {
       lines.push(`_${labels.empty}_`)

@@ -290,6 +290,8 @@ On canvas API cards and in the API list, `{{environment}}`, `[[INPUT]]`, and `<<
 
 When you choose a JSON value in API INPUT mappings, the saved default path uses a node-independent form such as `output[0]` instead of being tied to the upstream module ID. This keeps the same field usable when a conditional flow changes which SELECT module provides the input. After selecting from the tree, you can still edit the path manually, for example `[[amount * -1]]` or `$get("amount")`.
 
+An API module sends exactly one HTTP request per node execution, even when its INPUT is merged from multiple nodes or contains an array value. To process multiple records, split execution explicitly with START repeat execution.
+
 When you give a module a long name, the initial canvas card width expands automatically to fit the name when saved. Modules that have already been resized wider are not reduced.
 
 #### BRANCH
@@ -352,7 +354,8 @@ Execution rules:
 - Unconnected modules are not executed.
 - If an error occurs, the full execution stops immediately.
 - You can inspect per-node INPUT, OUTPUT, status, and execution logs.
-- API module execution logs include the actual request as a cURL command.
+- API module execution logs include the actual request URL, headers, body, response body, and cURL command.
+- API modules send exactly one HTTP request per node execution even when INPUT has multiple sources or array values.
 - The Run button inside a module settings dialog only runs the path from `Start` to that module and refreshes the INPUT/OUTPUT preview.
 
 ## API Script Guide

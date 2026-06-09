@@ -4,7 +4,7 @@ import { applyInputMappings, mergeEnvVars, parseTemplate, resolveInputExpression
 import { applyApiAuth, getApiAuthTemplateValues } from './utils/apiAuth'
 import { isScriptRuntimeError, runPreRequest, runPostResponse } from './utils/scriptRuntime'
 import { generateReport, fillFilenameTemplate } from './utils/reportGenerator'
-import type { ReportNode, ReportApiDetail, ReportVariable } from './utils/reportGenerator'
+import type { ReportNode, ReportApiDetail, ReportApiAttempt, ReportVariable } from './utils/reportGenerator'
 import { resolveEndReportSelectedModuleIds } from './utils/endReportSelection'
 import { endReportIncludeOptions } from './utils/endReportInclude'
 import type { ScriptConsoleEntry } from './utils/scriptRuntime'
@@ -109,12 +109,24 @@ type ApiLogDetail = {
   responseText?: string
 }
 
+type ApiLogAttempt = ApiLogDetail & {
+  index: number
+  total: number
+  startedAt: number
+  duration?: number
+  status: 'running' | 'success' | 'error'
+  input?: unknown
+  output?: unknown
+  error?: string
+}
+
 type LogEntry = {
   id: string; nodeId: string; label: string; type: string
   status: 'running' | 'success' | 'error' | 'skip'
   input: unknown; output?: unknown; error?: string
   startedAt: number; duration?: number
   apiDetail?: ApiLogDetail
+  apiAttempts?: ApiLogAttempt[]
   scriptLogs?: ScriptLogBundle
 }
 
@@ -174,6 +186,10 @@ function buildCurlCommand(api: ApiLogDetail): string {
     args.push(`--data-raw ${shellSingleQuote(api.body)}`)
   }
   return joinCurlArguments(args)
+}
+
+function apiAttemptTitle(apiAttempts: ApiLogAttempt[], attempt: ApiLogAttempt): string {
+  return apiAttempts.length > 1 ? `REQUEST #${attempt.index}/${attempt.total}` : 'REQUEST'
 }
 
 function copyTextFallback(text: string): Promise<void> {
@@ -656,8 +672,18 @@ function LogEntryRow({ entry, isActive }: { entry: LogEntry; isActive?: boolean 
   const [open, setOpen] = useState(false)
   const cfg = NODE_TYPE_COLORS[entry.type] ?? { color: '#8b949e', bg: 'rgba(139,148,158,0.15)', label: entry.type.toUpperCase() }
   const statusColor = entry.status === 'success' ? '#3fb950' : entry.status === 'error' ? '#f85149' : entry.status === 'skip' ? '#8b949e' : '#d29922'
-  const api = entry.apiDetail
-  const curlCommand = api ? buildCurlCommand(api) : ''
+  const fallbackApiAttempt: ApiLogAttempt | null = entry.apiDetail
+    ? {
+        ...entry.apiDetail,
+        index: 1,
+        total: 1,
+        startedAt: entry.startedAt,
+        duration: entry.duration,
+        status: entry.status === 'error' ? 'error' : entry.status === 'success' ? 'success' : 'running',
+      }
+    : null
+  const apiAttempts = entry.apiAttempts?.length ? entry.apiAttempts : fallbackApiAttempt ? [fallbackApiAttempt] : []
+  const api = apiAttempts[apiAttempts.length - 1]
   const scriptLogs = entry.scriptLogs
   const hasScriptLogs = !!scriptLogs && (scriptLogs.pre.length > 0 || scriptLogs.post.length > 0)
 
@@ -722,53 +748,61 @@ function LogEntryRow({ entry, isActive }: { entry: LogEntry; isActive?: boolean 
                 </div>
               ) : null}
 
-              {/* REQUEST */}
-              <div className="log-api-section">
-                <div className="log-api-section-title">REQUEST</div>
-                <div className="log-api-url-line">
-                  <span className="log-api-method" style={{ color: cfg.color }}>{api.method}</span>
-                  <span className="log-api-url">{api.url}</span>
-                </div>
-                {Object.keys(api.headers).length > 0 && (
-                  <div className="log-api-block">
-                    <div className="log-entry-io-label">HEADERS</div>
-                    <div className="log-api-kv-list">
-                      {Object.entries(api.headers).map(([k, v]) => (
-                        <div key={k} className="log-api-kv">
-                          <span className="log-api-kv-key">{k}</span>
-                          <span className="log-api-kv-val">{v}</span>
+              {apiAttempts.map(attempt => {
+                const curlCommand = buildCurlCommand(attempt)
+                return (
+                  <div className="log-api-attempt" key={`${entry.id}-attempt-${attempt.index}`}>
+                    <div className="log-api-section">
+                      <div className="log-api-section-title">{apiAttemptTitle(apiAttempts, attempt)}</div>
+                      <div className="log-api-url-line">
+                        <span className="log-api-method" style={{ color: cfg.color }}>{attempt.method}</span>
+                        <span className="log-api-url">{attempt.url}</span>
+                        {apiAttempts.length > 1 && attempt.duration !== undefined && (
+                          <span className="log-entry-dur">{attempt.duration < 1000 ? `${attempt.duration}ms` : `${(attempt.duration / 1000).toFixed(1)}s`}</span>
+                        )}
+                      </div>
+                      {Object.keys(attempt.headers).length > 0 && (
+                        <div className="log-api-block">
+                          <div className="log-entry-io-label">HEADERS</div>
+                          <div className="log-api-kv-list">
+                            {Object.entries(attempt.headers).map(([k, v]) => (
+                              <div key={k} className="log-api-kv">
+                                <span className="log-api-kv-key">{k}</span>
+                                <span className="log-api-kv-val">{v}</span>
+                              </div>
+                            ))}
+                          </div>
                         </div>
-                      ))}
+                      )}
+                      {attempt.body && (
+                        <div className="log-api-block">
+                          <div className="log-entry-io-label">BODY</div>
+                          <LogJsonViewer value={attempt.body} path={`execution-log/${entry.id}/request-${attempt.index}-body.json`} placeholder={t('log.placeholder.requestBody')} />
+                        </div>
+                      )}
+                      <div className="log-api-block">
+                        <CurlCommandBlock command={curlCommand} />
+                      </div>
                     </div>
-                  </div>
-                )}
-                {api.body && (
-                  <div className="log-api-block">
-                    <div className="log-entry-io-label">BODY</div>
-                    <LogJsonViewer value={api.body} path={`execution-log/${entry.id}/request-body.json`} placeholder={t('log.placeholder.requestBody')} />
-                  </div>
-                )}
-                <div className="log-api-block">
-                  <CurlCommandBlock command={curlCommand} />
-                </div>
-              </div>
 
-              {/* RESPONSE */}
-              {api.statusCode !== undefined && (
-                <div className="log-api-section">
-                  <div className="log-api-section-title">RESPONSE</div>
-                  <div className="log-api-status-line">
-                    <span className="log-api-status-code" style={{ color: statusCodeColor(api.statusCode) }}>{api.statusCode}</span>
-                    <span className="log-api-status-text">{api.statusText}</span>
+                    {attempt.statusCode !== undefined && (
+                      <div className="log-api-section">
+                        <div className="log-api-section-title">{apiAttempts.length > 1 ? `RESPONSE #${attempt.index}/${attempt.total}` : 'RESPONSE'}</div>
+                        <div className="log-api-status-line">
+                          <span className="log-api-status-code" style={{ color: statusCodeColor(attempt.statusCode) }}>{attempt.statusCode}</span>
+                          <span className="log-api-status-text">{attempt.statusText}</span>
+                        </div>
+                        {attempt.responseText && (
+                          <div className="log-api-block">
+                            <div className="log-entry-io-label">BODY</div>
+                            <LogJsonViewer value={attempt.responseText} path={`execution-log/${entry.id}/response-${attempt.index}-body.json`} placeholder={t('log.placeholder.responseBody')} />
+                          </div>
+                        )}
+                      </div>
+                    )}
                   </div>
-                  {api.responseText && (
-                    <div className="log-api-block">
-                      <div className="log-entry-io-label">BODY</div>
-                      <LogJsonViewer value={api.responseText} path={`execution-log/${entry.id}/response-body.json`} placeholder={t('log.placeholder.responseBody')} />
-                    </div>
-                  )}
-                </div>
-              )}
+                )
+              })}
             </div>
           ) : (
             <div className="log-entry-io">
@@ -1140,44 +1174,29 @@ function buildRuntimeInputContext(
   return { value: rawInput, ...upstreamModuleVars }
 }
 
-function buildApiTemplateItems(
+function isPlainRecordValue(value: unknown): value is Record<string, unknown> {
+  return !!value && typeof value === 'object' && !Array.isArray(value)
+}
+
+function buildApiTemplateItem(
   rawInput: unknown,
   incomingEdges: ApiEdge[],
   upstreamModuleVars: Record<string, unknown>,
   preInputVars: Record<string, unknown>,
-): Array<Record<string, unknown>> {
+): Record<string, unknown> {
   const outputMap = getApiOutputMap(rawInput)
   const singleSourceOutput = incomingEdges.length === 1 ? outputMap[incomingEdges[0].sourceNodeId] : undefined
-  const sourceRows = incomingEdges.length === 1
-    ? Array.isArray(singleSourceOutput) ? singleSourceOutput : singleSourceOutput === undefined || singleSourceOutput === null ? [] : [singleSourceOutput]
-    : [rawInput]
-  const rows = sourceRows.length > 0 ? sourceRows : [{}]
-
-  return rows.map(row => {
-    const rowVars = row && typeof row === 'object' && !Array.isArray(row)
-      ? row as Record<string, unknown>
-      : {}
-    const valueVars = Object.keys(rowVars).length === 0 && row !== null && row !== undefined ? { value: row } : {}
-    return {
-      ...rowVars,
-      ...valueVars,
-      ...upstreamModuleVars,
-      ...preInputVars,
-      output: outputMap,
-    }
-  })
-}
-
-function appendApiExecutionResult(results: unknown[], value: unknown): void {
-  if (Array.isArray(value)) {
-    results.push(...value)
-    return
+  const sourceValue = incomingEdges.length === 1 ? singleSourceOutput : rawInput
+  const row = sourceValue === undefined || sourceValue === null ? {} : sourceValue
+  const rowVars = isPlainRecordValue(row) ? row : {}
+  const valueVars = Object.keys(rowVars).length === 0 && row !== null && row !== undefined ? { value: row } : {}
+  return {
+    ...rowVars,
+    ...valueVars,
+    ...upstreamModuleVars,
+    ...preInputVars,
+    output: outputMap,
   }
-  results.push(value)
-}
-
-function normalizeApiExecutionOutput(results: unknown[]): unknown {
-  return results.length === 1 ? results[0] : results
 }
 
 type Theme = 'dark' | 'light'
@@ -2145,12 +2164,19 @@ export default function App(): JSX.Element {
     const moduleVarsMap: Record<string, Record<string, unknown>> = {}
     const previewDataVars = getStartRepeatPreviewRow(activeNodes.find(node => node.type === 'start')) ?? {}
     const visiting = new Set<string>()
+    const resultCache = new Map<string, unknown>()
 
     const runNode = async (nodeId: string): Promise<unknown> => {
+      if (resultCache.has(nodeId)) return resultCache.get(nodeId)
       if (visiting.has(nodeId)) throw new Error(t('runtime.error.cycleDetected'))
       visiting.add(nodeId)
+      const complete = (value: unknown): unknown => {
+        resultCache.set(nodeId, value)
+        visiting.delete(nodeId)
+        return value
+      }
       const node = activeNodes.find(n => n.id === nodeId)
-      if (!node) { visiting.delete(nodeId); return null }
+      if (!node) return complete(null)
       const upstreamEdges = validEdges.filter(e => e.targetNodeId === nodeId && reachableNodeIds.has(e.sourceNodeId))
       const upstreamEdge = upstreamEdges[0]
       const upstreamOutputs: Record<string, unknown> = {}
@@ -2166,19 +2192,16 @@ export default function App(): JSX.Element {
       if (node.type === 'start') {
         const startPreviewRow = getStartRepeatPreviewRow(node)
         moduleVarsMap[nodeId] = startPreviewRow ? { ...startPreviewRow } : { ...upstreamModuleVars }
-        visiting.delete(nodeId)
-        return startPreviewRow ?? upstream
+        return complete(startPreviewRow ?? upstream)
       }
       if (node.type === 'end') {
         moduleVarsMap[nodeId] = { ...upstreamModuleVars }
-        visiting.delete(nodeId)
-        return upstream
+        return complete(upstream)
       }
       if (node.type === 'data') {
         moduleVarsMap[nodeId] = { ...upstreamModuleVars }
         const output = readDataNodeOutput(node.config, commonDataModules)
-        visiting.delete(nodeId)
-        return output
+        return complete(output)
       }
       if (node.type === 'select') {
         const cfg = parseSelectConfig(node.config)
@@ -2222,25 +2245,22 @@ export default function App(): JSX.Element {
         }
         if (cfg.selectionType === 'script') {
           const output = await applySelectPost(buildSelectScriptOutput(preInputVars))
-          visiting.delete(nodeId)
-          return output
+          return complete(output)
         }
         const selectedJsonPaths = selectedJsonPathsForConfig(cfg)
         const selectedRowIndices = selectedRowIndicesForConfig(cfg)
         if (cfg.autoSelect && cfg.selectMode === 'json' && selectedJsonPaths.length > 0) {
           const output = await applySelectPost(buildSelectedJsonOutput(upstream, selectedJsonPaths))
-          visiting.delete(nodeId)
-          return output
+          return complete(output)
         }
         if (Array.isArray(upstream) && cfg.autoSelect && selectedRowIndices.length > 0 && inputArray.length > 0) {
           const selectedOutput = selectedRowIndices
             .map(index => inputArray[index])
             .filter(value => value !== undefined)
           const output = await applySelectPost(selectedOutput)
-          visiting.delete(nodeId)
-          return output
+          return complete(output)
         }
-        if (inputArray.length === 0) { visiting.delete(nodeId); return inputArray }
+        if (inputArray.length === 0) return complete(inputArray)
         const result = await new Promise<SelectPopupResult | null>(resolve => {
           setPendingPreviewSelect({ nodeId, data: upstream, config: cfg, resolve })
         })
@@ -2248,17 +2268,18 @@ export default function App(): JSX.Element {
           await rememberSelectSelection(nodeId, result.selection)
         }
         const output = await applySelectPost(result?.rows ?? [])
-        visiting.delete(nodeId)
-        return output
+        return complete(output)
       }
       if (node.type === 'branch') {
         moduleVarsMap[nodeId] = { ...upstreamModuleVars }
-        visiting.delete(nodeId)
-        return upstream
+        return complete(upstream)
       }
       if (node.type === 'api') {
         const cfg = JSON.parse(node.config || '{}') as ApiConfig
-        if (!cfg.url.trim()) { moduleVarsMap[nodeId] = { ...upstreamModuleVars }; visiting.delete(nodeId); return null }
+        if (!cfg.url.trim()) {
+          moduleVarsMap[nodeId] = { ...upstreamModuleVars }
+          return complete(null)
+        }
 
         let preInputVars: Record<string, unknown> = {}
         const preScriptInput = buildRuntimeInputContext(upstream, upstreamModuleVars)
@@ -2274,39 +2295,33 @@ export default function App(): JSX.Element {
           }
         }
 
-        const items = buildApiTemplateItems(upstream, upstreamEdges, upstreamModuleVars, preInputVars)
-        const allResults: unknown[] = []
-
-        for (const row of items) {
-          const item = applyInputMappings(row, cfg.inputMappings ?? {})
-          const templateDataVars = previewDataVars
-          let fullUrl = resolveTemplate(cfg.url.trim(), envVars, item, templateDataVars)
-          const enabledParams = (cfg.params ?? []).filter(p => p.enabled && p.key)
-          if (enabledParams.length > 0) {
-            const qs = new URLSearchParams(enabledParams.map(p => [p.key, resolveTemplate(p.value, envVars, item, templateDataVars)]))
-            fullUrl += (fullUrl.includes('?') ? '&' : '?') + qs.toString()
-          }
-          const hdrs: Record<string, string> = {}
-          ;(cfg.headers ?? []).filter(h => h.enabled && h.key).forEach(h => {
-            hdrs[h.key] = resolveTemplate(h.value, envVars, item, templateDataVars)
-          })
-          let bodyStr: string | undefined
-          if (['POST', 'PUT', 'PATCH'].includes(cfg.method) && cfg.body?.trim()) {
-            if (cfg.bodyType === 'json' && !hdrs['Content-Type'] && !hdrs['content-type']) {
-              hdrs['Content-Type'] = 'application/json'
-            }
-            bodyStr = resolveTemplate(cfg.body, envVars, item, templateDataVars)
-          }
-          const authedRequest = applyApiAuth({ url: fullUrl, headers: hdrs }, cfg.auth, envVars, item, templateDataVars)
-          fullUrl = authedRequest.url
-          const requestHeaders = authedRequest.headers
-          const res = await fetchAppApiRequest(fullUrl, { method: cfg.method, headers: requestHeaders, body: bodyStr })
-          if (!res.ok) throw new ApiHttpError(res.status, res.statusText, res.text)
-          appendApiExecutionResult(allResults, parseHttpResponseOutput(res.text))
+        const item = applyInputMappings(buildApiTemplateItem(upstream, upstreamEdges, upstreamModuleVars, preInputVars), cfg.inputMappings ?? {})
+        const templateDataVars = previewDataVars
+        let fullUrl = resolveTemplate(cfg.url.trim(), envVars, item, templateDataVars)
+        const enabledParams = (cfg.params ?? []).filter(p => p.enabled && p.key)
+        if (enabledParams.length > 0) {
+          const qs = new URLSearchParams(enabledParams.map(p => [p.key, resolveTemplate(p.value, envVars, item, templateDataVars)]))
+          fullUrl += (fullUrl.includes('?') ? '&' : '?') + qs.toString()
         }
+        const hdrs: Record<string, string> = {}
+        ;(cfg.headers ?? []).filter(h => h.enabled && h.key).forEach(h => {
+          hdrs[h.key] = resolveTemplate(h.value, envVars, item, templateDataVars)
+        })
+        let bodyStr: string | undefined
+        if (['POST', 'PUT', 'PATCH'].includes(cfg.method) && cfg.body?.trim()) {
+          if (cfg.bodyType === 'json' && !hdrs['Content-Type'] && !hdrs['content-type']) {
+            hdrs['Content-Type'] = 'application/json'
+          }
+          bodyStr = resolveTemplate(cfg.body, envVars, item, templateDataVars)
+        }
+        const authedRequest = applyApiAuth({ url: fullUrl, headers: hdrs }, cfg.auth, envVars, item, templateDataVars)
+        fullUrl = authedRequest.url
+        const requestHeaders = authedRequest.headers
+        const res = await fetchAppApiRequest(fullUrl, { method: cfg.method, headers: requestHeaders, body: bodyStr })
+        if (!res.ok) throw new ApiHttpError(res.status, res.statusText, res.text)
+        const responseOutput = parseHttpResponseOutput(res.text)
 
         let postOutputVars: Record<string, unknown> = {}
-        const responseOutput = normalizeApiExecutionOutput(allResults)
         let finalOutput: unknown = responseOutput
         if (cfg.postScript && cfg.postScript.trim()) {
           try {
@@ -2327,11 +2342,9 @@ export default function App(): JSX.Element {
           }
         }
         moduleVarsMap[nodeId] = { ...upstreamModuleVars, ...postOutputVars }
-        visiting.delete(nodeId)
-        return finalOutput
+        return complete(finalOutput)
       }
-      visiting.delete(nodeId)
-      return upstream
+      return complete(upstream)
     }
 
     try {
@@ -2783,6 +2796,7 @@ export default function App(): JSX.Element {
                 error: logEntry?.error,
                 duration: logEntry?.duration,
                 apiDetail: logEntry?.apiDetail as ReportApiDetail | undefined,
+                apiAttempts: logEntry?.apiAttempts as ReportApiAttempt[] | undefined,
                 preScript: pcfg?.preScript,
                 postScript: pcfg?.postScript,
                 scriptLogs: logEntry?.scriptLogs,
@@ -3052,11 +3066,20 @@ export default function App(): JSX.Element {
         setNodeRunInputs(prev => ({ ...prev, [nodeId]: JSON.stringify(rawInput, null, 2) }))
         setNodeScriptLogs(prev => ({ ...prev, [nodeId]: { pre: [], post: [] } }))
         let lastApiDetail: ApiLogDetail | undefined
+        let apiAttempts: ApiLogAttempt[] = []
         let currentScriptLogs: ScriptLogBundle = { pre: [], post: [] }
         const recordScriptLogs = (phase: keyof ScriptLogBundle, logs: ScriptConsoleEntry[]): void => {
           currentScriptLogs = { ...currentScriptLogs, [phase]: logs }
           setScriptLogsForNode(nodeId, phase, logs)
           updateLog(entryId, { scriptLogs: currentScriptLogs })
+        }
+        const recordApiAttempt = (attempt: ApiLogAttempt): void => {
+          apiAttempts = [
+            ...apiAttempts.filter(item => item.index !== attempt.index),
+            attempt,
+          ].sort((a, b) => a.index - b.index)
+          lastApiDetail = attempt
+          updateLog(entryId, { apiDetail: attempt, apiAttempts })
         }
         try {
           const cfg = JSON.parse(node.config || '{}') as ApiConfig
@@ -3109,64 +3132,91 @@ export default function App(): JSX.Element {
             }
           }
 
-          const items = buildApiTemplateItems(rawInput, incomingEdges, upstreamModuleVars, preInputVars)
-          const allResults: unknown[] = []
+          const item = applyInputMappings(buildApiTemplateItem(rawInput, incomingEdges, upstreamModuleVars, preInputVars), cfg.inputMappings ?? {})
+          const templateDataVars = loopRow ? { ...loopRow } : item
+          const enabledParams = (cfg.params ?? []).filter(p => p.enabled && p.key)
+          const enabledHeaders = (cfg.headers ?? []).filter(h => h.enabled && h.key)
+          const bodyTemplate = ['POST', 'PUT', 'PATCH'].includes(cfg.method) && cfg.body?.trim() ? cfg.body : ''
+          recordUsedTemplateVariables(
+            usedVariables,
+            [
+              cfg.url.trim(),
+              ...enabledParams.map(p => p.value),
+              ...enabledHeaders.map(h => h.value),
+              bodyTemplate,
+              ...(cfg.auth ? getApiAuthTemplateValues(cfg.auth) : []),
+            ],
+            envVarsForExec,
+            item,
+            templateDataVars,
+          )
 
-          for (const row of items) {
-            const item = applyInputMappings(row, cfg.inputMappings ?? {})
-            const templateDataVars = loopRow ? { ...loopRow } : item
-            const enabledParams = (cfg.params ?? []).filter(p => p.enabled && p.key)
-            const enabledHeaders = (cfg.headers ?? []).filter(h => h.enabled && h.key)
-            const bodyTemplate = ['POST', 'PUT', 'PATCH'].includes(cfg.method) && cfg.body?.trim() ? cfg.body : ''
-            recordUsedTemplateVariables(
-              usedVariables,
-              [
-                cfg.url.trim(),
-                ...enabledParams.map(p => p.value),
-                ...enabledHeaders.map(h => h.value),
-                bodyTemplate,
-                ...(cfg.auth ? getApiAuthTemplateValues(cfg.auth) : []),
-              ],
-              envVarsForExec,
-              item,
-              templateDataVars,
-            )
-
-            let fullUrl = resolveTemplate(cfg.url.trim(), envVarsForExec, item, templateDataVars)
-            if (enabledParams.length > 0) {
-              const qs = new URLSearchParams(enabledParams.map(p => [p.key, resolveTemplate(p.value, envVarsForExec, item, templateDataVars)]))
-              fullUrl += (fullUrl.includes('?') ? '&' : '?') + qs.toString()
+          let fullUrl = resolveTemplate(cfg.url.trim(), envVarsForExec, item, templateDataVars)
+          if (enabledParams.length > 0) {
+            const qs = new URLSearchParams(enabledParams.map(p => [p.key, resolveTemplate(p.value, envVarsForExec, item, templateDataVars)]))
+            fullUrl += (fullUrl.includes('?') ? '&' : '?') + qs.toString()
+          }
+          const hdrs: Record<string, string> = {}
+          ;enabledHeaders.forEach(h => {
+            hdrs[h.key] = resolveTemplate(h.value, envVarsForExec, item, templateDataVars)
+          })
+          let bodyStr: string | undefined
+          if (['POST', 'PUT', 'PATCH'].includes(cfg.method) && cfg.body?.trim()) {
+            if (cfg.bodyType === 'json' && !hdrs['Content-Type'] && !hdrs['content-type']) {
+              hdrs['Content-Type'] = 'application/json'
             }
-            const hdrs: Record<string, string> = {}
-            ;enabledHeaders.forEach(h => {
-              hdrs[h.key] = resolveTemplate(h.value, envVarsForExec, item, templateDataVars)
+            bodyStr = resolveTemplate(cfg.body, envVarsForExec, item, templateDataVars)
+          }
+
+          const authedRequest = applyApiAuth({ url: fullUrl, headers: hdrs }, cfg.auth, envVarsForExec, item, templateDataVars)
+          fullUrl = authedRequest.url
+          const requestHeaders = authedRequest.headers
+
+          const attemptStartedAt = Date.now()
+          const attemptBase: ApiLogAttempt = {
+            index: 1,
+            total: 1,
+            startedAt: attemptStartedAt,
+            status: 'running',
+            input: item,
+            method: cfg.method,
+            url: fullUrl,
+            headers: requestHeaders,
+            body: bodyStr,
+          }
+          recordApiAttempt(attemptBase)
+
+          let res: Awaited<ReturnType<typeof window.api.http.fetch>>
+          try {
+            res = await fetchAppApiRequest(fullUrl, { method: cfg.method, headers: requestHeaders, body: bodyStr, runId: exec.runId })
+          } catch (err) {
+            recordApiAttempt({
+              ...attemptBase,
+              status: 'error',
+              duration: Date.now() - attemptStartedAt,
+              error: String((err as Error)?.message ?? err),
             })
-            let bodyStr: string | undefined
-            if (['POST', 'PUT', 'PATCH'].includes(cfg.method) && cfg.body?.trim()) {
-              if (cfg.bodyType === 'json' && !hdrs['Content-Type'] && !hdrs['content-type']) {
-                hdrs['Content-Type'] = 'application/json'
-              }
-              bodyStr = resolveTemplate(cfg.body, envVarsForExec, item, templateDataVars)
-            }
+            throw err
+          }
+          if (stopIfRequested()) return
+          const responseOutput = parseHttpResponseOutput(res.text)
+          const completedAttempt: ApiLogAttempt = {
+            ...attemptBase,
+            status: res.ok ? 'success' : 'error',
+            duration: Date.now() - attemptStartedAt,
+            statusCode: res.status,
+            statusText: res.statusText,
+            responseText: res.text,
+            output: responseOutput,
+            error: res.ok ? undefined : `HTTP ${res.status}${res.statusText ? ` ${res.statusText}` : ''}`,
+          }
+          recordApiAttempt(completedAttempt)
 
-            const authedRequest = applyApiAuth({ url: fullUrl, headers: hdrs }, cfg.auth, envVarsForExec, item, templateDataVars)
-            fullUrl = authedRequest.url
-            const requestHeaders = authedRequest.headers
-
-            lastApiDetail = { method: cfg.method, url: fullUrl, headers: requestHeaders, body: bodyStr }
-
-            const res = await fetchAppApiRequest(fullUrl, { method: cfg.method, headers: requestHeaders, body: bodyStr, runId: exec.runId })
-            if (stopIfRequested()) return
-            lastApiDetail = { ...lastApiDetail, statusCode: res.status, statusText: res.statusText, responseText: res.text }
-
-            if (!res.ok) {
-              throw new ApiHttpError(res.status, res.statusText, res.text)
-            }
-            appendApiExecutionResult(allResults, parseHttpResponseOutput(res.text))
+          if (!res.ok) {
+            throw new ApiHttpError(res.status, res.statusText, res.text)
           }
           // ── Post Response script ───────────────────────
           let postOutputVars: Record<string, unknown> = {}
-          const responseOutput = normalizeApiExecutionOutput(allResults)
           let finalOutput: unknown = responseOutput
           if (cfg.postScript && cfg.postScript.trim()) {
             try {
@@ -3195,7 +3245,7 @@ export default function App(): JSX.Element {
           nodeOutputs[nodeId] = finalOutput
           moduleVars[nodeId] = { ...upstreamModuleVars, ...postOutputVars }
           setNodeRunOutputs(prev => ({ ...prev, [nodeId]: JSON.stringify(finalOutput, null, 2) }))
-          updateLog(entryId, { status: 'success', output: finalOutput, duration: Date.now() - startedAt, apiDetail: lastApiDetail, scriptLogs: currentScriptLogs })
+          updateLog(entryId, { status: 'success', output: finalOutput, duration: Date.now() - startedAt, apiDetail: lastApiDetail, apiAttempts, scriptLogs: currentScriptLogs })
           setNodeStatuses(prev => ({ ...prev, [nodeId]: 'success' }))
         } catch (err) {
           if (stopIfRequested()) return
@@ -3204,7 +3254,7 @@ export default function App(): JSX.Element {
           const errStr = isHttpError ? err.message : String(err)
           nodeOutputs[nodeId] = errorOutput
           setNodeRunOutputs(prev => ({ ...prev, [nodeId]: isHttpError ? stringifyNodeOutput(errorOutput) : errStr }))
-          updateLog(entryId, { status: 'error', output: errorOutput, error: errStr, duration: Date.now() - startedAt, apiDetail: lastApiDetail, scriptLogs: currentScriptLogs })
+          updateLog(entryId, { status: 'error', output: errorOutput, error: errStr, duration: Date.now() - startedAt, apiDetail: lastApiDetail, apiAttempts, scriptLogs: currentScriptLogs })
           setNodeStatuses(prev => ({ ...prev, [nodeId]: 'error' }))
           if (handleLoopFailure(nodeId, errStr)) return
           finishExecution()
@@ -3460,6 +3510,7 @@ export default function App(): JSX.Element {
           error: log.error,
           duration: log.duration,
           apiDetail: log.apiDetail as ReportApiDetail | undefined,
+          apiAttempts: log.apiAttempts as ReportApiAttempt[] | undefined,
           preScript: cfg?.preScript,
           postScript: cfg?.postScript,
           scriptLogs: log.scriptLogs,
