@@ -20,6 +20,17 @@ function stringifyError(value: unknown): string {
   }
 }
 
+function isBenignMonacoCancellation(value: unknown): boolean {
+  if (!(value instanceof Error)) return false
+  if (value.name !== 'Canceled' || value.message !== 'Canceled') return false
+
+  const stack = value.stack ?? ''
+  return stack.includes('monaco')
+    || stack.includes('Delayer.cancel')
+    || stack.includes('WordHighlighter')
+    || stack.includes('vs/base/common/async')
+}
+
 function ensureRuntimeErrorPanel(): HTMLDivElement {
   const existing = document.getElementById('runtime-error-panel')
   if (existing instanceof HTMLDivElement) return existing
@@ -88,12 +99,17 @@ function appendRuntimeError(title: string, detail: string): void {
   panel.appendChild(section)
 }
 
-// 전역 오류를 앱 DOM을 다시 쓰지 않는 별도 패널에 표시합니다.
+// 전역 오류를 DOM이 다시 그려지지 않는 별도 패널에 표시합니다.
 window.onerror = (msg, src, line, col, err) => {
   appendRuntimeError('JS ERROR', `${String(msg)}\n${src ?? ''}:${line ?? ''}:${col ?? ''}\n\n${stringifyError(err)}`)
   return false
 }
 window.onunhandledrejection = (e) => {
+  if (isBenignMonacoCancellation(e.reason)) {
+    e.preventDefault()
+    return
+  }
+
   appendRuntimeError('UNHANDLED REJECTION', stringifyError(e.reason))
 }
 
