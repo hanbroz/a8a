@@ -90,6 +90,7 @@ The npm package version in `package.json` is project metadata. The user-facing a
 - Rebuild the next OUTPUT in Post Response scripts
 - Branch TRUE/FALSE execution paths
 - Replace environment variables and update them during execution with `setEnv()`
+- Show a pre-run warning for non-BASE environments
 - Reference repeat data with `<<no>>` and `<<columnName>>`
 - Execute sequentially from START through connected paths
 - Inspect per-node INPUT, OUTPUT, and execution logs
@@ -159,6 +160,8 @@ officeId = ICN
 In API settings, use environment variables like `{{baseUrl}}/booking/search`. Environment variable names are case-sensitive, so use consistent names inside a project.
 
 Clicking a project's environment entry is only for viewing or editing environment settings. It does not automatically change the canvas selection or execution environment.
+
+For environments other than BASE, you can enable `Show warning before execution`. When enabled, starting a full canvas run, module INPUT preview run, or API test run shows a confirmation dialog with the current environment name before anything executes. If the user checks `Do not show this warning again` and confirms, the environment's warning option is turned off.
 
 ### 5. Place Modules On The Canvas
 
@@ -236,6 +239,8 @@ If report generation is enabled in the End module during repeat execution, each 
 #### DATA
 
 The DATA module creates OUTPUT by direct JSON input or by loading Excel/CSV data. The next module receives DATA OUTPUT as INPUT.
+
+String values in DATA OUTPUT can use `[[ ]]` expressions to reference INPUT values. For example, if INPUT contains `{ "amount": 12 }`, saving `{ "total": "[[amount * 10]]" }` in OUTPUT produces `{ "total": 120 }` during execution. When the expression is the whole string, the calculated number, boolean, or object type is preserved. When it is embedded inside other text, it is substituted as a string.
 
 DATA modules are independent by default for each node on the canvas. If multiple projects need to share the same customer information, reference data, or code list, enable `Share as common DATA` in the DATA settings screen and save.
 
@@ -356,6 +361,7 @@ Execution rules:
 - You can inspect per-node INPUT, OUTPUT, status, and execution logs.
 - API module execution logs include the actual request URL, headers, body, response body, and cURL command.
 - API modules send exactly one HTTP request per node execution even when INPUT has multiple sources or array values.
+- If the active environment has the pre-run warning enabled, execution waits for confirmation and does not start before the user confirms.
 - The Run button inside a module settings dialog only runs the path from `Start` to that module and refreshes the INPUT/OUTPUT preview.
 
 ## API Script Guide

@@ -2701,8 +2701,8 @@
 }
 
 .api-script-console-body {
-  background: #11161d;
-  color: var(--text-2);
+  background: var(--bg-2);
+  color: var(--text-1);
   min-height: 0;
   overflow: auto;
 }
@@ -2713,7 +2713,7 @@
   align-items: center;
   justify-content: center;
   padding: 18px;
-  color: var(--text-4);
+  color: var(--text-3);
   font-family: var(--font-mono);
   font-size: 12px;
 }
@@ -2723,6 +2723,7 @@
   flex-direction: column;
   width: 100%;
   padding: 8px 0;
+  background: var(--bg-2);
 }
 
 .api-script-console-row {
@@ -2731,16 +2732,21 @@
   gap: 8px;
   align-items: start;
   padding: 5px 12px;
-  border-bottom: 1px solid rgba(139, 148, 158, 0.14);
+  border-bottom: 1px solid var(--border-1);
+  color: var(--text-1);
   font-family: var(--font-mono);
   font-size: 11.5px;
   line-height: 1.55;
 }
 
+.api-script-console-row:nth-child(odd) {
+  background: color-mix(in srgb, var(--bg-3) 58%, transparent);
+}
+
 .api-script-console-row:last-child { border-bottom: none; }
 
 .api-script-console-time {
-  color: var(--text-4);
+  color: var(--text-3);
   white-space: nowrap;
 }
 
@@ -2751,7 +2757,7 @@
 
 .api-script-console-message {
   margin: 0;
-  color: var(--text-2);
+  color: var(--text-1);
   white-space: pre-wrap;
   word-break: break-word;
   font-family: inherit;
@@ -2762,22 +2768,30 @@
 .api-script-console-log .api-script-console-level,
 .api-script-console-info .api-script-console-level,
 .api-script-console-debug .api-script-console-level {
-  color: #58a6ff;
+  color: var(--state-running);
 }
 
 .api-script-console-warn .api-script-console-level {
-  color: #d29922;
+  color: var(--state-warn);
 }
 
 .api-script-console-error .api-script-console-level {
-  color: #f85149;
+  color: var(--state-error);
+}
+
+.api-script-console-row.api-script-console-warn {
+  background: color-mix(in srgb, var(--state-warn) 10%, var(--bg-2));
+}
+
+.api-script-console-row.api-script-console-error {
+  background: color-mix(in srgb, var(--state-error) 10%, var(--bg-2));
 }
 
 .log-script-console {
-  border: 1px solid rgba(139, 148, 158, 0.16);
+  border: 1px solid var(--border-1);
   border-radius: 6px;
   overflow: hidden;
-  background: #11161d;
+  background: var(--bg-2);
 }
 
 .log-script-console + .log-script-console {
@@ -2786,8 +2800,9 @@
 
 .log-script-console-title {
   padding: 7px 10px;
-  border-bottom: 1px solid rgba(139, 148, 158, 0.16);
-  color: var(--text-3);
+  border-bottom: 1px solid var(--border-1);
+  background: var(--bg-3);
+  color: var(--text-1);
   font-size: 10.5px;
   font-weight: 700;
   letter-spacing: 0.04em;

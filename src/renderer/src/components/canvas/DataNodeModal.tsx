@@ -1,4 +1,4 @@
-import { useState, useRef, useCallback, useEffect } from 'react'
+import { useState, useRef, useCallback, useEffect, useMemo } from 'react'
 import ExcelJS from 'exceljs'
 import { IcoMaximize, IcoRestore, IcoTrash, IcoX } from '../Icon'
 import JsonMonacoEditor from './JsonMonacoEditor'
@@ -7,6 +7,7 @@ import ShortcutSaveButtonLabel from './ShortcutSaveButtonLabel'
 import { useModalMaximize } from './useModalMaximize'
 import { useShortcutSave } from './useShortcutSave'
 import { useI18n } from '../../i18n'
+import { getInputPathSuggestions } from '../../utils/interpolate'
 
 interface Props {
   node: ApiNode
@@ -301,6 +302,20 @@ export default function DataNodeModal({ node, isNew, sharedDataModule, initialIn
     onSave: handleSave,
   })
 
+  const inputTemplateKeys = useMemo(() => {
+    const trimmed = inputJson.trim()
+    if (!trimmed) return []
+    try {
+      const parsed = JSON.parse(trimmed) as unknown
+      if (parsed === null || parsed === undefined) return []
+      if (Array.isArray(parsed)) return getInputPathSuggestions(parsed as unknown as Record<string, unknown>)
+      if (typeof parsed === 'object') return getInputPathSuggestions(parsed as Record<string, unknown>)
+      return ['value']
+    } catch {
+      return []
+    }
+  }, [inputJson])
+
   return (
     <div className="dm-overlay">
       <input
@@ -488,6 +503,7 @@ export default function DataNodeModal({ node, isNew, sharedDataModule, initialIn
                   value={outputJson}
                   onChange={next => { setOutputJson(next); setOutputError(false) }}
                   error={outputError}
+                  templateSuggestions={{ inputKeys: inputTemplateKeys }}
                   placeholder="[]"
                 />
               </div>

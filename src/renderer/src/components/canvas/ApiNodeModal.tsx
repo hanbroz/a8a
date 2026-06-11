@@ -199,6 +199,7 @@ interface Props {
   envVars?: Record<string, string>
   dataVars?: Record<string, unknown>
   onRun?: () => string | Promise<string>
+  onBeforeRun?: () => boolean | Promise<boolean>
   onSave: (nodeId: string, label: string, config: string) => Promise<void>
   onDelete?: () => Promise<void>
   onClose: () => void
@@ -951,7 +952,7 @@ function KvRow({
 
 export default function ApiNodeModal({
   node, isNew, initialInput, initialOutput, initialPreConsoleLogs, initialPostConsoleLogs,
-  envVars = {}, dataVars, onRun, onSave, onDelete, onClose,
+  envVars = {}, dataVars, onRun, onBeforeRun, onSave, onDelete, onClose,
 }: Props): JSX.Element {
   const { t, language } = useI18n()
   useApiScriptAssistantLabels()
@@ -1309,6 +1310,15 @@ export default function ApiNodeModal({
   const handleTest = async () => {
     if (!url.trim() || testingLockRef.current) return
     testingLockRef.current = true
+    try {
+      if (onBeforeRun && !(await onBeforeRun())) {
+        testingLockRef.current = false
+        return
+      }
+    } catch (err) {
+      testingLockRef.current = false
+      throw err
+    }
     setTesting(true)
     setTestResponse(null)
     setOutputViewMode('raw')

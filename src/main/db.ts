@@ -215,6 +215,7 @@ function createSchema(): void {
       name         TEXT NOT NULL,
       is_base      INTEGER DEFAULT 0,
       color        TEXT DEFAULT '#4493f8',
+      run_warning_enabled INTEGER DEFAULT 0,
       sort         INTEGER DEFAULT 0
     );
     CREATE TABLE IF NOT EXISTS env_vars (
@@ -279,6 +280,9 @@ function createSchema(): void {
   } catch { /* column already exists */ }
   try {
     db.run("ALTER TABLE environments ADD COLUMN initial TEXT DEFAULT ''")
+  } catch { /* column already exists */ }
+  try {
+    db.run("ALTER TABLE environments ADD COLUMN run_warning_enabled INTEGER DEFAULT 0")
   } catch { /* column already exists */ }
   // Module column migrations
   try {
@@ -386,11 +390,11 @@ export function deleteWorkspace(id: string): void {
 
 // ── Environment ───────────────────────────────────
 export type EnvVarRow = { id: string; key: string; value: string; enabled: boolean }
-export type EnvRow = { id: string; name: string; isBase: boolean; color: string; initial: string; vars: EnvVarRow[] }
+export type EnvRow = { id: string; name: string; isBase: boolean; color: string; initial: string; runWarningEnabled: boolean; vars: EnvVarRow[] }
 
 export function listEnvironments(workspaceId: string): EnvRow[] {
-  const envs = queryAll<{ id: string; name: string; is_base: number; color: string; initial: string }>(
-    'SELECT id, name, is_base, color, COALESCE(initial, \'\') as initial FROM environments WHERE workspace_id = ? ORDER BY is_base DESC, sort, rowid',
+  const envs = queryAll<{ id: string; name: string; is_base: number; color: string; initial: string; run_warning_enabled: number }>(
+    'SELECT id, name, is_base, color, COALESCE(initial, \'\') as initial, COALESCE(run_warning_enabled, 0) as run_warning_enabled FROM environments WHERE workspace_id = ? ORDER BY is_base DESC, sort, rowid',
     [workspaceId]
   )
   return envs.map(e => ({
@@ -399,6 +403,7 @@ export function listEnvironments(workspaceId: string): EnvRow[] {
     isBase: e.is_base === 1,
     color: e.color ?? '#4493f8',
     initial: e.initial ?? '',
+    runWarningEnabled: e.is_base !== 1 && e.run_warning_enabled === 1,
     vars: queryAll<{ id: string; key: string; value: string; enabled: number }>(
       'SELECT id, key, value, enabled FROM env_vars WHERE environment_id = ? ORDER BY sort, rowid',
       [e.id]
@@ -416,13 +421,14 @@ export function upsertEnvironment(workspaceId: string, env: EnvRow): void {
     if (exists && exists.workspace_id !== workspaceId) {
       throw new Error('다른 워크스페이스의 환경은 수정할 수 없습니다.')
     }
+    const runWarningEnabled = (exists ? exists.is_base !== 1 : !env.isBase) && env.runWarningEnabled ? 1 : 0
     if (exists) {
       const name = exists.is_base === 1 ? 'BASE' : env.name
-      db.run('UPDATE environments SET name = ?, color = ?, initial = ? WHERE id = ?', [name, env.color, env.initial, env.id])
+      db.run('UPDATE environments SET name = ?, color = ?, initial = ?, run_warning_enabled = ? WHERE id = ?', [name, env.color, env.initial, runWarningEnabled, env.id])
     } else {
       db.run(
-        'INSERT INTO environments (id, workspace_id, name, is_base, color, initial) VALUES (?, ?, ?, ?, ?, ?)',
-        [env.id, workspaceId, env.name, env.isBase ? 1 : 0, env.color, env.initial]
+        'INSERT INTO environments (id, workspace_id, name, is_base, color, initial, run_warning_enabled) VALUES (?, ?, ?, ?, ?, ?, ?)',
+        [env.id, workspaceId, env.name, env.isBase ? 1 : 0, env.color, env.initial, runWarningEnabled]
       )
     }
     db.run('DELETE FROM env_vars WHERE environment_id = ?', [env.id])
@@ -1195,21 +1201,25 @@ function importOptionalSourcePort(value: unknown, fieldName: string): string | n
 
 function importEnvRows(value: unknown): EnvRow[] {
   if (!Array.isArray(value)) return []
-  return value.filter(isRecord).map((env, index) => ({
-    id: importString(env.id, `env-${index}`),
-    name: importString(env.name, index === 0 ? 'BASE' : 'Environment'),
-    isBase: importBoolean(env.isBase, index === 0),
-    color: importString(env.color, '#4493f8'),
-    initial: importString(env.initial, ''),
-    vars: Array.isArray(env.vars)
-      ? env.vars.filter(isRecord).map((v, varIndex) => ({
-          id: importString(v.id, `var-${index}-${varIndex}`),
-          key: importString(v.key, ''),
-          value: importString(v.value, ''),
-          enabled: importBoolean(v.enabled, true),
-        })).filter(v => v.key.trim())
-      : [],
-  }))
+  return value.filter(isRecord).map((env, index) => {
+    const isBase = importBoolean(env.isBase, index === 0)
+    return {
+      id: importString(env.id, `env-${index}`),
+      name: importString(env.name, index === 0 ? 'BASE' : 'Environment'),
+      isBase,
+      color: importString(env.color, '#4493f8'),
+      initial: importString(env.initial, ''),
+      runWarningEnabled: !isBase && importBoolean(env.runWarningEnabled, false),
+      vars: Array.isArray(env.vars)
+        ? env.vars.filter(isRecord).map((v, varIndex) => ({
+            id: importString(v.id, `var-${index}-${varIndex}`),
+            key: importString(v.key, ''),
+            value: importString(v.value, ''),
+            enabled: importBoolean(v.enabled, true),
+          })).filter(v => v.key.trim())
+        : [],
+    }
+  })
 }
 
 function importNodeRows(value: unknown): NodeRow[] {
@@ -1404,9 +1414,10 @@ export function importWorkspaceData(payload: unknown): TransferImportResult {
     } else {
       envs.forEach((env, envIndex) => {
         const envId = randomUUID()
+        const runWarningEnabled = !env.isBase && env.runWarningEnabled ? 1 : 0
         db.run(
-          'INSERT INTO environments (id, workspace_id, name, is_base, color, initial, sort) VALUES (?, ?, ?, ?, ?, ?, ?)',
-          [envId, workspaceId, env.isBase ? 'BASE' : env.name, env.isBase ? 1 : 0, env.color, env.initial, envIndex]
+          'INSERT INTO environments (id, workspace_id, name, is_base, color, initial, run_warning_enabled, sort) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
+          [envId, workspaceId, env.isBase ? 'BASE' : env.name, env.isBase ? 1 : 0, env.color, env.initial, runWarningEnabled, envIndex]
         )
         env.vars.forEach((v, varIndex) => {
           db.run(

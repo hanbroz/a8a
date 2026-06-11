@@ -532,6 +532,12 @@ const ko = {
   'workflow.unset': '미설정',
   'workflow.select.script': '스크립트',
   'workflow.select.rowSelected': '{count}행 선택됨',
+  'confirm.envRunWarning.title': '환경 실행 경고',
+  'confirm.envRunWarning.message': '{name} 환경에서 실행합니다.',
+  'confirm.envRunWarning.warning': '환경설정을 오인하지 않았는지 확인하세요.',
+  'confirm.envRunWarning.dontShowAgain': '경고를 표시하지 않음',
+  'modal.env.runWarningLabel': '실행시 경고표시',
+  'modal.env.runWarningHint': '환경설정을 오인하지 않도록 경고를 표시합니다.',
 } as const
 
 export type TranslationKey = keyof typeof ko
@@ -1071,6 +1077,12 @@ const en: Record<TranslationKey, string> = {
   'workflow.unset': 'Not set',
   'workflow.select.script': 'Script',
   'workflow.select.rowSelected': '{count} rows selected',
+  'confirm.envRunWarning.title': 'Environment Run Warning',
+  'confirm.envRunWarning.message': 'Execution will run in the {name} environment.',
+  'confirm.envRunWarning.warning': 'Confirm that you have not selected the wrong environment.',
+  'confirm.envRunWarning.dontShowAgain': 'Do not show this warning again',
+  'modal.env.runWarningLabel': 'Show warning before execution',
+  'modal.env.runWarningHint': 'Display a warning to prevent choosing the wrong environment.',
 }
 
 const translations = { ko, en }

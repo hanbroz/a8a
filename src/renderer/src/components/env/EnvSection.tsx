@@ -15,6 +15,7 @@ export type Environment = {
   isBase: boolean
   color: string
   initial: string
+  runWarningEnabled: boolean
   vars: EnvVar[]
 }
 

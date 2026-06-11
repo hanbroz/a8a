@@ -42,7 +42,7 @@ workspaces
   id, name, description, sort
 
 environments
-  id, workspace_id, name, is_base, color, initial, sort
+  id, workspace_id, name, is_base, color, initial, run_warning_enabled, sort
 
 env_vars
   id, environment_id, key, value, enabled, sort
@@ -105,13 +105,14 @@ window.api.file.{ write, downloadsDir }
 ## 실행 흐름
 
 1. Start 노드부터 연결된 노드 목록을 계산합니다.
-2. Data 노드는 JSON 출력을 반환합니다.
+2. Data 노드는 JSON 출력을 반환합니다. 출력 문자열에 `[[ ]]` 표현식이 있으면 현재 Data 노드 INPUT을 기준으로 참조와 제한된 계산식을 평가합니다.
 3. Select 노드는 입력 배열에서 선택한 행을 반환합니다.
 4. API 노드는 템플릿 치환 후 main process를 통해 HTTP 요청을 실행합니다. INPUT이 여러 노드에서 합쳐지거나 배열 값을 포함해도 API 노드 실행당 HTTP 요청은 한 번만 수행합니다.
 5. Pre/Post 스크립트는 입력/출력 변수와 환경 변수 업데이트를 반환할 수 있습니다.
 6. End 노드는 선택한 모듈의 실행 결과를 HTML 또는 Markdown 리포트로 저장합니다.
 
 실행 환경은 사이드바 선택 상태가 아니라 현재 열린 프로젝트가 속한 워크스페이스의 활성 환경을 기준으로 합니다.
+BASE가 아닌 활성 환경에 `run_warning_enabled`가 켜져 있으면 전체 캔버스 실행, 모듈 INPUT 미리보기 실행, API 테스트 실행 전에 확인 경고를 표시하고 사용자가 확인하기 전에는 실행하지 않습니다.
 
 ## 문서 정책
 

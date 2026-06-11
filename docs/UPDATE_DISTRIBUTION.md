@@ -1,16 +1,17 @@
 # GitHub 업데이트 배포 절차
 
-a8a는 앱 내부 표시 버전과 업데이트 비교 버전을 `yyyy.MM.dd.HH.mm` 형식의 날짜 버전으로 사용합니다. `package.json`의 `version`은 npm과 `electron-builder` 호환을 위한 SemVer 값으로 유지합니다.
+a8a는 앱에 표시되는 버전과 GitHub Release 태그에 `yyyy.MM.dd.HH.mm` 형식의 날짜 버전을 사용합니다. `package.json`의 `version`은 npm과 `electron-builder` 호환을 위한 SemVer 값으로 유지합니다.
 
 ## 공식 배포 경로
 
-현재 공식 배포 경로는 로컬 Windows 빌드 후 GitHub Release를 직접 공개하는 방식입니다. GitHub Actions Release 워크플로우는 보조 자동화이며, 결제 또는 spending limit 문제로 실행되지 않을 수 있습니다.
+현재 공식 배포 경로는 로컬 Windows 빌드 후 GitHub Release를 직접 공개하는 방식입니다. GitHub Actions Release 워크플로는 보조 자동화이며, 계정 결제 또는 spending limit 문제로 실행되지 않을 수 있습니다.
 
 릴리즈 전에는 다음 파일을 함께 갱신합니다.
 
-- `build/installer-release-notes.nsh`: Windows 설치 과정에서 표시되는 업데이트 안내입니다.
-- `build/release-notes.md`: GitHub Release 본문에 표시되는 업데이트 안내입니다.
-- `README.md`, `README.en.md`: 새 기능과 배포 규칙이 사용자 문서에 반영되어야 합니다.
+- `build/installer-release-notes.nsh`: Windows 설치 과정에서 표시하는 업데이트 안내입니다.
+- `build/release-notes.md`: GitHub Release 본문에 사용하는 업데이트 안내입니다.
+- `README.md`, `README.en.md`: 새 기능과 배포 계약을 사용자 문서에 반영합니다.
+- `docs/ARCHITECTURE.md`: 데이터 모델, 실행 흐름, 릴리즈에 영향을 주는 계약을 반영합니다.
 
 ## 수동 Windows 릴리즈
 
@@ -23,7 +24,7 @@ npm run release:manual
 특정 버전 번호로 배포해야 하는 경우에는 다음처럼 실행합니다.
 
 ```powershell
-npm run release:manual -- -Version 2026.06.05.18.30
+npm run release:manual -- -Version 2026.06.11.12.30
 ```
 
 다른 GitHub 저장소로 배포해야 하는 경우에는 `owner/repo` 형식으로 `-Repo` 값을 지정합니다.
@@ -55,19 +56,19 @@ dist/a8a-Portable-yyyy.MM.dd.HH.mm.exe
 dist/a8a-Portable-yyyy.MM.dd.HH.mm.exe.sha256
 ```
 
-사용자에게 직접 전달할 파일은 사용 방식에 따라 다릅니다.
+사용자에게 직접 전달하는 파일은 사용 방식에 따라 다릅니다.
 
 - 설치형으로 배포하려면 `a8a-Setup-yyyy.MM.dd.HH.mm.exe`를 전달합니다.
 - 설치 없이 실행하게 하려면 `a8a-Portable-yyyy.MM.dd.HH.mm.exe`를 전달합니다.
 - `.blockmap` 파일은 자동 업데이트용 Release asset입니다.
-- `.sha256` 파일은 앱 내부 업데이트 파일 검증용 asset입니다.
+- `.sha256` 파일은 설치/업데이트 파일 검증용 asset입니다.
 
 ## 앱 업데이트 확인
 
-앱은 시작 후 최신 GitHub Release를 확인합니다.
+앱 시작 시 최신 GitHub Release를 확인합니다.
 
-- 최신 Release 태그나 이름에서 `yyyy.MM.dd.HH.mm` 값을 추출합니다.
-- 현재 앱에 포함된 날짜 버전보다 크면 업데이트가 있다고 판단합니다.
+- 최신 Release 태그 이름에서 `yyyy.MM.dd.HH.mm` 값을 추출합니다.
+- 현재 앱에 포함된 날짜 버전보다 새 버전이면 업데이트가 있다고 판단합니다.
 - Windows에서는 Release asset에서 설치 파일과 같은 이름의 `.sha256` 파일을 함께 찾습니다.
 - 다운로드한 설치 파일의 SHA-256 값이 Release의 `.sha256` 값과 일치해야 업데이트 적용 버튼을 표시합니다.
 - 사용자가 업데이트를 적용하면 설치 파일을 실행하고 앱을 종료합니다.
@@ -82,4 +83,4 @@ NSIS 문자열 줄바꿈은 `$\r$\n` 형식을 사용합니다.
 
 GitHub Actions가 정상 동작하면 `main` 또는 `master` 브랜치 push로 Windows와 macOS 산출물을 만들고 Release를 공개할 수 있습니다. 다만 현재 프로젝트의 공식 배포 절차는 로컬 빌드와 수동 Release 공개입니다.
 
-Actions가 결제 또는 spending limit 문제로 시작하지 않으면 Release가 생성되지 않습니다. 이 경우 저장소 소유자는 GitHub의 `Settings > Billing & plans`에서 결제 수단, Actions 예산, spending limit을 확인해야 합니다.
+Actions가 결제 또는 spending limit 문제로 시작되지 않으면 Release가 생성되지 않습니다. 이 경우 저장소 소유자는 GitHub의 `Settings > Billing & plans`에서 결제 수단, Actions 예산, spending limit을 확인해야 합니다.

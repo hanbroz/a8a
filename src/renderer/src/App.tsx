@@ -86,11 +86,51 @@ function effectiveDataConfig(rawConfig: string, commonDataModules: ApiModule[] =
 
 // Read a DATA node's output value. Accepts both new shape (`{ output: string }`)
 // and legacy shape (`{ items, excelData }`). On any failure returns an empty array.
-function readDataNodeOutput(rawConfig: string, commonDataModules: ApiModule[] = []): unknown {
+function buildDataTemplateContext(input: unknown): Record<string, unknown> {
+  if (input === null || input === undefined) return {}
+  if (Array.isArray(input)) return input as unknown as Record<string, unknown>
+  if (typeof input === 'object') return input as Record<string, unknown>
+  return { value: input }
+}
+
+function stringifyDataTemplateValue(value: unknown): string | null {
+  if (value === null || value === undefined) return null
+  if (typeof value === 'string') return value
+  if (typeof value === 'number' || typeof value === 'boolean' || typeof value === 'bigint') return String(value)
+  try { return JSON.stringify(value) } catch { return String(value) }
+}
+
+function resolveDataOutputTemplates(value: unknown, inputContext: Record<string, unknown>): unknown {
+  if (typeof value === 'string') {
+    const exactInputExpression = value.match(/^\s*\[\[([\s\S]*?)\]\]\s*$/)
+    if (exactInputExpression) {
+      const resolved = resolveTemplateExpression(inputContext, exactInputExpression[1].trim())
+      return resolved === undefined ? value : resolved
+    }
+    return value.includes('[[')
+      ? value.replace(/\[\[([\s\S]*?)\]\]/g, (match, expression: string) => {
+          const resolved = stringifyDataTemplateValue(resolveTemplateExpression(inputContext, expression.trim()))
+          return resolved === null ? match : resolved
+        })
+      : value
+  }
+  if (Array.isArray(value)) return value.map(item => resolveDataOutputTemplates(item, inputContext))
+  if (value && typeof value === 'object') {
+    return Object.fromEntries(
+      Object.entries(value as Record<string, unknown>).map(([key, item]) => [key, resolveDataOutputTemplates(item, inputContext)]),
+    )
+  }
+  return value
+}
+
+function readDataNodeOutput(rawConfig: string, commonDataModules: ApiModule[] = [], input?: unknown): unknown {
   try {
     const cfg = JSON.parse(effectiveDataConfig(rawConfig, commonDataModules) || '{}') as DataConfig & LegacyDataConfig
     if (typeof cfg.output === 'string') {
-      try { return JSON.parse(cfg.output) } catch { return [] }
+      try {
+        const output = JSON.parse(cfg.output)
+        return resolveDataOutputTemplates(output, buildDataTemplateContext(input))
+      } catch { return [] }
     }
     if (cfg.excelData?.rows?.length) return cfg.excelData.rows
     if (Array.isArray(cfg.items)) return cfg.items.map(i => i.value).filter(Boolean)
@@ -128,6 +168,17 @@ type LogEntry = {
   apiDetail?: ApiLogDetail
   apiAttempts?: ApiLogAttempt[]
   scriptLogs?: ScriptLogBundle
+}
+
+type EnvRunWarningResult = {
+  confirmed: boolean
+  disableWarning: boolean
+}
+
+type EnvRunWarningRequest = {
+  workspaceId: string
+  env: Environment
+  resolve: (result: EnvRunWarningResult) => void
 }
 
 class ApiHttpError extends Error {
@@ -1399,6 +1450,8 @@ export default function App(): JSX.Element {
   const [confirmDeleteEnv, setConfirmDeleteEnv] = useState<{ wsId: string; env: Environment } | null>(null)
   const [confirmDeleteCanvasNodes, setConfirmDeleteCanvasNodes] = useState<ApiNode[]>([])
   const [confirmStopCanvasExecution, setConfirmStopCanvasExecution] = useState(false)
+  const [envRunWarningRequest, setEnvRunWarningRequest] = useState<EnvRunWarningRequest | null>(null)
+  const [envRunWarningDisable, setEnvRunWarningDisable] = useState(false)
   const [iconTooltip, setIconTooltip] = useState<{ text: string; x: number; y: number } | null>(null)
 
   // ── Canvas execution ──
@@ -1575,6 +1628,33 @@ export default function App(): JSX.Element {
         return keys.sort((a, b) => a.localeCompare(b))
       })()
     : []
+  const disableEnvironmentRunWarning = useCallback(async (workspaceId: string, env: Environment): Promise<void> => {
+    const updated: Environment = { ...env, runWarningEnabled: false }
+    await window.api.environment.upsert(workspaceId, updated)
+    setWorkspaces(prev => prev.map(w => w.id === workspaceId
+      ? { ...w, environments: w.environments.map(item => item.id === env.id ? updated : item) }
+      : w))
+  }, [])
+  const confirmEnvironmentRun = useCallback(async (): Promise<boolean> => {
+    const ws = activeProjectWs
+    const env = activeProjectEnv
+    if (!ws || !env || env.isBase || !env.runWarningEnabled) return true
+
+    const result = await new Promise<EnvRunWarningResult>(resolve => {
+      setEnvRunWarningDisable(false)
+      setEnvRunWarningRequest({ workspaceId: ws.id, env, resolve })
+    })
+    if (!result.confirmed) return false
+    if (result.disableWarning) await disableEnvironmentRunWarning(ws.id, env)
+    return true
+  }, [activeProjectEnv, activeProjectWs, disableEnvironmentRunWarning])
+  const resolveEnvironmentRunWarning = useCallback((confirmed: boolean): void => {
+    const request = envRunWarningRequest
+    if (!request) return
+    request.resolve({ confirmed, disableWarning: confirmed && envRunWarningDisable })
+    setEnvRunWarningRequest(null)
+    setEnvRunWarningDisable(false)
+  }, [envRunWarningDisable, envRunWarningRequest])
   const activeCanvasHistory = activeProject ? canvasHistories[activeProject.id] ?? emptyCanvasHistory() : emptyCanvasHistory()
   const canCanvasUndo = !canvasExecution && activeCanvasHistory.undo.length > 0
   const canCanvasRedo = !canvasExecution && activeCanvasHistory.redo.length > 0
@@ -2200,7 +2280,7 @@ export default function App(): JSX.Element {
       }
       if (node.type === 'data') {
         moduleVarsMap[nodeId] = { ...upstreamModuleVars }
-        const output = readDataNodeOutput(node.config, commonDataModules)
+        const output = readDataNodeOutput(node.config, commonDataModules, upstream)
         return complete(output)
       }
       if (node.type === 'select') {
@@ -2368,12 +2448,19 @@ export default function App(): JSX.Element {
     }
   }, [activeNodes, activeEdges, activeProjectWs, activeProjectEnvVars, commonDataModules, fetchAppApiRequest, language, rememberSelectSelection, setScriptLogsForNode, t])
 
-  const handleNodeRun = useCallback(async (nodeId: string) => {
+  const runNodeInputPreview = useCallback(async (nodeId: string): Promise<string | null> => {
+    if (!(await confirmEnvironmentRun())) return null
     const inputJson = await previewUpToNode(nodeId)
     setNodeRunInputs(prev => ({ ...prev, [nodeId]: inputJson }))
+    return inputJson
+  }, [confirmEnvironmentRun, previewUpToNode])
+
+  const handleNodeRun = useCallback(async (nodeId: string) => {
+    const inputJson = await runNodeInputPreview(nodeId)
+    if (inputJson === null) return
     const node = activeNodes.find(n => n.id === nodeId)
     if (node) setEditingNode(node)
-  }, [activeNodes, previewUpToNode])
+  }, [activeNodes, runNodeInputPreview])
 
   function buildExecutionPlan(nodes: ApiNode[], edges: ApiEdge[]): string[] {
     const start = nodes.find(n => n.type === 'start')
@@ -2866,7 +2953,7 @@ export default function App(): JSX.Element {
       if (node.type === 'data') {
         setNodeRunInputs(prev => ({ ...prev, [nodeId]: JSON.stringify(rawInput, null, 2) }))
         try {
-          const output = readDataNodeOutput(node.config, commonDataModules)
+          const output = readDataNodeOutput(node.config, commonDataModules, rawInput)
           nodeOutputs[nodeId] = output
           updateLog(entryId, { status: 'success', output, duration: Date.now() - startedAt })
           setNodeStatuses(prev => ({ ...prev, [nodeId]: 'success' }))
@@ -3270,75 +3357,78 @@ export default function App(): JSX.Element {
     finishExecution()
   }, [activeNodes, activeEdges, activeProjectWs, activeProjectEnvVars, activeProjectEnvDisplayVars, activeProject?.name, fetchAppApiRequest, rememberSelectSelection, setScriptLogsForNode, t])
 
-  const handleCanvasRun = useCallback(() => {
-    if (!activeProject || canvasRunLockRef.current || isCanvasRunning) return
-    const plan = buildExecutionPlan(activeNodes, activeEdges)
-    if (plan.length === 0) return
-    const startNode = activeNodes.find(n => n.id === plan[0] && n.type === 'start')
-    const repeatRowsResult = buildRepeatRows(startNode, t('runtime.error.startRepeatDataMissing'))
-    if (!repeatRowsResult.ok) {
-      alert(repeatRowsResult.error)
-      return
-    }
-    canvasRunLockRef.current = true
-    canvasStopRequestedRef.current = false
-    setConfirmStopCanvasExecution(false)
-    const startedAt = Date.now()
-    const loop = repeatRowsResult.rows
-      ? {
-          startNodeId: startNode?.id ?? '',
-          rows: repeatRowsResult.rows,
-          index: 0,
-          total: repeatRowsResult.rows.length,
-          stopOnFailure: repeatRowsResult.stopOnFailure,
-          logStartIndex: 0,
-          iterationStartedAt: startedAt,
-        } satisfies ExecutionLoopContext
-      : undefined
-    setExecLogs([])
-    setNodeStatuses({})
-    setActiveBranchRoutes({})
-    setEndNodeDisplayValues({})
-    setActiveLogNodeId(null)
-    setNodeScriptLogs({})
-    setStartRepeatRowStates(loop && startNode
-      ? {
-          [startNode.id]: Object.fromEntries(loop.rows.map((row, index) => {
-            const no = Math.max(1, Math.floor(Number(row.no) || index + 1))
-            return [no, { status: 'pending' as StartRepeatRowStatus, updatedAt: startedAt }]
-          })),
-        }
-      : {})
-    setLastStartNodeLoopProgress(loop && startNode
-      ? {
-          [startNode.id]: {
-            current: 1,
-            total: loop.total,
-          },
-        }
-      : {})
-    const execution: CanvasExecution = {
-      runId: randomId(),
-      nodeOutputs: {},
-      moduleVars: {},
-      branchRoutes: {},
-      envVars: { ...activeProjectEnvVars },
-      usedVariables: {},
-      execLogs: [],
-      startedAt,
-      plan,
-      step: 0,
-      loop,
-      pendingSelectInput: null,
-      pendingBranchChoice: null,
-    }
-    setCanvasExecution(execution)
-    void advanceExecution(execution).catch(err => {
-      canvasRunLockRef.current = false
-      setCanvasExecution(null)
-      console.error(err)
-    })
-  }, [activeNodes, activeEdges, activeProject, activeProjectEnvVars, advanceExecution, isCanvasRunning, t])
+  const handleCanvasRun = useCallback((options?: { skipEnvWarning?: boolean }) => {
+    void (async () => {
+      if (!activeProject || canvasRunLockRef.current || isCanvasRunning) return
+      const plan = buildExecutionPlan(activeNodes, activeEdges)
+      if (plan.length === 0) return
+      const startNode = activeNodes.find(n => n.id === plan[0] && n.type === 'start')
+      const repeatRowsResult = buildRepeatRows(startNode, t('runtime.error.startRepeatDataMissing'))
+      if (!repeatRowsResult.ok) {
+        alert(repeatRowsResult.error)
+        return
+      }
+      if (!options?.skipEnvWarning && !(await confirmEnvironmentRun())) return
+      canvasRunLockRef.current = true
+      canvasStopRequestedRef.current = false
+      setConfirmStopCanvasExecution(false)
+      const startedAt = Date.now()
+      const loop = repeatRowsResult.rows
+        ? {
+            startNodeId: startNode?.id ?? '',
+            rows: repeatRowsResult.rows,
+            index: 0,
+            total: repeatRowsResult.rows.length,
+            stopOnFailure: repeatRowsResult.stopOnFailure,
+            logStartIndex: 0,
+            iterationStartedAt: startedAt,
+          } satisfies ExecutionLoopContext
+        : undefined
+      setExecLogs([])
+      setNodeStatuses({})
+      setActiveBranchRoutes({})
+      setEndNodeDisplayValues({})
+      setActiveLogNodeId(null)
+      setNodeScriptLogs({})
+      setStartRepeatRowStates(loop && startNode
+        ? {
+            [startNode.id]: Object.fromEntries(loop.rows.map((row, index) => {
+              const no = Math.max(1, Math.floor(Number(row.no) || index + 1))
+              return [no, { status: 'pending' as StartRepeatRowStatus, updatedAt: startedAt }]
+            })),
+          }
+        : {})
+      setLastStartNodeLoopProgress(loop && startNode
+        ? {
+            [startNode.id]: {
+              current: 1,
+              total: loop.total,
+            },
+          }
+        : {})
+      const execution: CanvasExecution = {
+        runId: randomId(),
+        nodeOutputs: {},
+        moduleVars: {},
+        branchRoutes: {},
+        envVars: { ...activeProjectEnvVars },
+        usedVariables: {},
+        execLogs: [],
+        startedAt,
+        plan,
+        step: 0,
+        loop,
+        pendingSelectInput: null,
+        pendingBranchChoice: null,
+      }
+      setCanvasExecution(execution)
+      void advanceExecution(execution).catch(err => {
+        canvasRunLockRef.current = false
+        setCanvasExecution(null)
+        console.error(err)
+      })
+    })()
+  }, [activeNodes, activeEdges, activeProject, activeProjectEnvVars, advanceExecution, confirmEnvironmentRun, isCanvasRunning, t])
 
   const handleCanvasReset = useCallback(() => {
     canvasRunLockRef.current = false
@@ -3426,6 +3516,7 @@ export default function App(): JSX.Element {
         || confirmDeleteEdge
         || savedReport
         || pendingPreviewSelect
+        || envRunWarningRequest
         || envDropdownOpen
 
       if (!activeProject || hasOpenModal) return
@@ -3449,8 +3540,15 @@ export default function App(): JSX.Element {
       if (canvasExecution || key !== 'enter') return
 
       e.preventDefault()
-      if (hasCanvasRunState) handleCanvasReset()
-      handleCanvasRun()
+      void (async () => {
+        if (hasCanvasRunState) {
+          if (!(await confirmEnvironmentRun())) return
+          handleCanvasReset()
+          handleCanvasRun({ skipEnvWarning: true })
+          return
+        }
+        handleCanvasRun()
+      })()
     }
 
     window.addEventListener('keydown', onKeyDown)
@@ -3466,8 +3564,10 @@ export default function App(): JSX.Element {
     confirmDeleteProject,
     confirmDeleteWsId,
     confirmStopCanvasExecution,
+    confirmEnvironmentRun,
     editingNode,
     envDropdownOpen,
+    envRunWarningRequest,
     handleCanvasRedo,
     handleCanvasRun,
     handleCanvasReset,
@@ -3765,6 +3865,7 @@ export default function App(): JSX.Element {
       isBase: env.isBase,
       color: env.color,
       initial: env.initial,
+      runWarningEnabled: env.runWarningEnabled,
       vars: env.vars
     })
     setWorkspaces(prev => prev.map(w => {
@@ -4383,6 +4484,38 @@ export default function App(): JSX.Element {
       )}
 
       {/* ── Workspace Modal ── */}
+      {envRunWarningRequest && (
+        <div className="modal-overlay" onClick={() => resolveEnvironmentRunWarning(false)}>
+          <div className="confirm-dialog env-run-warning-dialog" onClick={e => e.stopPropagation()}>
+            <div className="confirm-hd">
+              <span className="confirm-title">{t('confirm.envRunWarning.title')}</span>
+              <button className="btn ghost icon" onClick={() => resolveEnvironmentRunWarning(false)} title={t('common.close')}>
+                <IcoX size={15} />
+              </button>
+            </div>
+            <div className="confirm-body">
+              <p className="confirm-message">{t('confirm.envRunWarning.message', { name: envRunWarningRequest.env.name })}</p>
+              <div className="confirm-warning">
+                <span className="confirm-warning-icon">!</span>
+                <span>{t('confirm.envRunWarning.warning')}</span>
+              </div>
+              <label className="env-run-warning-remember">
+                <input
+                  type="checkbox"
+                  checked={envRunWarningDisable}
+                  onChange={e => setEnvRunWarningDisable(e.target.checked)}
+                />
+                <span>{t('confirm.envRunWarning.dontShowAgain')}</span>
+              </label>
+            </div>
+            <div className="confirm-ft">
+              <button className="btn" onClick={() => resolveEnvironmentRunWarning(false)}>{t('common.cancel')}</button>
+              <button className="btn primary" onClick={() => resolveEnvironmentRunWarning(true)}>{t('common.confirm')}</button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {modalWorkspace !== null && (
         <WorkspaceModal
           workspace={modalWorkspace.workspace}
@@ -4534,7 +4667,7 @@ export default function App(): JSX.Element {
           node={editingNode}
           sharedDataModule={findCommonDataModule(commonDataModules, sharedDataModuleIdFromConfig(editingNode.config))}
           initialInput={nodeRunInputs[editingNode.id]}
-          onRun={() => previewUpToNode(editingNode.id)}
+          onRun={async () => (await runNodeInputPreview(editingNode.id)) ?? nodeRunInputs[editingNode.id] ?? ''}
           onSave={handleDataNodeSave}
           onDelete={async () => {
             await deleteCanvasNodeInstances([editingNode])
@@ -4551,7 +4684,7 @@ export default function App(): JSX.Element {
           initialInput={nodeRunInputs[editingNode.id]}
           initialPreConsoleLogs={nodeScriptLogs[editingNode.id]?.pre}
           initialPostConsoleLogs={nodeScriptLogs[editingNode.id]?.post}
-          onRun={() => previewUpToNode(editingNode.id)}
+          onRun={async () => (await runNodeInputPreview(editingNode.id)) ?? nodeRunInputs[editingNode.id] ?? ''}
           onSave={handleDataNodeSave}
           onDelete={async () => {
             await deleteCanvasNodeInstances([editingNode])
@@ -4568,8 +4701,7 @@ export default function App(): JSX.Element {
           initialInput={nodeRunInputs[editingNode.id]}
           envVars={activeProjectEnvVars}
           onRun={async () => {
-            const inputJson = await previewUpToNode(editingNode.id)
-            setNodeRunInputs(prev => ({ ...prev, [editingNode.id]: inputJson }))
+            const inputJson = (await runNodeInputPreview(editingNode.id)) ?? nodeRunInputs[editingNode.id] ?? ''
             return inputJson
           }}
           dataVars={startRepeatPreviewData}
@@ -4592,7 +4724,8 @@ export default function App(): JSX.Element {
           initialPostConsoleLogs={nodeScriptLogs[editingNode.id]?.post}
           envVars={activeProjectEnvVars}
           dataVars={startRepeatPreviewData}
-          onRun={() => previewUpToNode(editingNode.id)}
+          onRun={async () => (await runNodeInputPreview(editingNode.id)) ?? nodeRunInputs[editingNode.id] ?? ''}
+          onBeforeRun={confirmEnvironmentRun}
           onSave={handleDataNodeSave}
           onDelete={async () => {
             await deleteCanvasNodeInstances([editingNode])

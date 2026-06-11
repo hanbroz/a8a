@@ -37,6 +37,7 @@ export default function EnvModal({ env, onSave, onClose }: Props): JSX.Element {
   const [name, setName] = useState(env?.name ?? '')
   const [color, setColor] = useState(env?.color ?? ENV_COLORS[0])
   const [initial, setInitial] = useState(env?.initial ?? '')
+  const [runWarningEnabled, setRunWarningEnabled] = useState(env?.runWarningEnabled ?? false)
   const [vars, setVars] = useState<EnvVar[]>(
     env && env.vars.length > 0 ? env.vars : [makeVar()]
   )
@@ -65,6 +66,7 @@ export default function EnvModal({ env, onSave, onClose }: Props): JSX.Element {
       isBase: isBase,
       color: isBase ? '#4493f8' : color,
       initial: isBase ? 'B' : (initial.trim() || finalName.charAt(0)).toUpperCase().slice(0, 2),
+      runWarningEnabled: !isBase && runWarningEnabled,
       vars: vars.filter(v => v.key.trim() !== '')
     })
   }
@@ -190,6 +192,20 @@ export default function EnvModal({ env, onSave, onClose }: Props): JSX.Element {
               </div>
             </div>
           </div>
+        )}
+
+        {!isBase && (
+          <label className="env-run-warning-option">
+            <input
+              type="checkbox"
+              checked={runWarningEnabled}
+              onChange={e => setRunWarningEnabled(e.target.checked)}
+            />
+            <span className="env-run-warning-copy">
+              <span className="env-run-warning-title">{t('modal.env.runWarningLabel')}</span>
+              <span className="env-run-warning-hint">{t('modal.env.runWarningHint')}</span>
+            </span>
+          </label>
         )}
 
         {/* Variable rows */}
