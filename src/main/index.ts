@@ -6,6 +6,7 @@ import { initDb } from './db'
 import { registerIpcHandlers } from './ipc'
 import { initializeAutoUpdater, registerUpdaterIpcHandlers } from './updater'
 import { resolveInitialWindowState, saveWindowState } from './windowState'
+import { registerSessionStateIpc } from './sessionState'
 
 function resolveAppIconPath(): string | undefined {
   const iconPath = is.dev ? join(__dirname, '../../build/icon.png') : join(process.resourcesPath, 'icon.png')
@@ -69,6 +70,7 @@ app.whenReady().then(async () => {
   await initDb()
   registerIpcHandlers()
   registerUpdaterIpcHandlers()
+  registerSessionStateIpc()
 
   createWindow()
   initializeAutoUpdater()

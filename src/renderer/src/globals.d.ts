@@ -293,6 +293,10 @@ declare global {
       fetch: (url: string, options: { method: string; headers: Record<string, string>; body?: string; runId?: string }) => Promise<{ status: number; statusText: string; text: string; ok: boolean }>
       cancelRun: (runId: string) => Promise<void>
     }
+    session: {
+      get: () => Promise<unknown>
+      save: (data: unknown) => Promise<void>
+    }
     update: {
       getState: () => Promise<AppUpdateState>
       check: () => Promise<AppUpdateState>

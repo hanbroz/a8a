@@ -110,6 +110,15 @@ setActiveEdges(prev => prev.filter(e => e.sourceNodeId !== editingNode.id && e.t
 ### 4. Select 요소 패딩 규칙
 모든 `<select>` 요소는 `padding-right: 32px` 이상 확보한다 (드롭다운 화살표가 텍스트와 겹치지 않도록).
 
+### 5. 세션 상태 유지 (종료 후 복원)
+실행 로그·노드 결과·화면 위치는 전부 `App.tsx`의 React state(메모리)라 종료 시 사라진다.
+이를 `userData/session-state.json`(암호화)에 저장해 재실행 시 복원한다.
+
+- 저장은 `src/main/sessionState.ts`(IPC `session:get`/`session:save`) — `windowState.ts`와 동일 패턴. Electron `safeStorage`로 암호화(응답에 PII/토큰 포함 가능), temp+rename 원자적 쓰기.
+- 렌더러(`App.tsx`)는 대상 슬라이스를 400ms 디바운스로 저장하되, **복원 완료 전(`sessionReadyRef`)·실행 중(`canvasExecution`)에는 저장하지 않는다.**
+- 복원 시 `activeProjectId`를 세팅하면 **프로젝트 전환 효과가 실행 상태를 초기화**하므로, `sessionRestoringRef`로 그 초기화를 딱 1회 건너뛴다. 이 순서 의존성은 건드릴 때 주의.
+- `canvasExecution`(라이브 실행)은 저장/복원하지 않으며, `normalizeRestoredRun`이 로드 시 진행 중(running/pending) 잔여 상태를 정리한다.
+
 ## 노드 타입별 색상 체계
 
 | 타입 | 색상 | 용도 |
@@ -130,6 +139,7 @@ window.api.module.{ list, listAll, create, createCommon, update, setCommon, dele
 window.api.node.{ list, create, createFromModule, updatePosition, updateLabel, updateConfig, delete }
 window.api.edge.{ list, create, delete }
 window.api.http.fetch(url, { method, headers, body? })
+window.api.session.{ get, save }   // 세션 상태 저장/복원 (암호화)
 ```
 
 ## 알려진 주의사항

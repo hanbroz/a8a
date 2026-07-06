@@ -69,6 +69,10 @@ const api = {
       ipcRenderer.invoke('http:fetch', url, options),
     cancelRun: (runId: string): Promise<void> => ipcRenderer.invoke('http:cancel-run', runId)
   },
+  session: {
+    get: (): Promise<unknown> => ipcRenderer.invoke('session:get'),
+    save: (data: unknown): Promise<void> => ipcRenderer.invoke('session:save', data)
+  },
   update: {
     getState: (): Promise<AppUpdateState> => ipcRenderer.invoke('update:get-state'),
     check: (): Promise<AppUpdateState> => ipcRenderer.invoke('update:check'),

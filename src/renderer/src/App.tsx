@@ -1277,6 +1277,88 @@ type CanvasHistoryEntry = { before: CanvasSnapshot; after: CanvasSnapshot }
 type CanvasHistoryState = { undo: CanvasHistoryEntry[]; redo: CanvasHistoryEntry[] }
 type CanvasNodeMove = { id: string; x: number; y: number }
 
+// ── 세션 상태 지속(종료 후 재실행 시 마지막 로그/결과/화면 복원) ──
+const SESSION_SNAPSHOT_VERSION = 1
+
+interface SessionSnapshot {
+  version: number
+  nav: {
+    activeWsId: string
+    activeProjectId: string
+    activeView: AppView
+    logState: LogState
+  }
+  // run: 열려있던 프로젝트의 '이번 실행' 상태. 프로젝트 전환 시 초기화되는 값들이라
+  // 복원도 해당 프로젝트를 다시 열 때만 유효하다.
+  run: {
+    execLogs: LogEntry[]
+    nodeStatuses: Record<string, NodeStatus>
+    activeBranchRoutes: Record<string, 'true' | 'false'>
+    endNodeDisplayValues: Record<string, EndNodeDisplayValue[]>
+    startRepeatRowStates: Record<string, Record<number, StartRepeatRowRunState>>
+    lastStartNodeLoopProgress: Record<string, StartNodeLoopProgressValue>
+    activeLogNodeId: string | null
+  }
+  // nodes: nodeId 로 키된 값이라 프로젝트 전환에도 남는다. 마운트 시 바로 주입 가능.
+  nodes: {
+    runInputs: Record<string, string>
+    runOutputs: Record<string, string>
+    scriptLogs: Record<string, ScriptLogBundle>
+  }
+}
+
+// 손상/변조된 파일 방어: 잘못된 타입이 .filter/Object.entries 에서 터지지 않게 강제 변환.
+// __proto__/constructor 키는 건너뛰어 로컬 객체 프로토타입 오염을 막는다.
+function asArray<T>(value: unknown): T[] {
+  return Array.isArray(value) ? (value as T[]) : []
+}
+function asRecord<T>(value: unknown): Record<string, T> {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return {}
+  const out: Record<string, T> = {}
+  for (const [key, val] of Object.entries(value as Record<string, T>)) {
+    if (key === '__proto__' || key === 'constructor') continue
+    out[key] = val
+  }
+  return out
+}
+
+// 종료 시점의 '진행 중' 상태는 되살리면 안 된다 — 실제로 도는 실행이 없으므로 멈춘
+// 스피너/부분 진행바가 영구히 남는다. 로드 시 in-flight 흔적을 정리해 정합성을 맞춘다.
+function normalizeRestoredRun(run: SessionSnapshot['run']): SessionSnapshot['run'] {
+  const nodeStatuses: Record<string, NodeStatus> = {}
+  for (const [id, status] of Object.entries(asRecord<NodeStatus>(run?.nodeStatuses))) {
+    if (status !== 'running') nodeStatuses[id] = status
+  }
+
+  // 반복 실행 행: 종료 시점의 running/pending 은 멈춘 것이므로 stopped 로 낮춘다.
+  const startRepeatRowStates: Record<string, Record<number, StartRepeatRowRunState>> = {}
+  for (const [nodeId, rows] of Object.entries(asRecord<Record<number, StartRepeatRowRunState>>(run?.startRepeatRowStates))) {
+    const normRows: Record<number, StartRepeatRowRunState> = {}
+    for (const [idx, state] of Object.entries(asRecord<StartRepeatRowRunState>(rows))) {
+      normRows[Number(idx)] = state && (state.status === 'running' || state.status === 'pending')
+        ? { ...state, status: 'stopped' }
+        : state
+    }
+    startRepeatRowStates[nodeId] = normRows
+  }
+
+  // 진행 중이던 루프 진행도(current < total)는 되살리지 않는다 — 완료된 것만 유지.
+  const lastStartNodeLoopProgress: Record<string, StartNodeLoopProgressValue> = {}
+  for (const [nodeId, prog] of Object.entries(asRecord<StartNodeLoopProgressValue>(run?.lastStartNodeLoopProgress))) {
+    if (prog && prog.current >= prog.total) lastStartNodeLoopProgress[nodeId] = prog
+  }
+
+  return {
+    execLogs: asArray<LogEntry>(run?.execLogs).filter(entry => entry?.status !== 'running'),
+    nodeStatuses,
+    activeBranchRoutes: asRecord<'true' | 'false'>(run?.activeBranchRoutes),
+    endNodeDisplayValues: asRecord<EndNodeDisplayValue[]>(run?.endNodeDisplayValues),
+    startRepeatRowStates,
+    lastStartNodeLoopProgress,
+    activeLogNodeId: typeof run?.activeLogNodeId === 'string' ? run.activeLogNodeId : null,
+  }
+}
+
 const CANVAS_GRID_SIZE = 10
 const MODULE_NODE_DEFAULT_WIDTH = 200
 const MODULE_NODE_DEFAULT_HEIGHT = 72
@@ -1500,12 +1582,30 @@ export default function App(): JSX.Element {
     }))
   }, [])
 
+  // ── 세션 지속용 refs ──
+  const sessionRestoringRef = useRef(false)     // 복원 직후 프로젝트 전환 초기화를 1회 건너뛰기
+  const sessionReadyRef = useRef(false)          // 복원 완료 전에는 저장 금지(빈 상태 덮어쓰기 방지)
+  const sessionSaveTimerRef = useRef<number | null>(null)
+
+  const buildCurrentSnapshot = useCallback((): SessionSnapshot => ({
+    version: SESSION_SNAPSHOT_VERSION,
+    nav: { activeWsId, activeProjectId, activeView, logState },
+    run: {
+      execLogs, nodeStatuses, activeBranchRoutes, endNodeDisplayValues,
+      startRepeatRowStates, lastStartNodeLoopProgress, activeLogNodeId,
+    },
+    nodes: { runInputs: nodeRunInputs, runOutputs: nodeRunOutputs, scriptLogs: nodeScriptLogs },
+  }), [activeWsId, activeProjectId, activeView, logState, execLogs, nodeStatuses,
+    activeBranchRoutes, endNodeDisplayValues, startRepeatRowStates, lastStartNodeLoopProgress,
+    activeLogNodeId, nodeRunInputs, nodeRunOutputs, nodeScriptLogs])
+
   // ── Load from DB on mount ──
   useEffect(() => {
     async function init(): Promise<void> {
       try {
-        const [wsList] = await Promise.all([
+        const [wsList, rawSnapshot] = await Promise.all([
           window.api.workspace.list(),
+          window.api.session.get().catch(() => null),
           refreshCommonDataModules(),
         ])
         const all = await Promise.all(
@@ -1528,10 +1628,44 @@ export default function App(): JSX.Element {
           })
         )
         setWorkspaces(all)
-        if (all.length > 0) {
+
+        const snapshot = rawSnapshot && typeof rawSnapshot === 'object'
+          && (rawSnapshot as SessionSnapshot).version === SESSION_SNAPSHOT_VERSION
+          ? (rawSnapshot as SessionSnapshot)
+          : null
+        const restoredProjectId = snapshot?.nav?.activeProjectId
+        const restoredWs = restoredProjectId
+          ? all.find(w => w.projects.some(p => p.id === restoredProjectId))
+          : undefined
+
+        if (snapshot && restoredWs && restoredProjectId) {
+          // 마지막 세션 복원: 열려있던 프로젝트/뷰 + 그 프로젝트의 실행 결과를 되살린다.
+          // sessionRestoringRef 를 켜서 아래 프로젝트 전환 효과가 실행 상태를 지우지 않게 한다.
+          sessionRestoringRef.current = true
+          const run = normalizeRestoredRun(snapshot.run)
+          setNodeRunInputs(snapshot.nodes?.runInputs ?? {})
+          setNodeRunOutputs(snapshot.nodes?.runOutputs ?? {})
+          setNodeScriptLogs(snapshot.nodes?.scriptLogs ?? {})
+          setExecLogs(run.execLogs)
+          setNodeStatuses(run.nodeStatuses)
+          setActiveBranchRoutes(run.activeBranchRoutes)
+          setEndNodeDisplayValues(run.endNodeDisplayValues)
+          setStartRepeatRowStates(run.startRepeatRowStates)
+          setLastStartNodeLoopProgress(run.lastStartNodeLoopProgress)
+          setActiveLogNodeId(run.activeLogNodeId)
+          if (snapshot.nav.activeView === 'canvas' || snapshot.nav.activeView === 'settings') {
+            setActiveView(snapshot.nav.activeView)
+          }
+          if (snapshot.nav.logState === 'collapsed' || snapshot.nav.logState === 'fullscreen') {
+            setLogState(snapshot.nav.logState)
+          }
+          setActiveWsId(restoredWs.id)
+          setActiveProjectId(restoredProjectId)
+        } else if (all.length > 0) {
           setActiveWsId(all[0].id)
           setActiveProjectId(all[0].projects[0]?.id ?? '')
         }
+        sessionReadyRef.current = true
       } catch (err) {
         console.error('Failed to load workspaces:', err)
       } finally {
@@ -1540,6 +1674,32 @@ export default function App(): JSX.Element {
     }
     init()
   }, [refreshCommonDataModules])
+
+  // ── 세션 상태 저장(디바운스): 변경분을 400ms 뒤 파일에 기록 ──
+  // 복원 완료(sessionReadyRef) 전에는 저장하지 않아 초기 빈 상태가 파일을 덮어쓰지 않는다.
+  // 실행 중(canvasExecution)에는 저장을 건너뛴다 — execLogs가 매 노드마다 커지는데
+  // 이를 반복 직렬화+동기 write 하면 메인 프로세스가 버벅인다. 실행이 끝나면
+  // canvasExecution이 null이 되며 효과가 재실행돼 최종 상태 한 번만 저장된다.
+  useEffect(() => {
+    if (loading || !sessionReadyRef.current || canvasExecution) return
+    if (sessionSaveTimerRef.current) clearTimeout(sessionSaveTimerRef.current)
+    sessionSaveTimerRef.current = window.setTimeout(() => {
+      window.api.session.save(buildCurrentSnapshot()).catch(() => {})
+    }, 400)
+    return () => {
+      if (sessionSaveTimerRef.current) clearTimeout(sessionSaveTimerRef.current)
+    }
+  }, [loading, canvasExecution, buildCurrentSnapshot])
+
+  // 종료 직전 마지막 변경까지 best-effort 저장.
+  // ponytail: 종료 직전 ~400ms 내 변경은 유실 가능. 실사용(결과 확인 후 종료)에선 이미 flush됨.
+  useEffect(() => {
+    const flush = (): void => {
+      if (sessionReadyRef.current) window.api.session.save(buildCurrentSnapshot()).catch(() => {})
+    }
+    window.addEventListener('beforeunload', flush)
+    return () => window.removeEventListener('beforeunload', flush)
+  }, [buildCurrentSnapshot])
 
   useEffect(() => {
     try {
@@ -1712,13 +1872,18 @@ export default function App(): JSX.Element {
     // 초기화한다. 노드 id는 프로젝트마다 고유하므로 남겨두면 엉뚱하게 표시된다.
     canvasStopRequestedRef.current = false
     setConfirmStopCanvasExecution(false)
-    setCanvasExecution(null)
-    setExecLogs([])
-    setNodeStatuses({})
-    setActiveBranchRoutes({})
-    setEndNodeDisplayValues({})
-    setStartRepeatRowStates({})
-    setLastStartNodeLoopProgress({})
+    if (sessionRestoringRef.current) {
+      // 세션 복원 직후 첫 프로젝트 오픈: 복원한 실행 결과를 지우지 않고 그대로 둔다(1회).
+      sessionRestoringRef.current = false
+    } else {
+      setCanvasExecution(null)
+      setExecLogs([])
+      setNodeStatuses({})
+      setActiveBranchRoutes({})
+      setEndNodeDisplayValues({})
+      setStartRepeatRowStates({})
+      setLastStartNodeLoopProgress({})
+    }
     if (!activeProject) { setActiveNodes([]); setActiveEdges([]); return }
     // 프로젝트 전환 경쟁 상태 방지: 로드가 끝나기 전에 다른 프로젝트로 바꾸면
     // 뒤늦게 도착한 응답이 현재 캔버스를 덮어쓰고, 엉뚱한 프로젝트의 엣지를
