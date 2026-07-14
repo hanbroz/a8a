@@ -120,9 +120,19 @@ export function isScriptRuntimeError(error: unknown): error is ScriptRuntimeErro
   return error instanceof ScriptRuntimeError
 }
 
-function runtimeMessage(language: ScriptRuntimeLanguage, key: 'outputAddName' | 'unavailable' | 'setInputName' | 'setEnvName' | 'setOutputName' | 'setOutputCall', vars?: { phase?: string; name?: string }): string {
+// ponytail: a failing user script must never abort the workflow or leak into the
+// Request/Response output — record the error as a log entry and keep going.
+function pushScriptError(logs: ScriptConsoleEntry[], err: unknown, language: ScriptRuntimeLanguage): void {
+  const detail = String((err as Error)?.stack ?? (err as Error)?.message ?? err)
+  const message = runtimeMessage(language, 'scriptFailed', { message: detail })
+  logs.push({ level: 'error', args: [message], message, timestamp: new Date().toISOString() })
+}
+
+function runtimeMessage(language: ScriptRuntimeLanguage, key: 'outputAddName' | 'unavailable' | 'setInputName' | 'setEnvName' | 'setOutputName' | 'setOutputCall' | 'scriptFailed', vars?: { phase?: string; name?: string; message?: string }): string {
   const ko = language === 'ko'
   switch (key) {
+    case 'scriptFailed':
+      return ko ? `스크립트 실행 실패 (프로세스는 계속 진행됨): ${vars?.message}` : `Script failed (execution continues): ${vars?.message}`
     case 'outputAddName':
       return ko ? 'Output.add: 이름은 비어있지 않은 문자열이어야 합니다.' : 'Output.add: name must be a non-empty string.'
     case 'unavailable':
@@ -178,7 +188,7 @@ export async function runPreRequest(code: string, ctx: PreScriptContext): Promis
   try {
     await fn(getInput, getOutput, setEnv, setInput, setOutput, scriptConsole, ctx.envVars)
   } catch (err) {
-    throw new ScriptRuntimeError(String((err as Error)?.message ?? err), logs)
+    pushScriptError(logs, err, language)
   }
 
   return { inputVars, envUpdates, logs }
@@ -234,7 +244,7 @@ export async function runPostResponse(code: string, ctx: PostScriptContext): Pro
   try {
     await fn(getInput, getOutput, setEnv, setInput, setOutput, RuntimeOutputObject, scriptConsole, ctx.envVars)
   } catch (err) {
-    throw new ScriptRuntimeError(String((err as Error)?.message ?? err), logs)
+    pushScriptError(logs, err, language)
   }
 
   return { outputVars, outputOverride, hasOutputOverride, envUpdates, logs }

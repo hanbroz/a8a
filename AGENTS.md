@@ -140,6 +140,14 @@ select {
 
 API 노드의 Pre Request, Post Response 스크립트는 현재 격리된 샌드박스가 아니라 앱 런타임에서 신뢰 실행됩니다. 스크립트 격리, Worker 실행, 권한 제한은 후속 보안 과제로 다룹니다.
 
+### 6. 스크립트 실패는 프로세스를 중단하지 않습니다
+
+Pre Request / Post Response 스크립트가 예외를 던져도 워크플로우 실행은 계속됩니다. 오류는 Request/Response(OUTPUT) 창에 노출하지 않고, 해당 노드의 스크립트 로그 콘솔에 `error` 레벨 항목으로만 기록합니다.
+
+- 구현 위치는 `src/renderer/src/utils/scriptRuntime.ts`의 `runPreRequest` / `runPostResponse` 한 곳뿐입니다. 두 함수는 스크립트 예외를 다시 던지지 않고 `pushScriptError`로 로그에 남긴 뒤 부분 결과를 정상 반환합니다.
+- 따라서 실패 시 Post Response는 `outputOverride` 없이 실제 응답을, Pre Request는 빈 `inputVars`로 요청을 계속 진행합니다.
+- `App.tsx` 각 호출 지점의 `catch(isScriptRuntimeError...)` 블록은 이제 스크립트 오류에 대해선 도달하지 않는 안전망입니다. 스크립트 실패를 다시 치명적으로 만들려면 런타임에서 되돌려야 하며, 호출 지점만 고쳐선 안 됩니다.
+
 ## 노드 색상 체계
 
 | 타입 | 색상 | 의미 |
