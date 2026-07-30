@@ -374,6 +374,24 @@ export default function SelectionPopup({
 
   const hasSelection = mode === 'table' && tableRows ? selectedIndices.length > 0 : selectedJsonNodes.length > 0
 
+  // ponytail: ref keeps the listener registered once — `pos` changes every
+  // mousemove while dragging, so depending on handleConfirm would re-register
+  // per frame. handleConfirm already no-ops when nothing is selected.
+  const confirmRef = useRef(handleConfirm)
+  confirmRef.current = handleConfirm
+
+  useEffect(() => {
+    const onKeyDown = (e: KeyboardEvent): void => {
+      if (e.key !== 'Enter' || e.repeat || e.shiftKey || e.ctrlKey || e.metaKey || e.altKey) return
+      const el = e.target as HTMLElement | null
+      if (el && (el.isContentEditable || el.tagName === 'INPUT' || el.tagName === 'TEXTAREA' || el.tagName === 'SELECT')) return
+      e.preventDefault()
+      confirmRef.current()
+    }
+    window.addEventListener('keydown', onKeyDown)
+    return () => window.removeEventListener('keydown', onKeyDown)
+  }, [])
+
   const modalStyle: React.CSSProperties = isMaximized
     ? { position: 'fixed', left: 12, top: 12, width: 'calc(100vw - 24px)', height: 'calc(100vh - 24px)', margin: 0 }
     : pos
