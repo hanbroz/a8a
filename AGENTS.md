@@ -36,6 +36,32 @@ Unix 계열 셸에서는 다음 스크립트를 사용할 수 있습니다.
 
 현재 `package.json`에는 테스트와 린트 스크립트가 없습니다. 변경 후 기본 검증은 `npm run build`로 수행합니다.
 
+## 릴리즈 배포
+
+GitHub Actions가 사용 불가한 동안에는 로컬에서 수동으로 배포합니다.
+
+```bash
+npm run release:manual
+```
+
+이 명령은 `scripts/publish-release.ps1`을 실행하며 버전 스탬프 → `build:win` 패키징·서명 → `appVersion.ts` 커밋 → 푸시 → GitHub Release 생성까지 한 번에 진행합니다. 버전은 실행 시각 기준 `yyyy.MM.dd.HH.mm` 형식으로 자동 생성됩니다.
+
+### 반드시 포그라운드로 실행합니다
+
+`npm run release:manual`을 백그라운드 작업으로 실행하면 안 됩니다. electron-builder는 의존성 수집용 자식 프로세스를 `shell: true`로 생성하는데, 세션이 종료되어 부모 콘솔이 사라지면 해당 자식 프로세스가 DLL 초기화 단계에서 실패합니다.
+
+```text
+⨯ Node module collector process exited with code 3221225794
+```
+
+`3221225794`은 `0xC0000142`(STATUS_DLL_INIT_FAILED)이며 코드 결함이 아니라 프로세스 생성 실패입니다. 로그 마지막에 함께 출력되는 `npm.ps1`의 콘솔 제목 오류는 부수 증상이므로 원인으로 오인하지 않습니다. 빌드에 수 분이 걸리므로 충분한 타임아웃을 두고 포그라운드에서 완료까지 기다립니다.
+
+### 중단 시 복구
+
+배포가 중간에 실패하면 `src/main/appVersion.ts`만 스탬프된 상태로 남습니다. 이 파일은 매 실행마다 현재 시각으로 다시 스탬프되므로, 수동 정리 없이 `npm run release:manual`을 다시 실행하면 됩니다.
+
+릴리즈 스크립트는 `appVersion.ts` 한 개 파일만 커밋합니다. 따라서 기능 변경 커밋과 `build/release-notes.md` 갱신은 릴리즈 실행 **전에** 별도로 커밋하고 푸시해야 합니다.
+
 ## 주요 구조
 
 ```text
