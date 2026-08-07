@@ -1,4 +1,4 @@
-import { useState, useRef, useEffect, useCallback } from 'react'
+import { useState, useRef, useEffect, useCallback, useMemo } from 'react'
 import { IcoMaximize, IcoRestore, IcoX } from '../Icon'
 import { HighlightedText, JsonCopyButton, normalizeSearchQuery } from './JsonInspector'
 import { useI18n } from '../../i18n'
@@ -224,42 +224,61 @@ export default function SelectionPopup({
   const tableRows = getTableRows(data)
   const canUseTable = tableRows !== null
   const jsonData = tableRows && tableRows.length === 1 ? tableRows[0] : data
-  const jsonNodes = flattenJson(jsonData)
-  const columns = tableRows && tableRows.length > 0 ? Object.keys(tableRows[0]) : []
-  const savedState = readSavedState(storageKey)
-  const savedSelectedJsonPaths = preferInitialSelection ? [] : savedState?.selectedJsonPaths ?? []
-  const configuredJsonPaths = savedSelectedJsonPaths.length > 0 ? savedSelectedJsonPaths : initialSelectedJsonPaths
-  const initialJsonPaths = configuredJsonPaths.filter(path => jsonNodes.some(node => node.id === path && node.selectable))
-  const initialJsonNodeIds = new Set(selectionType === 'single' ? initialJsonPaths.slice(0, 1) : initialJsonPaths)
-  const savedSelectedRowIndices = preferInitialSelection ? [] : savedState?.selectedRowIndices ?? []
-  const configuredRowIndices = savedSelectedRowIndices.length > 0 ? savedSelectedRowIndices : initialSelectedRowIndices
-  const initialTableIndices = canUseTable
-    ? configuredRowIndices.filter(index => index >= 0 && index < tableRows.length)
-    : []
-  const savedExpandedIds = new Set((savedState?.expandedJsonPaths ?? []).filter(path =>
-    jsonNodes.some(node => node.id === path && node.hasChildren),
-  ))
-  const hasSavedExpandedIds = savedState?.expandedJsonPaths !== undefined
+  // 아래 계산은 입력값과 무관한데도 리렌더마다 다시 돌면 큰 JSON에서 검색어를 한 글자
+  // 칠 때마다 창이 멈춘다. 데이터가 바뀔 때만 계산하도록 묶는다.
+  const jsonNodes = useMemo(() => flattenJson(jsonData), [jsonData])
+  const columns = useMemo(
+    () => tableRows && tableRows.length > 0 ? Object.keys(tableRows[0]) : [],
+    [tableRows],
+  )
+  const initialSetup = useMemo(() => {
+    const savedState = readSavedState(storageKey)
+    const savedSelectedJsonPaths = preferInitialSelection ? [] : savedState?.selectedJsonPaths ?? []
+    const configuredJsonPaths = savedSelectedJsonPaths.length > 0 ? savedSelectedJsonPaths : initialSelectedJsonPaths
+    // 경로마다 jsonNodes를 전수 스캔하면 O(경로 x 노드)가 된다. Set으로 한 번만 색인한다.
+    const selectableIds = new Set(jsonNodes.filter(node => node.selectable).map(node => node.id))
+    const expandableIds = new Set(jsonNodes.filter(node => node.hasChildren).map(node => node.id))
+    const jsonPaths = configuredJsonPaths.filter(path => selectableIds.has(path))
+    const savedSelectedRowIndices = preferInitialSelection ? [] : savedState?.selectedRowIndices ?? []
+    const configuredRowIndices = savedSelectedRowIndices.length > 0 ? savedSelectedRowIndices : initialSelectedRowIndices
+    return {
+      savedState,
+      jsonNodeIds: new Set(selectionType === 'single' ? jsonPaths.slice(0, 1) : jsonPaths),
+      tableIndices: canUseTable
+        ? configuredRowIndices.filter(index => index >= 0 && index < tableRows.length)
+        : [],
+      savedExpandedIds: new Set((savedState?.expandedJsonPaths ?? []).filter(path => expandableIds.has(path))),
+      hasSavedExpandedIds: savedState?.expandedJsonPaths !== undefined,
+    }
+  }, [canUseTable, initialSelectedJsonPaths, initialSelectedRowIndices, jsonNodes, preferInitialSelection, selectionType, storageKey, tableRows])
 
   const [mode, setMode] = useState<'table' | 'json'>(() => {
+    const savedState = initialSetup.savedState
     if (!preferInitialSelection && savedState?.mode === 'json') return 'json'
     if (!preferInitialSelection && savedState?.mode === 'table' && canUseTable) return 'table'
-    if (initialMode === 'json' && initialJsonNodeIds.size > 0) return 'json'
+    if (initialMode === 'json' && initialSetup.jsonNodeIds.size > 0) return 'json'
     if (initialMode === 'table' && canUseTable) return 'table'
     if (savedState?.mode === 'json') return 'json'
     if (savedState?.mode === 'table' && canUseTable) return 'table'
-    if (initialJsonNodeIds.size > 0) return 'json'
+    if (initialSetup.jsonNodeIds.size > 0) return 'json'
     return canUseTable && tableRows.length > 1 ? 'table' : 'json'
   })
-  const [selectedIndices, setSelectedIndices] = useState<number[]>(selectionType === 'single' ? initialTableIndices.slice(0, 1) : initialTableIndices)
-  const [selectedNodeIds, setSelectedNodeIds] = useState<Set<string>>(() => initialJsonNodeIds)
+  const [selectedIndices, setSelectedIndices] = useState<number[]>(() =>
+    selectionType === 'single' ? initialSetup.tableIndices.slice(0, 1) : initialSetup.tableIndices,
+  )
+  const [selectedNodeIds, setSelectedNodeIds] = useState<Set<string>>(() => initialSetup.jsonNodeIds)
   const [expandedIds, setExpandedIds] = useState<Set<string>>(() =>
-    hasSavedExpandedIds ? savedExpandedIds : expandedIdsForSelectedNodes(jsonNodes, initialJsonNodeIds),
+    initialSetup.hasSavedExpandedIds
+      ? initialSetup.savedExpandedIds
+      : expandedIdsForSelectedNodes(jsonNodes, initialSetup.jsonNodeIds),
   )
   const [size, setSize] = useState(readSavedSize)
   const [pos, setPos] = useState<{ x: number; y: number } | null>(null)
   const [isMaximized, setIsMaximized] = useState(false)
-  const [searchQuery, setSearchQuery] = useState('')
+  // 입력 중인 검색어는 state가 아니라 input DOM에만 둔다(비제어). state로 두면 한 글자마다
+  // 리렌더가 일어나 화면에 떠 있는 트리 행 전체가 다시 그려지고, 큰 JSON에서 그대로 프리징이
+  // 된다. Enter를 누르는 순간에만 ref에서 값을 읽어 appliedQuery에 반영한다.
+  const [appliedQuery, setAppliedQuery] = useState('')
   const [activeSearchIndex, setActiveSearchIndex] = useState(0)
   const dragRef = useRef<{ ox: number; oy: number } | null>(null)
   const modalRef = useRef<HTMLDivElement>(null)
@@ -270,38 +289,59 @@ export default function SelectionPopup({
   const selectedJsonNodes = Array.from(selectedNodeIds)
     .map(nodeId => jsonNodes.find(node => node.id === nodeId && node.selectable))
     .filter((node): node is JsonNode => !!node)
-  const visibleJsonNodes = getVisibleNodes(jsonNodes, expandedIds)
+  const visibleJsonNodes = useMemo(() => getVisibleNodes(jsonNodes, expandedIds), [expandedIds, jsonNodes])
 
   const showTable = mode === 'table' && tableRows !== null
-  const normalizedQuery = normalizeSearchQuery(searchQuery)
-  const matchedNodeIds = normalizedQuery && !showTable
-    ? jsonNodes.filter(node => nodeMatchesQuery(node, normalizedQuery)).map(node => node.id)
-    : []
-  const matchedRowIndices = normalizedQuery && showTable && tableRows
-    ? tableRows.flatMap((row, index) => rowMatchesQuery(row, columns, normalizedQuery) ? [index] : [])
-    : []
+  const normalizedQuery = normalizeSearchQuery(appliedQuery)
+  const matchedNodeIds = useMemo(
+    () => normalizedQuery && !showTable
+      ? jsonNodes.filter(node => nodeMatchesQuery(node, normalizedQuery)).map(node => node.id)
+      : [],
+    [jsonNodes, normalizedQuery, showTable],
+  )
+  const matchedRowIndices = useMemo(
+    () => normalizedQuery && showTable && tableRows
+      ? tableRows.flatMap((row, index) => rowMatchesQuery(row, columns, normalizedQuery) ? [index] : [])
+      : [],
+    [columns, normalizedQuery, showTable, tableRows],
+  )
   // 렌더 루프 안에서 includes()로 훑으면 행/노드 수 × 매치 수가 되므로 Set으로 조회한다.
-  const matchedNodeIdSet = new Set(matchedNodeIds)
-  const matchedRowIndexSet = new Set(matchedRowIndices)
+  const matchedNodeIdSet = useMemo(() => new Set(matchedNodeIds), [matchedNodeIds])
+  const matchedRowIndexSet = useMemo(() => new Set(matchedRowIndices), [matchedRowIndices])
   const searchCount = showTable ? matchedRowIndices.length : matchedNodeIds.length
   const visibleSearchIndex = searchCount > 0 ? Math.min(activeSearchIndex, searchCount - 1) : 0
   const activeMatchNodeId = showTable ? undefined : matchedNodeIds[visibleSearchIndex]
   const activeMatchRowIndex = showTable ? matchedRowIndices[visibleSearchIndex] : undefined
-  const matchedNodeIdKey = matchedNodeIds.join('\n')
 
   const moveSearch = (delta: number): void => {
     if (searchCount === 0) return
     setActiveSearchIndex(index => (index + delta + searchCount) % searchCount)
   }
 
+  // 검색어가 그대로면 다시 찾지 않고 다음(또는 이전) 결과로 넘어간다.
+  const applySearch = (direction = 1): void => {
+    const typed = searchInputRef.current?.value ?? ''
+    if (normalizeSearchQuery(typed) === normalizedQuery) {
+      moveSearch(direction)
+      return
+    }
+    setAppliedQuery(typed)
+  }
+
+  const clearSearch = (): void => {
+    if (searchInputRef.current) searchInputRef.current.value = ''
+    setAppliedQuery('')
+  }
+
   useEffect(() => {
     setActiveSearchIndex(0)
   }, [mode, normalizedQuery])
 
-  // 검색어에 걸린 노드가 접혀 있으면 보이지 않으므로 조상 경로를 펼쳐 준다.
+  // 매치된 노드 전부를 펼치면 큰 JSON에서 트리가 통째로 열려 수만 줄이 렌더된다.
+  // 지금 보고 있는 매치의 조상 경로만 펼치고, 나머지는 이동할 때 그때그때 펼친다.
   useEffect(() => {
-    if (!matchedNodeIdKey) return
-    const needed = expandedIdsForSelectedNodes(jsonNodes, new Set(matchedNodeIdKey.split('\n')))
+    if (!activeMatchNodeId) return
+    const needed = expandedIdsForSelectedNodes(jsonNodes, new Set([activeMatchNodeId]))
     setExpandedIds(prev => {
       const missing = Array.from(needed).filter(id => !prev.has(id))
       if (missing.length === 0) return prev
@@ -309,7 +349,7 @@ export default function SelectionPopup({
       missing.forEach(id => next.add(id))
       return next
     })
-  }, [matchedNodeIdKey])
+  }, [activeMatchNodeId, jsonNodes])
 
   // 매치 하나당 한 번만 스크롤한다. expandedIds를 의존성에 넣는 이유는 접힌 노드가
   // 펼쳐진 뒤에야 대상이 DOM에 나타나기 때문이며, ref 가드가 없으면 사용자가 무관한
@@ -531,19 +571,18 @@ export default function SelectionPopup({
           <div className="json-inspector-search">
             <input
               ref={searchInputRef}
-              value={searchQuery}
-              onChange={e => setSearchQuery(e.target.value)}
+              defaultValue=""
               onKeyDown={e => {
                 if (e.key === 'Enter') {
                   e.preventDefault()
-                  moveSearch(e.shiftKey ? -1 : 1)
+                  applySearch(e.shiftKey ? -1 : 1)
                 }
-                if (e.key === 'Escape' && searchQuery) {
+                if (e.key === 'Escape') {
                   e.preventDefault()
-                  setSearchQuery('')
+                  clearSearch()
                 }
               }}
-              placeholder={t('module.common.searchPlaceholder')}
+              placeholder={t('module.common.searchEnterHint')}
               aria-label={t('module.common.searchPlaceholder')}
             />
             <span className="json-inspector-search-count">
@@ -551,7 +590,7 @@ export default function SelectionPopup({
             </span>
             <button type="button" onClick={() => moveSearch(-1)} disabled={searchCount === 0} title={t('module.common.searchPrev')} aria-label={t('module.common.searchPrev')}>&lt;</button>
             <button type="button" onClick={() => moveSearch(1)} disabled={searchCount === 0} title={t('module.common.searchNext')} aria-label={t('module.common.searchNext')}>&gt;</button>
-            <button type="button" onClick={() => setSearchQuery('')} disabled={!searchQuery} title={t('module.common.searchClear')} aria-label={t('module.common.searchClear')}>
+            <button type="button" onClick={clearSearch} title={t('module.common.searchClear')} aria-label={t('module.common.searchClear')}>
               <IcoX size={11} />
             </button>
           </div>
@@ -581,7 +620,7 @@ export default function SelectionPopup({
                           <div className={`sm-col-check${selectionType === 'single' ? ' sm-col-check-radio' : ''}${isChecked ? ' checked' : ''}`} />
                         </td>
                         {columns.map(col => (
-                          <td key={col}><HighlightedText text={String(row[col] ?? '')} query={searchQuery} /></td>
+                          <td key={col}><HighlightedText text={String(row[col] ?? '')} query={appliedQuery} /></td>
                         ))}
                       </tr>
                     )
@@ -615,10 +654,10 @@ export default function SelectionPopup({
                         {node.hasChildren ? (expanded ? '-' : '+') : ''}
                       </span>
                       <span className={`sm-col-check${selectionType === 'single' ? ' sm-col-check-radio' : ''}${selected ? ' checked' : ''}`} />
-                      <span className="sp-json-key"><HighlightedText text={node.key} query={searchQuery} /></span>
+                      <span className="sp-json-key"><HighlightedText text={node.key} query={appliedQuery} /></span>
                       <span className="sp-json-type">{node.type}</span>
-                      <span className="sp-json-path"><HighlightedText text={node.path} query={searchQuery} /></span>
-                      <span className="sp-json-preview"><HighlightedText text={valuePreview(node.value)} query={searchQuery} /></span>
+                      <span className="sp-json-path"><HighlightedText text={node.path} query={appliedQuery} /></span>
+                      <span className="sp-json-preview"><HighlightedText text={valuePreview(node.value)} query={appliedQuery} /></span>
                     </button>
                     <JsonCopyButton value={node.value} />
                   </div>

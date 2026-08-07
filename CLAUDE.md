@@ -127,8 +127,16 @@ import { HighlightedText, JsonCopyButton, normalizeSearchQuery } from './JsonIns
 // CSS: .json-inspector-search / -mark / -active 그대로 재사용
 ```
 
-- 검색은 **필터링이 아니라 하이라이트 + 이동**. 필터링하면 경로 정보가 사라진다. 접힌 매치는 `expandedIdsForSelectedNodes()`로 조상만 펼친다.
+- 검색은 **필터링이 아니라 하이라이트 + 이동**. 필터링하면 경로 정보가 사라진다.
+- 펼치는 건 **활성 매치 하나의 조상만**. 매치 전체를 펼치면 짧은 검색어로 트리가 통째로 열려 수만 줄이 렌더된다.
 - 스크롤 effect는 `expandedIds`에 의존하되 `scrolledMatchRef` 1회 가드를 반드시 둔다. 없으면 무관한 노드를 접을 때마다 화면이 매치로 튕긴다.
+
+### 7. `SelectionPopup`은 렌더마다 도는 계산이 곧 프리징
+수십만 노드 응답을 다루는 창이다. 뭘 추가하든 **입력값과 무관한 계산이 리렌더에 딸려 도는지** 먼저 본다. (24만 노드에서 키 입력 1회당 약 450ms였음)
+
+- `flattenJson` / `getVisibleNodes` / 초기 상태 블록 / `readSavedState`는 `useMemo`로 묶는다.
+- `paths.filter(p => nodes.some(n => n.id === p))` 금지 — O(경로×노드). `Set` 색인 후 조회.
+- **입력 중인 검색어는 state 금지.** state면 한 글자마다 트리 행 전체가 리렌더된다. 비제어 input(`defaultValue` + `ref`) + Enter 시점에만 `appliedQuery`로 반영. 하이라이트도 `appliedQuery` 기준.
 
 ## 노드 타입별 색상 체계
 

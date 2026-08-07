@@ -184,10 +184,20 @@ import { HighlightedText, JsonCopyButton, normalizeSearchQuery } from './JsonIns
 
 CSS도 `.json-inspector-search`, `.json-inspector-search-mark`, `.json-inspector-search-active`를 그대로 재사용합니다. `JsonCopyButton`은 `navigator.clipboard` 실패 시 `execCommand` 폴백을 포함하므로 직접 클립보드를 다루지 않습니다.
 
-`SelectionPopup`에서 검색을 다룰 때 지켜야 할 두 가지가 있습니다.
+`SelectionPopup`에서 검색을 다룰 때 지켜야 할 동작 규칙입니다.
 
-- 검색 결과는 트리를 **필터링하지 않고** 하이라이트와 이동으로 표현합니다. 필터링하면 부모-자식 경로 정보가 사라집니다. 접힌 매치는 `expandedIdsForSelectedNodes()`로 조상 경로만 펼칩니다.
+- 검색 결과는 트리를 **필터링하지 않고** 하이라이트와 이동으로 표현합니다. 필터링하면 부모-자식 경로 정보가 사라집니다.
+- 펼치는 대상은 **지금 보고 있는 매치 하나**의 조상 경로뿐입니다(`expandedIdsForSelectedNodes()`에 활성 매치 ID만 전달). 매치 전체를 펼치면 짧은 검색어 하나로 트리가 통째로 열려 수만 줄이 DOM에 생깁니다. 나머지는 `< >`로 이동할 때 그때그때 펼칩니다.
 - 매치 위치로 스크롤하는 effect는 `expandedIds`에 의존해야 하지만(펼쳐진 뒤에야 대상이 DOM에 나타남), 반드시 `scrolledMatchRef` 같은 1회 실행 가드를 함께 둡니다. 가드가 없으면 사용자가 무관한 노드를 접고 펼 때마다 화면이 매치 위치로 되돌아갑니다.
+
+### 8. 큰 JSON에서는 "렌더마다 도는 계산"이 곧 프리징입니다
+
+`SelectionPopup`은 수십만 노드짜리 응답을 다룹니다. 이 창에 무언가를 추가할 때는 **입력값과 무관한 계산이 리렌더에 딸려 도는지**를 먼저 확인해야 합니다. 검색 입력이 느렸던 원인은 검색 로직이 아니라 리렌더 비용이었습니다(24만 노드 기준 키 입력 1회당 약 450ms).
+
+- `flattenJson`, `getVisibleNodes`, 초기 상태 계산 블록은 반드시 `useMemo`로 묶습니다. 함수 본문에 그냥 두면 모든 리렌더에서 다시 돕니다. `readSavedState`의 localStorage 읽기도 마찬가지입니다.
+- 경로 목록과 노드를 대조할 때 `paths.filter(p => nodes.some(n => n.id === p))` 형태를 쓰지 않습니다. O(경로 × 노드)가 됩니다. `Set`으로 한 번 색인한 뒤 조회합니다.
+- **입력 중인 검색어는 state에 두지 않습니다.** state로 두면 한 글자마다 리렌더가 일어나 화면의 트리 행 전체(행마다 `HighlightedText` 3개 + `JsonCopyButton` 1개)가 다시 그려집니다. 비제어 input(`defaultValue` + `ref`)으로 두고 Enter를 누르는 순간에만 `ref.current.value`를 읽어 `appliedQuery` state에 반영합니다.
+- 하이라이트에 넘기는 값은 입력 중인 값이 아니라 확정된 `appliedQuery`입니다.
 
 ## 노드 색상 체계
 
