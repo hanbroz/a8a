@@ -4286,6 +4286,27 @@
   padding: 6px 0;
   min-width: 0;
 }
+.sp-search-bar {
+  display: flex;
+  justify-content: flex-end;
+  padding: 8px 16px;
+  border-bottom: 1px solid var(--border-1);
+  flex-shrink: 0;
+}
+.sp-json-row {
+  display: flex;
+  align-items: center;
+  border-bottom: 1px solid var(--border-1);
+}
+.sp-json-row > .sp-json-node {
+  flex: 1 1 auto;
+  min-width: 0;
+  border-bottom: none;
+}
+.sp-json-row > .json-inspector-copy {
+  flex-shrink: 0;
+  margin-right: 10px;
+}
 .sp-json-node {
   display: grid;
   grid-template-columns: 14px 16px minmax(96px, 0.9fr) 72px minmax(140px, 1.2fr) minmax(120px, 1fr);

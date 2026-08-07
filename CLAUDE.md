@@ -119,6 +119,17 @@ setActiveEdges(prev => prev.filter(e => e.sourceNodeId !== editingNode.id && e.t
 - 복원 시 `activeProjectId`를 세팅하면 **프로젝트 전환 효과가 실행 상태를 초기화**하므로, `sessionRestoringRef`로 그 초기화를 딱 1회 건너뛴다. 이 순서 의존성은 건드릴 때 주의.
 - `canvasExecution`(라이브 실행)은 저장/복원하지 않으며, `normalizeRestoredRun`이 로드 시 진행 중(running/pending) 잔여 상태를 정리한다.
 
+### 6. JSON 뷰어 부품은 `JsonInspector`에서 재사용
+JSON 트리는 `JsonInspector`(뷰어)와 `SelectionPopup`(선택 창) 두 곳에서 그린다. 검색/복사 UI를 새로 만들지 말고 export된 부품과 CSS 클래스를 가져다 쓴다.
+
+```ts
+import { HighlightedText, JsonCopyButton, normalizeSearchQuery } from './JsonInspector'
+// CSS: .json-inspector-search / -mark / -active 그대로 재사용
+```
+
+- 검색은 **필터링이 아니라 하이라이트 + 이동**. 필터링하면 경로 정보가 사라진다. 접힌 매치는 `expandedIdsForSelectedNodes()`로 조상만 펼친다.
+- 스크롤 effect는 `expandedIds`에 의존하되 `scrolledMatchRef` 1회 가드를 반드시 둔다. 없으면 무관한 노드를 접을 때마다 화면이 매치로 튕긴다.
+
 ## 노드 타입별 색상 체계
 
 | 타입 | 색상 | 용도 |

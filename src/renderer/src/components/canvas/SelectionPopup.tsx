@@ -1,5 +1,6 @@
 import { useState, useRef, useEffect, useCallback } from 'react'
 import { IcoMaximize, IcoRestore, IcoX } from '../Icon'
+import { HighlightedText, JsonCopyButton, normalizeSearchQuery } from './JsonInspector'
 import { useI18n } from '../../i18n'
 
 interface Props {
@@ -198,6 +199,16 @@ function expandedIdsForSelectedNodes(nodes: JsonNode[], selectedIds: Set<string>
   return expanded
 }
 
+function nodeMatchesQuery(node: JsonNode, normalizedQuery: string): boolean {
+  return [node.key, node.path, valuePreview(node.value)].some(text =>
+    text.toLowerCase().includes(normalizedQuery),
+  )
+}
+
+function rowMatchesQuery(row: Record<string, unknown>, columns: string[], normalizedQuery: string): boolean {
+  return columns.some(col => String(row[col] ?? '').toLowerCase().includes(normalizedQuery))
+}
+
 export default function SelectionPopup({
   data,
   storageKey,
@@ -248,13 +259,84 @@ export default function SelectionPopup({
   const [size, setSize] = useState(readSavedSize)
   const [pos, setPos] = useState<{ x: number; y: number } | null>(null)
   const [isMaximized, setIsMaximized] = useState(false)
+  const [searchQuery, setSearchQuery] = useState('')
+  const [activeSearchIndex, setActiveSearchIndex] = useState(0)
   const dragRef = useRef<{ ox: number; oy: number } | null>(null)
   const modalRef = useRef<HTMLDivElement>(null)
+  const searchInputRef = useRef<HTMLInputElement>(null)
+  const bodyRef = useRef<HTMLDivElement>(null)
+  const scrolledMatchRef = useRef<string | null>(null)
 
   const selectedJsonNodes = Array.from(selectedNodeIds)
     .map(nodeId => jsonNodes.find(node => node.id === nodeId && node.selectable))
     .filter((node): node is JsonNode => !!node)
   const visibleJsonNodes = getVisibleNodes(jsonNodes, expandedIds)
+
+  const showTable = mode === 'table' && tableRows !== null
+  const normalizedQuery = normalizeSearchQuery(searchQuery)
+  const matchedNodeIds = normalizedQuery && !showTable
+    ? jsonNodes.filter(node => nodeMatchesQuery(node, normalizedQuery)).map(node => node.id)
+    : []
+  const matchedRowIndices = normalizedQuery && showTable && tableRows
+    ? tableRows.flatMap((row, index) => rowMatchesQuery(row, columns, normalizedQuery) ? [index] : [])
+    : []
+  // 렌더 루프 안에서 includes()로 훑으면 행/노드 수 × 매치 수가 되므로 Set으로 조회한다.
+  const matchedNodeIdSet = new Set(matchedNodeIds)
+  const matchedRowIndexSet = new Set(matchedRowIndices)
+  const searchCount = showTable ? matchedRowIndices.length : matchedNodeIds.length
+  const visibleSearchIndex = searchCount > 0 ? Math.min(activeSearchIndex, searchCount - 1) : 0
+  const activeMatchNodeId = showTable ? undefined : matchedNodeIds[visibleSearchIndex]
+  const activeMatchRowIndex = showTable ? matchedRowIndices[visibleSearchIndex] : undefined
+  const matchedNodeIdKey = matchedNodeIds.join('\n')
+
+  const moveSearch = (delta: number): void => {
+    if (searchCount === 0) return
+    setActiveSearchIndex(index => (index + delta + searchCount) % searchCount)
+  }
+
+  useEffect(() => {
+    setActiveSearchIndex(0)
+  }, [mode, normalizedQuery])
+
+  // 검색어에 걸린 노드가 접혀 있으면 보이지 않으므로 조상 경로를 펼쳐 준다.
+  useEffect(() => {
+    if (!matchedNodeIdKey) return
+    const needed = expandedIdsForSelectedNodes(jsonNodes, new Set(matchedNodeIdKey.split('\n')))
+    setExpandedIds(prev => {
+      const missing = Array.from(needed).filter(id => !prev.has(id))
+      if (missing.length === 0) return prev
+      const next = new Set(prev)
+      missing.forEach(id => next.add(id))
+      return next
+    })
+  }, [matchedNodeIdKey])
+
+  // 매치 하나당 한 번만 스크롤한다. expandedIds를 의존성에 넣는 이유는 접힌 노드가
+  // 펼쳐진 뒤에야 대상이 DOM에 나타나기 때문이며, ref 가드가 없으면 사용자가 무관한
+  // 노드를 접고 펼 때마다 화면이 매치 위치로 되돌아간다.
+  useEffect(() => {
+    if (activeMatchNodeId === undefined && activeMatchRowIndex === undefined) {
+      scrolledMatchRef.current = null
+      return
+    }
+    const matchKey = showTable ? `row:${activeMatchRowIndex}` : `node:${activeMatchNodeId}`
+    if (scrolledMatchRef.current === matchKey) return
+    const target = bodyRef.current?.querySelector('.json-inspector-search-active')
+    if (!target) return
+    scrolledMatchRef.current = matchKey
+    target.scrollIntoView({ block: 'center', inline: 'nearest' })
+  }, [activeMatchNodeId, activeMatchRowIndex, expandedIds, showTable])
+
+  useEffect(() => {
+    const onKeyDown = (e: KeyboardEvent): void => {
+      if (!(e.ctrlKey || e.metaKey) || e.key.toLowerCase() !== 'f') return
+      e.preventDefault()
+      searchInputRef.current?.focus()
+      searchInputRef.current?.select()
+    }
+    document.addEventListener('keydown', onKeyDown)
+    return () => document.removeEventListener('keydown', onKeyDown)
+  }, [])
 
   useEffect(() => {
     if (pos === null) {
@@ -445,7 +527,37 @@ export default function SelectionPopup({
           </div>
         </div>
 
-        <div className="sp-body">
+        <div className="sp-search-bar">
+          <div className="json-inspector-search">
+            <input
+              ref={searchInputRef}
+              value={searchQuery}
+              onChange={e => setSearchQuery(e.target.value)}
+              onKeyDown={e => {
+                if (e.key === 'Enter') {
+                  e.preventDefault()
+                  moveSearch(e.shiftKey ? -1 : 1)
+                }
+                if (e.key === 'Escape' && searchQuery) {
+                  e.preventDefault()
+                  setSearchQuery('')
+                }
+              }}
+              placeholder={t('module.common.searchPlaceholder')}
+              aria-label={t('module.common.searchPlaceholder')}
+            />
+            <span className="json-inspector-search-count">
+              {normalizedQuery ? `${searchCount > 0 ? visibleSearchIndex + 1 : 0}/${searchCount}` : '0/0'}
+            </span>
+            <button type="button" onClick={() => moveSearch(-1)} disabled={searchCount === 0} title={t('module.common.searchPrev')} aria-label={t('module.common.searchPrev')}>&lt;</button>
+            <button type="button" onClick={() => moveSearch(1)} disabled={searchCount === 0} title={t('module.common.searchNext')} aria-label={t('module.common.searchNext')}>&gt;</button>
+            <button type="button" onClick={() => setSearchQuery('')} disabled={!searchQuery} title={t('module.common.searchClear')} aria-label={t('module.common.searchClear')}>
+              <IcoX size={11} />
+            </button>
+          </div>
+        </div>
+
+        <div className="sp-body" ref={bodyRef}>
           {mode === 'table' && tableRows ? (
             <div className="sm-input-table">
               <table>
@@ -458,17 +570,18 @@ export default function SelectionPopup({
                 <tbody>
                   {tableRows.map((row, idx) => {
                     const isChecked = selectedIndices.includes(idx)
+                    const isMatch = matchedRowIndexSet.has(idx)
                     return (
                       <tr
                         key={idx}
-                        className={isChecked ? 'sm-row-checked' : ''}
+                        className={`${isChecked ? 'sm-row-checked' : ''}${isMatch ? ' json-inspector-search-match' : ''}${idx === activeMatchRowIndex ? ' json-inspector-search-active' : ''}`}
                         onClick={() => toggleRow(idx)}
                       >
                         <td>
                           <div className={`sm-col-check${selectionType === 'single' ? ' sm-col-check-radio' : ''}${isChecked ? ' checked' : ''}`} />
                         </td>
                         {columns.map(col => (
-                          <td key={col}>{String(row[col] ?? '')}</td>
+                          <td key={col}><HighlightedText text={String(row[col] ?? '')} query={searchQuery} /></td>
                         ))}
                       </tr>
                     )
@@ -481,28 +594,34 @@ export default function SelectionPopup({
               {visibleJsonNodes.map(node => {
                 const selected = selectedNodeIds.has(node.id)
                 const expanded = expandedIds.has(node.id)
+                const isMatch = matchedNodeIdSet.has(node.id)
                 return (
-                  <button
+                  <div
                     key={node.id}
-                    className={`sp-json-node${selected ? ' sp-json-node-selected' : ''}`}
-                    style={{ paddingLeft: 12 + node.depth * 18 }}
-                    onClick={() => toggleJsonNode(node)}
+                    className={`sp-json-row${isMatch ? ' json-inspector-search-match' : ''}${node.id === activeMatchNodeId ? ' json-inspector-search-active' : ''}`}
                   >
-                    <span
-                      className={`sp-json-expander${node.hasChildren ? ' sp-json-expander-visible' : ''}`}
-                      onClick={(e) => {
-                        e.stopPropagation()
-                        if (node.hasChildren) toggleExpanded(node.id)
-                      }}
+                    <button
+                      className={`sp-json-node${selected ? ' sp-json-node-selected' : ''}`}
+                      style={{ paddingLeft: 12 + node.depth * 18 }}
+                      onClick={() => toggleJsonNode(node)}
                     >
-                      {node.hasChildren ? (expanded ? '-' : '+') : ''}
-                    </span>
-                    <span className={`sm-col-check${selectionType === 'single' ? ' sm-col-check-radio' : ''}${selected ? ' checked' : ''}`} />
-                    <span className="sp-json-key">{node.key}</span>
-                    <span className="sp-json-type">{node.type}</span>
-                    <span className="sp-json-path">{node.path}</span>
-                    <span className="sp-json-preview">{valuePreview(node.value)}</span>
-                  </button>
+                      <span
+                        className={`sp-json-expander${node.hasChildren ? ' sp-json-expander-visible' : ''}`}
+                        onClick={(e) => {
+                          e.stopPropagation()
+                          if (node.hasChildren) toggleExpanded(node.id)
+                        }}
+                      >
+                        {node.hasChildren ? (expanded ? '-' : '+') : ''}
+                      </span>
+                      <span className={`sm-col-check${selectionType === 'single' ? ' sm-col-check-radio' : ''}${selected ? ' checked' : ''}`} />
+                      <span className="sp-json-key"><HighlightedText text={node.key} query={searchQuery} /></span>
+                      <span className="sp-json-type">{node.type}</span>
+                      <span className="sp-json-path"><HighlightedText text={node.path} query={searchQuery} /></span>
+                      <span className="sp-json-preview"><HighlightedText text={valuePreview(node.value)} query={searchQuery} /></span>
+                    </button>
+                    <JsonCopyButton value={node.value} />
+                  </div>
                 )
               })}
             </div>

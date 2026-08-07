@@ -174,6 +174,21 @@ Pre Request / Post Response 스크립트가 예외를 던져도 워크플로우 
 - 따라서 실패 시 Post Response는 `outputOverride` 없이 실제 응답을, Pre Request는 빈 `inputVars`로 요청을 계속 진행합니다.
 - `App.tsx` 각 호출 지점의 `catch(isScriptRuntimeError...)` 블록은 이제 스크립트 오류에 대해선 도달하지 않는 안전망입니다. 스크립트 실패를 다시 치명적으로 만들려면 런타임에서 되돌려야 하며, 호출 지점만 고쳐선 안 됩니다.
 
+### 7. JSON 뷰어 부품은 `JsonInspector`에서 재사용합니다
+
+JSON 트리를 그리는 화면은 `JsonInspector`(읽기 전용 뷰어)와 `SelectionPopup`(선택 창) 두 곳입니다. 검색·복사 UI를 각각 다시 구현하지 말고 `JsonInspector.tsx`가 export하는 부품을 가져다 씁니다.
+
+```ts
+import { HighlightedText, JsonCopyButton, normalizeSearchQuery } from './JsonInspector'
+```
+
+CSS도 `.json-inspector-search`, `.json-inspector-search-mark`, `.json-inspector-search-active`를 그대로 재사용합니다. `JsonCopyButton`은 `navigator.clipboard` 실패 시 `execCommand` 폴백을 포함하므로 직접 클립보드를 다루지 않습니다.
+
+`SelectionPopup`에서 검색을 다룰 때 지켜야 할 두 가지가 있습니다.
+
+- 검색 결과는 트리를 **필터링하지 않고** 하이라이트와 이동으로 표현합니다. 필터링하면 부모-자식 경로 정보가 사라집니다. 접힌 매치는 `expandedIdsForSelectedNodes()`로 조상 경로만 펼칩니다.
+- 매치 위치로 스크롤하는 effect는 `expandedIds`에 의존해야 하지만(펼쳐진 뒤에야 대상이 DOM에 나타남), 반드시 `scrolledMatchRef` 같은 1회 실행 가드를 함께 둡니다. 가드가 없으면 사용자가 무관한 노드를 접고 펼 때마다 화면이 매치 위치로 되돌아갑니다.
+
 ## 노드 색상 체계
 
 | 타입 | 색상 | 의미 |

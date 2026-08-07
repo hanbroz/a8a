@@ -92,7 +92,7 @@ function previewValue(value: unknown): string {
   return String(value)
 }
 
-function normalizeSearchQuery(query: string): string {
+export function normalizeSearchQuery(query: string): string {
   return query.trim().toLowerCase()
 }
 
@@ -170,7 +170,7 @@ function hasSearchMatchInSubtree(path: string, matchedPaths: Set<string>): boole
   return false
 }
 
-function HighlightedText({ text, query }: { text: string; query: string }): JSX.Element {
+export function HighlightedText({ text, query }: { text: string; query: string }): JSX.Element {
   const normalizedQuery = normalizeSearchQuery(query)
   if (!normalizedQuery) return <>{text}</>
 
@@ -264,7 +264,7 @@ async function copyText(text: string): Promise<void> {
   }
 }
 
-function JsonCopyButton({ value }: { value: unknown }): JSX.Element {
+export function JsonCopyButton({ value }: { value: unknown }): JSX.Element {
   const { t } = useI18n()
   const [state, setState] = useState<'idle' | 'copied' | 'failed'>('idle')
 
