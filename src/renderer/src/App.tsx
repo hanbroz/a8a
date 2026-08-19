@@ -1883,6 +1883,9 @@ export default function App(): JSX.Element {
       setEndNodeDisplayValues({})
       setStartRepeatRowStates({})
       setLastStartNodeLoopProgress({})
+      // 로그 화면이 열린 채 프로젝트를 바꾸면 빈 로그가 캔버스를 덮어 노드가 사라진 것처럼 보인다.
+      setActiveLogNodeId(null)
+      setLogState('collapsed')
     }
     if (!activeProject) { setActiveNodes([]); setActiveEdges([]); return }
     // 프로젝트 전환 경쟁 상태 방지: 로드가 끝나기 전에 다른 프로젝트로 바꾸면
