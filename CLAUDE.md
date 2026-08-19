@@ -30,6 +30,7 @@ src/
     ├── components/
     │   ├── canvas/      # 워크플로우 캔버스 컴포넌트
     │   └── sidebar/     # 사이드바 컴포넌트
+    ├── hooks/           # 공통 훅 (useEscapeClose 등)
     └── styles/          # CSS 스타일
 ```
 
@@ -137,6 +138,45 @@ import { HighlightedText, JsonCopyButton, normalizeSearchQuery } from './JsonIns
 - `flattenJson` / `getVisibleNodes` / 초기 상태 블록 / `readSavedState`는 `useMemo`로 묶는다.
 - `paths.filter(p => nodes.some(n => n.id === p))` 금지 — O(경로×노드). `Set` 색인 후 조회.
 - **입력 중인 검색어는 state 금지.** state면 한 글자마다 트리 행 전체가 리렌더된다. 비제어 input(`defaultValue` + `ref`) + Enter 시점에만 `appliedQuery`로 반영. 하이라이트도 `appliedQuery` 기준.
+
+### 8. 레이어 팝업 ESC 닫기는 `useEscapeClose` 스택만 사용
+
+팝업마다 `window.addEventListener('keydown')`을 달면 겹쳐 열렸을 때 ESC 한 번에 여러 창이 닫힌다.
+ESC 처리 주체는 `hooks/escapeStack.ts` 하나이고, 각 팝업은 훅으로 등록만 한다.
+
+```ts
+useEscapeClose(onClose)                                    // 열려 있는 동안 항상
+useEscapeClose(onClose, !saving)                           // 조건부
+useEscapeClose(() => setFullscreen(false), fullscreen)     // 모달 안의 전체화면 레이어
+```
+
+- **스택 최상단(가장 마지막에 등록된) 핸들러만** 실행된다. 등록 순서 = 마운트/활성화 순서이므로, 모달 안에서 열리는 확인창·전체화면·피커가 자동으로 우선한다.
+- 훅은 `onClose`를 ref로 들고 있어 인라인 함수를 넘겨도 재등록되지 않는다. **재등록되면 아래 깔린 팝업이 최상단으로 올라가 엉뚱한 창이 닫힌다.**
+- 검색창처럼 ESC에 자체 의미가 있는 입력은 `e.stopPropagation()`으로 전파를 끊는다. React는 루트 컨테이너에 리스너를 붙이므로 여기서 끊으면 window까지 가지 않는다.
+- 한글 조합 중 ESC(`event.isComposing`)는 무시한다.
+- 새 팝업을 만들면 X 버튼 툴팁은 `t('common.closeEsc')`를 쓴다(ESC로 닫을 수 있다는 안내). `aria-label`은 `t('common.close')` 유지.
+- 검증: `npm run check:escape-stack`
+
+### 9. 노드 편집 모달을 저장 없이 닫을 때는 `useDirtyClose`
+
+X 버튼·취소·ESC·배경 클릭은 모두 `requestClose`를 지나야 한다. 저장 후 닫기는 `onClose`를 직접 호출해 확인창을 건너뛴다.
+
+```tsx
+const { dirtyProps, requestClose, dirtyDialog } = useDirtyClose(onClose)
+useEscapeClose(requestClose)
+...
+<div className="dm-overlay" {...dirtyProps}>   // 루트 하나로 안쪽 입력 변경을 캡처
+{dirtyDialog}                                   // ConfirmDialog 재사용
+```
+
+변경 감지는 `onInputCapture` / `onChangeCapture` 한 쌍이다. 타이핑·체크박스·셀렉트·파일선택은 잡히지만 **버튼으로만 값이 바뀌는 조작(행 추가 등)은 잡히지 않는다.** 정확도가 필요하면 모달별로 저장용 config를 만드는 함수를 분리해 초기값과 비교해야 한다.
+
+### 10. `pointer-events: none` 오버레이 안에 겹쳐 뜨는 팝업
+
+노드 모달 배경 `.dm-overlay`는 뒤쪽 캔버스를 계속 쓰게 하려고 `pointer-events: none`이고, `.dm-modal`이 `all`로 되살린다.
+`pointer-events`는 상속되므로 이 배경의 직접 자식으로 팝업을 렌더하면 **보이지만 클릭이 죽는다.** `.modal-overlay`는 `pointer-events: auto`를 명시해 이 상속을 끊어 둔 상태다.
+
+> 증상 구분: 안 보이면 z-index, 보이는데 안 눌리면 `pointer-events`.
 
 ## 노드 타입별 색상 체계
 

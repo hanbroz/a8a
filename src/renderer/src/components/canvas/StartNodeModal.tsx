@@ -4,6 +4,8 @@ import ShortcutSaveButtonLabel from './ShortcutSaveButtonLabel'
 import { useShortcutSave } from './useShortcutSave'
 import { parseTableFile } from '../../utils/tabularData'
 import { useI18n, type TranslationKey } from '../../i18n'
+import { useEscapeClose } from '../../hooks/useEscapeClose'
+import { useDirtyClose } from './useDirtyClose'
 
 const DEFAULT_SCHEDULE: StartSchedule = {
   type: 'daily',
@@ -112,6 +114,9 @@ export default function StartNodeModal({
   const [exportMessage, setExportMessage] = useState('')
   const [exportingFailedRows, setExportingFailedRows] = useState(false)
   const [fullscreen, setFullscreen] = useState(false)
+  const { dirtyProps, requestClose, dirtyDialog } = useDirtyClose(onClose)
+  useEscapeClose(requestClose)
+  useEscapeClose(() => setFullscreen(false), fullscreen)
   const fileInputRef = useRef<HTMLInputElement>(null)
 
   const repeat = cfg.repeat ?? DEFAULT_REPEAT
@@ -254,14 +259,14 @@ export default function StartNodeModal({
   )
 
   return (
-    <div className="modal-overlay" onClick={onClose}>
+    <div className="modal-overlay" onClick={requestClose} {...dirtyProps}>
       <div className="sn-modal" onClick={e => e.stopPropagation()}>
         <div className="sn-modal-hd">
           <div className="sn-modal-title-row">
             <span className="sn-modal-icon">▶</span>
             <span className="sn-modal-title">{t('module.start.title')}</span>
           </div>
-          <button className="btn ghost icon" onClick={onClose} title={t('common.close')} aria-label={t('common.close')}>
+          <button className="btn ghost icon" onClick={requestClose} title={t('common.closeEsc')} aria-label={t('common.close')}>
             <IcoX size={15} />
           </button>
         </div>
@@ -485,7 +490,7 @@ export default function StartNodeModal({
         </div>
 
         <div className="sn-modal-ft">
-          <button className="btn" onClick={onClose}>{t('common.cancel')}</button>
+          <button className="btn" onClick={requestClose}>{t('common.cancel')}</button>
           <button className="btn primary" onClick={() => handleSave(true)}><ShortcutSaveButtonLabel /></button>
         </div>
 
@@ -497,7 +502,7 @@ export default function StartNodeModal({
                   <strong>{repeatData.fileName}</strong>
                   <span>{t('module.start.itemCount', { count: repeatData.rows.length })}</span>
                 </div>
-                <button className="btn ghost icon" onClick={() => setFullscreen(false)} title={t('common.close')} aria-label={t('common.close')}>
+                <button className="btn ghost icon" onClick={() => setFullscreen(false)} title={t('common.closeEsc')} aria-label={t('common.close')}>
                   <IcoX size={15} />
                 </button>
               </div>
@@ -512,6 +517,7 @@ export default function StartNodeModal({
           </div>
         )}
         {shortcutSaveDialog}
+        {dirtyDialog}
       </div>
     </div>
   )

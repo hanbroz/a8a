@@ -36,6 +36,7 @@ import type { Environment } from './components/env/EnvSection'
 import type { ProjectItem } from './components/sidebar/ProjectModal'
 import type { WorkspaceModalItem } from './components/sidebar/WorkspaceModal'
 import { randomId } from './utils/id'
+import { useEscapeClose } from './hooks/useEscapeClose'
 import { buildExcelWorkbookBase64 } from './utils/tabularData'
 import {
   I18nProvider,
@@ -3940,18 +3941,10 @@ export default function App(): JSX.Element {
     }
   }, [activeLogNodeId, logState])
 
-  useEffect(() => {
-    if (logState !== 'fullscreen') return
-
-    const handleKeyDown = (e: KeyboardEvent): void => {
-      if (e.key !== 'Escape') return
-      e.preventDefault()
-      setLogState('collapsed')
-    }
-
-    window.addEventListener('keydown', handleKeyDown)
-    return () => window.removeEventListener('keydown', handleKeyDown)
-  }, [logState])
+  // ESC 닫기: 겹쳐 열렸을 때 가장 마지막에 열린 레이어만 닫힌다(useEscapeClose 스택).
+  useEscapeClose(() => setLogState('collapsed'), logState === 'fullscreen')
+  useEscapeClose(() => setSavedReport(null), savedReport !== null)
+  useEscapeClose(() => resolveEnvironmentRunWarning(false), envRunWarningRequest !== null)
 
   const toggleTheme = (): void => setTheme(t => (t === 'dark' ? 'light' : 'dark'))
   const toggleLog = (): void => setLogState(s => (s === 'collapsed' ? 'fullscreen' : 'collapsed'))
@@ -4629,7 +4622,7 @@ export default function App(): JSX.Element {
           <div className="report-saved-dialog" onClick={e => e.stopPropagation()}>
             <div className="confirm-hd">
               <span className="confirm-title">{t('report.saved.title')}</span>
-              <button className="btn ghost icon" onClick={() => setSavedReport(null)} title={t('common.close')}>
+              <button className="btn ghost icon" onClick={() => setSavedReport(null)} title={t('common.closeEsc')}>
                 <IcoX size={15} />
               </button>
             </div>
@@ -4657,7 +4650,7 @@ export default function App(): JSX.Element {
           <div className="confirm-dialog env-run-warning-dialog" onClick={e => e.stopPropagation()}>
             <div className="confirm-hd">
               <span className="confirm-title">{t('confirm.envRunWarning.title')}</span>
-              <button className="btn ghost icon" onClick={() => resolveEnvironmentRunWarning(false)} title={t('common.close')}>
+              <button className="btn ghost icon" onClick={() => resolveEnvironmentRunWarning(false)} title={t('common.closeEsc')}>
                 <IcoX size={15} />
               </button>
             </div>

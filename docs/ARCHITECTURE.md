@@ -102,6 +102,12 @@ window.api.file.{ write, downloadsDir }
 - `execLogs`: 실행 로그
 - 모달 상태: 환경, 프로젝트, 워크스페이스, 노드, 모듈, 삭제 확인
 
+## 레이어 팝업 공통 동작
+
+모든 레이어 팝업은 ESC로 닫힙니다. ESC 처리는 `src/renderer/src/hooks/escapeStack.ts`의 단일 스택이 담당하고, 각 팝업은 `useEscapeClose`로 등록만 합니다. 팝업이 겹쳐 열려도 스택 최상단 하나만 닫히므로, 모달 안에서 열린 확인창이나 전체화면 편집기가 먼저 닫힙니다.
+
+노드 편집 모달(Start, Data, Select, API, Branch, End)은 저장하지 않은 변경이 있을 때 X 버튼·취소·ESC·배경 클릭에서 확인창을 띄웁니다(`useDirtyClose`). 저장 후 닫기는 확인창을 지나지 않습니다.
+
 ## 실행 흐름
 
 1. Start 노드부터 연결된 노드 목록을 계산합니다.

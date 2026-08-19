@@ -7,6 +7,8 @@ import ShortcutSaveButtonLabel from './ShortcutSaveButtonLabel'
 import { useModalMaximize } from './useModalMaximize'
 import { useShortcutSave } from './useShortcutSave'
 import { useI18n } from '../../i18n'
+import { useEscapeClose } from '../../hooks/useEscapeClose'
+import { useDirtyClose } from './useDirtyClose'
 import { getInputPathSuggestions } from '../../utils/interpolate'
 
 interface Props {
@@ -110,6 +112,8 @@ interface ExcelInfo {
 
 export default function DataNodeModal({ node, isNew, sharedDataModule, initialInput, onRun, onSave, onDelete, onClose }: Props): JSX.Element {
   const { t } = useI18n()
+  const { dirtyProps, requestClose, dirtyDialog } = useDirtyClose(onClose)
+  useEscapeClose(requestClose)
   const initial = parseConfig(sharedDataModule?.config ?? node.config)
   const [moduleName, setModuleName] = useState(sharedDataModule?.label ?? node.label)
   const [outputJson, setOutputJson] = useState(initial.output)
@@ -317,7 +321,7 @@ export default function DataNodeModal({ node, isNew, sharedDataModule, initialIn
   }, [inputJson])
 
   return (
-    <div className="dm-overlay">
+    <div className="dm-overlay" {...dirtyProps}>
       <input
         ref={fileInputRef}
         type="file"
@@ -348,7 +352,7 @@ export default function DataNodeModal({ node, isNew, sharedDataModule, initialIn
               >
                 {isMaximized ? <IcoRestore size={13} /> : <IcoMaximize size={13} />}
               </button>
-              <button className="btn ghost icon dm-close-btn" onClick={onClose} title={t('common.close')} aria-label={t('common.close')}><IcoX size={13} /></button>
+              <button className="btn ghost icon dm-close-btn" onClick={requestClose} title={t('common.closeEsc')} aria-label={t('common.close')}><IcoX size={13} /></button>
             </div>
           </div>
 
@@ -551,6 +555,7 @@ export default function DataNodeModal({ node, isNew, sharedDataModule, initialIn
         </div>
       </div>
       {shortcutSaveDialog}
+      {dirtyDialog}
     </div>
   )
 }

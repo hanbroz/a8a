@@ -1,6 +1,7 @@
 import { useState, useRef, useEffect } from 'react'
 import { IcoX } from '../Icon'
 import { useI18n } from '../../i18n'
+import { useEscapeClose } from '../../hooks/useEscapeClose'
 import type { Environment } from '../env/EnvSection'
 import type { ProjectItem } from './ProjectModal'
 
@@ -34,8 +35,9 @@ export default function WorkspaceModal({ workspace, environments, projects, onSa
 
   const handleKeyDown = (e: React.KeyboardEvent): void => {
     if (e.key === 'Enter' && !e.shiftKey) handleSave()
-    if (e.key === 'Escape') onClose()
   }
+
+  useEscapeClose(onClose)
 
   const isEdit = workspace !== null
 
@@ -46,7 +48,7 @@ export default function WorkspaceModal({ workspace, environments, projects, onSa
           <span className="ws-modal-title">
             {isEdit ? t('modal.workspace.editTitle') : t('modal.workspace.newTitle')}
           </span>
-          <button className="btn ghost icon" onClick={onClose} title={t('common.close')}>
+          <button className="btn ghost icon" onClick={onClose} title={t('common.closeEsc')}>
             <IcoX size={15} />
           </button>
         </div>

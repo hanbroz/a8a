@@ -8,6 +8,8 @@ import { useShortcutSave } from './useShortcutSave'
 import { evaluateBranch, parseBranchConfig } from '../../utils/branch'
 import { getInputPathSuggestions, parseTemplate, resolveInputExpression, resolveTemplateExpression } from '../../utils/interpolate'
 import { useI18n } from '../../i18n'
+import { useEscapeClose } from '../../hooks/useEscapeClose'
+import { useDirtyClose } from './useDirtyClose'
 
 interface Props {
   node: ApiNode
@@ -96,6 +98,8 @@ function isEmptyBranchConfig(raw: string): boolean {
 
 export default function BranchNodeModal({ node, isNew, initialInput, envVars = {}, dataVars, onRun, onSave, onDelete, onClose }: Props): JSX.Element {
   const { t, language } = useI18n()
+  const { dirtyProps, requestClose, dirtyDialog } = useDirtyClose(onClose)
+  useEscapeClose(requestClose)
   const initial = parseBranchConfig(node.config)
   const emptyConfig = isEmptyBranchConfig(node.config)
   const [moduleName, setModuleName] = useState(node.label)
@@ -335,7 +339,7 @@ export default function BranchNodeModal({ node, isNew, initialInput, envVars = {
   }
 
   return (
-    <div className="dm-overlay">
+    <div className="dm-overlay" {...dirtyProps}>
       <div className={`dm-modal branch-modal-shell${isMaximized ? ' is-maximized' : ''}`} style={{ left: rect.x, top: rect.y, width: rect.w, height: rect.h }}>
         {RESIZE_DIRS.map(dir => (
           <div key={dir} className={`dm-resize-handle dm-resize-${dir}`} onMouseDown={e => onResizeDown(e, dir)} />
@@ -356,7 +360,7 @@ export default function BranchNodeModal({ node, isNew, initialInput, envVars = {
               >
                 {isMaximized ? <IcoRestore size={13} /> : <IcoMaximize size={13} />}
               </button>
-              <button className="btn ghost icon dm-close-btn" onClick={onClose} title={t('common.close')} aria-label={t('common.close')}>
+              <button className="btn ghost icon dm-close-btn" onClick={requestClose} title={t('common.closeEsc')} aria-label={t('common.close')}>
                 <IcoX size={15} />
               </button>
             </div>
@@ -583,7 +587,7 @@ export default function BranchNodeModal({ node, isNew, initialInput, envVars = {
               </>
             ) : (
               <>
-                <button className="btn ghost" onClick={onClose}>{t('common.cancel')}</button>
+                <button className="btn ghost" onClick={requestClose}>{t('common.cancel')}</button>
                 <button className="btn primary" onClick={() => void handleSave(true)} disabled={saving}><ShortcutSaveButtonLabel saving={saving} /></button>
               </>
             )}
@@ -591,6 +595,7 @@ export default function BranchNodeModal({ node, isNew, initialInput, envVars = {
         </div>
       </div>
       {shortcutSaveDialog}
+      {dirtyDialog}
     </div>
   )
 }

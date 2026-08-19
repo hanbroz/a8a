@@ -6,6 +6,8 @@ import { useShortcutSave } from './useShortcutSave'
 import { resolveEndReportSelectedModuleIds } from '../../utils/endReportSelection'
 import { endReportIncludeState, type EndReportIncludeConfigKey } from '../../utils/endReportInclude'
 import { useI18n, type TranslationKey } from '../../i18n'
+import { useEscapeClose } from '../../hooks/useEscapeClose'
+import { useDirtyClose } from './useDirtyClose'
 
 interface Props {
   node: ApiNode
@@ -63,6 +65,8 @@ function parseConfig(raw: string): ParsedEndConfig {
 
 export default function EndNodeModal({ node, moduleNodes, envVarKeys, onSave, onClose }: Props): JSX.Element {
   const { t } = useI18n()
+  const { dirtyProps, requestClose, dirtyDialog } = useDirtyClose(onClose)
+  useEscapeClose(requestClose)
   const initial = parseConfig(node.config)
   const [label, setLabel] = useState(node.label)
   const [reportFormat, setReportFormat] = useState<EndNodeConfig['reportFormat']>(initial.reportFormat)
@@ -206,7 +210,7 @@ export default function EndNodeModal({ node, moduleNodes, envVarKeys, onSave, on
   }), [])
 
   return (
-    <div className="dm-overlay">
+    <div className="dm-overlay" {...dirtyProps}>
       <div className={`dm-modal${isMaximized ? ' is-maximized' : ''}`} style={{ left: rect.x, top: rect.y, width: rect.w, height: rect.h }}>
         {RESIZE_DIRS.map(dir => (
           <div key={dir} className={`dm-resize-handle dm-resize-${dir}`} onMouseDown={e => onResizeDown(e, dir)} />
@@ -227,7 +231,7 @@ export default function EndNodeModal({ node, moduleNodes, envVarKeys, onSave, on
               >
                 {isMaximized ? <IcoRestore size={13} /> : <IcoMaximize size={13} />}
               </button>
-              <button className="btn ghost icon dm-close-btn" onClick={onClose} title={t('common.close')} aria-label={t('common.close')}><IcoX size={13} /></button>
+              <button className="btn ghost icon dm-close-btn" onClick={requestClose} title={t('common.closeEsc')} aria-label={t('common.close')}><IcoX size={13} /></button>
             </div>
           </div>
 
@@ -373,7 +377,7 @@ export default function EndNodeModal({ node, moduleNodes, envVarKeys, onSave, on
           </div>
 
           <div className="dm-ft">
-            <button className="btn ghost" onClick={onClose}>{t('common.cancel')}</button>
+            <button className="btn ghost" onClick={requestClose}>{t('common.cancel')}</button>
             <button className="btn primary" onClick={() => void handleSave(true)} disabled={saving}>
               <ShortcutSaveButtonLabel saving={saving} />
             </button>
@@ -382,6 +386,7 @@ export default function EndNodeModal({ node, moduleNodes, envVarKeys, onSave, on
         </div>
       </div>
       {shortcutSaveDialog}
+      {dirtyDialog}
     </div>
   )
 }

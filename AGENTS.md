@@ -34,7 +34,14 @@ Unix 계열 셸에서는 다음 스크립트를 사용할 수 있습니다.
 ./run.sh
 ```
 
-현재 `package.json`에는 테스트와 린트 스크립트가 없습니다. 변경 후 기본 검증은 `npm run build`로 수행합니다.
+현재 `package.json`에는 테스트 러너와 린트 스크립트가 없습니다. 변경 후 기본 검증은 `npm run build`로 수행합니다.
+
+테스트 러너 대신, 되돌아오면 곤란한 로직은 esbuild + `node:assert`로 만든 단독 검사 스크립트로 지킵니다. 해당 로직을 건드리면 함께 실행합니다.
+
+```bash
+npm run check:interpolate     # 환경변수/템플릿 치환 (하이픈 키가 NaN이 되던 회귀)
+npm run check:escape-stack    # 레이어 팝업 ESC 스택 (겹친 팝업 중 최상단만 닫기)
+```
 
 ## 릴리즈 배포
 

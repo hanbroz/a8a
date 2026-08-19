@@ -1,5 +1,6 @@
 import { IcoX } from './Icon'
 import { useI18n } from '../i18n'
+import { useEscapeClose } from '../hooks/useEscapeClose'
 
 interface Props {
   title: string
@@ -19,6 +20,7 @@ export default function ConfirmDialog({
   onCancel
 }: Props): JSX.Element {
   const { t } = useI18n()
+  useEscapeClose(onCancel)
   const resolvedConfirmLabel = confirmLabel ?? t('common.delete')
 
   return (
@@ -26,7 +28,7 @@ export default function ConfirmDialog({
       <div className="confirm-dialog" onClick={e => e.stopPropagation()}>
         <div className="confirm-hd">
           <span className="confirm-title">{title}</span>
-          <button className="btn ghost icon" onClick={onCancel} title={t('common.close')}>
+          <button className="btn ghost icon" onClick={onCancel} title={t('common.closeEsc')}>
             <IcoX size={15} />
           </button>
         </div>

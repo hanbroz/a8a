@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { IcoX } from '../Icon'
 import { useI18n } from '../../i18n'
+import { useEscapeClose } from '../../hooks/useEscapeClose'
 import type { ProjectItem } from './ProjectModal'
 
 interface Props {
@@ -36,15 +37,16 @@ export default function ProjectCloneModal({ project, onConfirm, onClose }: Props
 
   const handleKeyDown = (e: React.KeyboardEvent): void => {
     if (e.key === 'Enter') void submit()
-    if (e.key === 'Escape' && !saving) onClose()
   }
+
+  useEscapeClose(onClose, !saving)
 
   return (
     <div className="modal-overlay" onClick={() => { if (!saving) onClose() }}>
       <div className="project-modal" onClick={e => e.stopPropagation()}>
         <div className="env-modal-hd">
           <span className="env-modal-base-label">{t('modal.projectClone.title')}</span>
-          <button className="btn ghost icon" onClick={onClose} title={t('common.close')} disabled={saving}>
+          <button className="btn ghost icon" onClick={onClose} title={t('common.closeEsc')} disabled={saving}>
             <IcoX size={15} />
           </button>
         </div>

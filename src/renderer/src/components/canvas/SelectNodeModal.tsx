@@ -20,6 +20,8 @@ import { useMonacoTheme } from '../../utils/useMonacoTheme'
 import type { ScriptConsoleEntry } from '../../utils/scriptRuntime'
 import type { SelectionPopupSelection } from './SelectionPopup'
 import { useI18n } from '../../i18n'
+import { useEscapeClose } from '../../hooks/useEscapeClose'
+import { useDirtyClose } from './useDirtyClose'
 
 interface Props {
   node: ApiNode
@@ -304,6 +306,8 @@ export default function SelectNodeModal({
   onClose,
 }: Props): JSX.Element {
   const { t, language } = useI18n()
+  const { dirtyProps, requestClose, dirtyDialog } = useDirtyClose(onClose)
+  useEscapeClose(requestClose)
   useApiScriptAssistantLabels()
   const initial = parseConfig(node.config)
   const monacoTheme = useMonacoTheme()
@@ -367,14 +371,7 @@ export default function SelectNodeModal({
     if (selectionType === 'script') setSelectionType('multiple')
   }, [preScript, selectionType])
 
-  useEffect(() => {
-    if (!fullscreenScriptPhase) return
-    const handleKeyDown = (event: KeyboardEvent): void => {
-      if (event.key === 'Escape') setFullscreenScriptPhase(null)
-    }
-    window.addEventListener('keydown', handleKeyDown)
-    return () => window.removeEventListener('keydown', handleKeyDown)
-  }, [fullscreenScriptPhase])
+  useEscapeClose(() => setFullscreenScriptPhase(null), fullscreenScriptPhase !== null)
 
   const inputRows = parseTableData(inputJson)
   const columns = inputRows && inputRows.length > 0 ? Object.keys(inputRows[0]) : []
@@ -694,7 +691,7 @@ export default function SelectNodeModal({
   const totalRows = inputRows?.length ?? 0
 
   return (
-    <div className="dm-overlay">
+    <div className="dm-overlay" {...dirtyProps}>
       <div className={`dm-modal${isMaximized ? ' is-maximized' : ''}`} style={{ left: rect.x, top: rect.y, width: rect.w, height: rect.h }}>
         {RESIZE_DIRS.map(dir => (
           <div key={dir} className={`dm-resize-handle dm-resize-${dir}`} onMouseDown={e => onResizeDown(e, dir)} />
@@ -715,7 +712,7 @@ export default function SelectNodeModal({
               >
                 {isMaximized ? <IcoRestore size={13} /> : <IcoMaximize size={13} />}
               </button>
-              <button className="btn ghost icon dm-close-btn" onClick={onClose} title={t('common.close')} aria-label={t('common.close')}><IcoX size={13} /></button>
+              <button className="btn ghost icon dm-close-btn" onClick={requestClose} title={t('common.closeEsc')} aria-label={t('common.close')}><IcoX size={13} /></button>
             </div>
           </div>
 
@@ -1153,7 +1150,7 @@ export default function SelectNodeModal({
                 <button
                   className="btn ghost icon api-body-fullscreen-close"
                   onClick={() => setFullscreenScriptPhase(null)}
-                  title={t('common.close')}
+                  title={t('common.closeEsc')}
                   aria-label={t('common.close')}
                 >
                   <IcoX size={14} />
@@ -1197,6 +1194,7 @@ export default function SelectNodeModal({
         />
       )}
       {shortcutSaveDialog}
+      {dirtyDialog}
     </div>
   )
 }

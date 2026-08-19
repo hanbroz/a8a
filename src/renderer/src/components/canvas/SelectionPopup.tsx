@@ -2,6 +2,7 @@ import { useState, useRef, useEffect, useCallback, useMemo } from 'react'
 import { IcoMaximize, IcoRestore, IcoX } from '../Icon'
 import { HighlightedText, JsonCopyButton, normalizeSearchQuery } from './JsonInspector'
 import { useI18n } from '../../i18n'
+import { useEscapeClose } from '../../hooks/useEscapeClose'
 
 interface Props {
   data: unknown
@@ -221,6 +222,7 @@ export default function SelectionPopup({
   onCancel,
 }: Props): JSX.Element {
   const { t } = useI18n()
+  useEscapeClose(onCancel)
   const tableRows = getTableRows(data)
   const canUseTable = tableRows !== null
   const jsonData = tableRows && tableRows.length === 1 ? tableRows[0] : data
@@ -578,7 +580,9 @@ export default function SelectionPopup({
                   applySearch(e.shiftKey ? -1 : 1)
                 }
                 if (e.key === 'Escape') {
+                  // 검색어만 지운다. 팝업까지 닫히지 않게 전파를 끊는다.
                   e.preventDefault()
+                  e.stopPropagation()
                   clearSearch()
                 }
               }}

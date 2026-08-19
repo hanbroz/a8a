@@ -13,6 +13,8 @@ import { isScriptRuntimeError, runPostResponse, runPreRequest } from '../../util
 import { useMonacoTheme } from '../../utils/useMonacoTheme'
 import { DEFAULT_POST_RESPONSE_SCRIPT, DEFAULT_PRE_REQUEST_SCRIPT } from '../../utils/scriptTemplates'
 import { useI18n } from '../../i18n'
+import { useEscapeClose } from '../../hooks/useEscapeClose'
+import { useDirtyClose } from './useDirtyClose'
 import type { Token } from '../../utils/interpolate'
 import type { ScriptConsoleEntry } from '../../utils/scriptRuntime'
 import type { BeforeMount, Monaco } from '@monaco-editor/react'
@@ -562,6 +564,7 @@ function JsonPathPicker({
   onClose: () => void
 }): JSX.Element {
   const { t } = useI18n()
+  useEscapeClose(onClose)
   const nodes = useMemo(() => flattenJsonViewer(data), [data])
   const initialTreePath = useMemo(() => denormalizeInputPickerPath(initialPath ?? '', data), [data, initialPath])
   const [selectedPath, setSelectedPath] = useState<string>(() => normalizeInputPickerPath(initialPath ?? '', data))
@@ -598,7 +601,7 @@ function JsonPathPicker({
               {t('module.api.inputPickerSubtitle', { name: variableName })}
             </div>
           </div>
-          <button className="btn ghost icon" onClick={onClose} title={t('common.close')} aria-label={t('common.close')}>
+          <button className="btn ghost icon" onClick={onClose} title={t('common.closeEsc')} aria-label={t('common.close')}>
             <IcoX size={13} />
           </button>
         </div>
@@ -955,6 +958,8 @@ export default function ApiNodeModal({
   envVars = {}, dataVars, onRun, onBeforeRun, onSave, onDelete, onClose,
 }: Props): JSX.Element {
   const { t, language } = useI18n()
+  const { dirtyProps, requestClose, dirtyDialog } = useDirtyClose(onClose)
+  useEscapeClose(requestClose)
   useApiScriptAssistantLabels()
   const initial = parseConfig(node.config)
   const monacoTheme = useMonacoTheme()
@@ -1043,16 +1048,12 @@ export default function ApiNodeModal({
     if (!hasBody(method)) setIsBodyFullscreen(false)
   }, [method])
 
-  useEffect(() => {
-    if (!isBodyFullscreen && !fullscreenScriptPhase) return
-    const handleKeyDown = (event: KeyboardEvent) => {
-      if (event.key !== 'Escape') return
-      setIsBodyFullscreen(false)
-      setFullscreenScriptPhase(null)
-    }
-    window.addEventListener('keydown', handleKeyDown)
-    return () => window.removeEventListener('keydown', handleKeyDown)
-  }, [fullscreenScriptPhase, isBodyFullscreen])
+  useEscapeClose(() => {
+    setIsBodyFullscreen(false)
+    setFullscreenScriptPhase(null)
+  }, isBodyFullscreen || fullscreenScriptPhase !== null)
+
+  useEscapeClose(() => setTestErrorDetail(null), testErrorDetail !== null)
 
   useEffect(() => {
     localStorage.setItem(inputPickerExpandedStorageKey, JSON.stringify(Array.from(inputPickerExpandedIds)))
@@ -1494,7 +1495,7 @@ export default function ApiNodeModal({
     : null
 
   return (
-    <div className="dm-overlay">
+    <div className="dm-overlay" {...dirtyProps}>
       <div className={`dm-modal${isMaximized ? ' is-maximized' : ''}`} style={{ left: rect.x, top: rect.y, width: rect.w, height: rect.h }}>
         {RESIZE_DIRS.map(dir => (
           <div key={dir} className={`dm-resize-handle dm-resize-${dir}`} onMouseDown={e => onResizeDown(e, dir)} />
@@ -1517,7 +1518,7 @@ export default function ApiNodeModal({
               >
                 {isMaximized ? <IcoRestore size={13} /> : <IcoMaximize size={13} />}
               </button>
-              <button className="btn ghost icon dm-close-btn" onClick={onClose} title={t('common.close')} aria-label={t('common.close')}><IcoX size={13} /></button>
+              <button className="btn ghost icon dm-close-btn" onClick={requestClose} title={t('common.closeEsc')} aria-label={t('common.close')}><IcoX size={13} /></button>
             </div>
           </div>
 
@@ -2069,7 +2070,7 @@ export default function ApiNodeModal({
                 <button
                   className="btn ghost icon api-body-fullscreen-close"
                   onClick={() => setIsBodyFullscreen(false)}
-                  title={t('common.close')}
+                  title={t('common.closeEsc')}
                   aria-label={t('common.close')}
                 >
                   <IcoX size={14} />
@@ -2110,7 +2111,7 @@ export default function ApiNodeModal({
                 <button
                   className="btn ghost icon api-body-fullscreen-close"
                   onClick={() => setFullscreenScriptPhase(null)}
-                  title={t('common.close')}
+                  title={t('common.closeEsc')}
                   aria-label={t('common.close')}
                 >
                   <IcoX size={14} />
@@ -2176,7 +2177,7 @@ export default function ApiNodeModal({
               <button
                 className="btn ghost icon api-test-error-close"
                 onClick={() => setTestErrorDetail(null)}
-                title={t('common.close')}
+                title={t('common.closeEsc')}
                 aria-label={t('common.close')}
               >
                 <IcoX size={13} />
@@ -2210,6 +2211,7 @@ export default function ApiNodeModal({
         </div>
       )}
       {shortcutSaveDialog}
+      {dirtyDialog}
     </div>
   )
 }

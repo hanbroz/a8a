@@ -1,4 +1,5 @@
 import { useI18n } from '../../i18n'
+import { useEscapeClose } from '../../hooks/useEscapeClose'
 
 interface Props {
   title: string
@@ -30,6 +31,8 @@ export default function BranchChoicePopup({
   onCancel,
 }: Props): JSX.Element {
   const { t } = useI18n()
+  useEscapeClose(onCancel)
+
   return (
     <div className="branch-choice-overlay">
       <div className="branch-choice-modal">

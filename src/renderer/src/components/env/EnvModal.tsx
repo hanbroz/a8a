@@ -2,6 +2,7 @@ import { useState, useRef } from 'react'
 import { IcoX, IcoPlus, IcoTrash } from '../Icon'
 import { JsonCopyButton } from '../canvas/JsonInspector'
 import { useI18n } from '../../i18n'
+import { useEscapeClose } from '../../hooks/useEscapeClose'
 import type { Environment, EnvVar } from './EnvSection'
 
 interface Props {
@@ -32,6 +33,7 @@ const PRESET_COLORS: Record<string, string> = {
 
 export default function EnvModal({ env, onSave, onClose }: Props): JSX.Element {
   const { t } = useI18n()
+  useEscapeClose(onClose)
   const isBase = env?.isBase === true
   const isNew = env === null
   const [step, setStep] = useState<'select' | 'edit'>(isNew ? 'select' : 'edit')
@@ -112,7 +114,7 @@ export default function EnvModal({ env, onSave, onClose }: Props): JSX.Element {
         <div className="env-preset-modal" onClick={e => e.stopPropagation()}>
           <div className="env-modal-hd">
             <span className="env-modal-base-label">{t('modal.env.selectType')}</span>
-            <button className="btn ghost icon" onClick={onClose} title={t('common.close')}>
+            <button className="btn ghost icon" onClick={onClose} title={t('common.closeEsc')}>
               <IcoX size={15} />
             </button>
           </div>
@@ -149,7 +151,7 @@ export default function EnvModal({ env, onSave, onClose }: Props): JSX.Element {
               <span className="env-modal-base-label">BASE</span>
               <span className="env-modal-base-hint">{t('modal.env.baseHint')}</span>
             </div>
-            <button className="btn ghost icon" onClick={onClose} title={t('common.close')}>
+            <button className="btn ghost icon" onClick={onClose} title={t('common.closeEsc')}>
               <IcoX size={15} />
             </button>
           </div>
@@ -173,7 +175,7 @@ export default function EnvModal({ env, onSave, onClose }: Props): JSX.Element {
                   placeholder={t('modal.env.namePlaceholder')}
                   autoFocus
                 />
-                <button className="btn ghost icon" onClick={onClose} title={t('common.close')} style={{ flexShrink: 0 }}>
+                <button className="btn ghost icon" onClick={onClose} title={t('common.closeEsc')} style={{ flexShrink: 0 }}>
                   <IcoX size={15} />
                 </button>
               </div>

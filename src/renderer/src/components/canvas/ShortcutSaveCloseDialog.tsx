@@ -1,6 +1,7 @@
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useState } from 'react'
 import { IcoX } from '../Icon'
 import { useI18n } from '../../i18n'
+import { useEscapeClose } from '../../hooks/useEscapeClose'
 import { saveShortcutSaveClosePreference } from '../../utils/shortcutSavePreference'
 
 interface Props {
@@ -20,23 +21,14 @@ export default function ShortcutSaveCloseDialog({ onChoice }: Props): JSX.Elemen
     onChoice(false)
   }, [onChoice])
 
-  useEffect(() => {
-    const onKeyDown = (event: KeyboardEvent): void => {
-      if (event.key === 'Escape') {
-        event.preventDefault()
-        dismiss()
-      }
-    }
-    window.addEventListener('keydown', onKeyDown)
-    return () => window.removeEventListener('keydown', onKeyDown)
-  }, [dismiss])
+  useEscapeClose(dismiss)
 
   return (
     <div className="modal-overlay shortcut-save-overlay" onClick={dismiss}>
       <div className="confirm-dialog shortcut-save-dialog" onClick={e => e.stopPropagation()}>
         <div className="confirm-hd">
           <span className="confirm-title">{t('module.shortcutSave.closeTitle')}</span>
-          <button className="btn ghost icon" onClick={dismiss} title={t('common.close')} aria-label={t('common.close')}>
+          <button className="btn ghost icon" onClick={dismiss} title={t('common.closeEsc')} aria-label={t('common.close')}>
             <IcoX size={15} />
           </button>
         </div>

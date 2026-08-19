@@ -2,6 +2,7 @@ import { Component, useEffect, useMemo, useRef, useState } from 'react'
 import type { ErrorInfo, MouseEvent, ReactNode } from 'react'
 import { IcoCopy, IcoMaximize, IcoX } from '../Icon'
 import { useI18n } from '../../i18n'
+import { useEscapeClose } from '../../hooks/useEscapeClose'
 
 type JsonInspectorMode = 'json' | 'tree' | 'ui'
 type JsonPathPart = string | number
@@ -474,6 +475,7 @@ function JsonInspectorModal({
   onClose: () => void
 }): JSX.Element {
   const { t } = useI18n()
+  useEscapeClose(onClose)
   const parsed = useMemo(() => parseJsonSource(value), [value])
   const [mode, setMode] = useState<JsonInspectorMode>(() => parsed.status === 'valid' ? defaultMode : 'json')
   const [searchQuery, setSearchQuery] = useState('')
@@ -566,7 +568,7 @@ function JsonInspectorModal({
                   : t('common.empty')}
             </div>
           </div>
-          <button type="button" className="btn ghost icon json-inspector-close" onClick={onClose} title={t('common.close')} aria-label={t('common.close')}>
+          <button type="button" className="btn ghost icon json-inspector-close" onClick={onClose} title={t('common.closeEsc')} aria-label={t('common.close')}>
             <IcoX size={15} />
           </button>
         </div>
@@ -596,7 +598,9 @@ function JsonInspectorModal({
                   moveSearch(e.shiftKey ? -1 : 1)
                 }
                 if (e.key === 'Escape' && searchQuery) {
+                  // 검색어만 지운다. 팝업까지 닫히지 않게 전파를 끊는다.
                   e.preventDefault()
+                  e.stopPropagation()
                   setSearchQuery('')
                 }
               }}

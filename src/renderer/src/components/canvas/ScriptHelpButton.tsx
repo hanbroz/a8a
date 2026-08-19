@@ -6,6 +6,7 @@ import {
   PRE_REQUEST_EXAMPLE,
 } from '../../utils/scriptTemplates'
 import { useI18n } from '../../i18n'
+import { useEscapeClose } from '../../hooks/useEscapeClose'
 
 type ScriptPhase = 'pre' | 'post'
 
@@ -40,6 +41,7 @@ export default function ScriptHelpButton({ phase }: ScriptHelpButtonProps): JSX.
   const { t } = useI18n()
   const [open, setOpen] = useState(false)
   const [copiedId, setCopiedId] = useState<string | null>(null)
+  useEscapeClose(() => setOpen(false), open)
   const isPre = phase === 'pre'
   const title = isPre ? t('module.scriptHelp.preTitle') : t('module.scriptHelp.postTitle')
   const copyExample = async (id: string, code: string): Promise<void> => {
@@ -91,7 +93,7 @@ export default function ScriptHelpButton({ phase }: ScriptHelpButtonProps): JSX.
                   {isPre ? t('module.scriptHelp.preSubtitle') : t('module.scriptHelp.postSubtitle')}
                 </div>
               </div>
-              <button type="button" className="btn ghost icon script-help-close" onClick={() => setOpen(false)} title={t('common.close')} aria-label={t('common.close')}>
+              <button type="button" className="btn ghost icon script-help-close" onClick={() => setOpen(false)} title={t('common.closeEsc')} aria-label={t('common.close')}>
                 <IcoX size={14} />
               </button>
             </div>
