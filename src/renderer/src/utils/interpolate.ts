@@ -143,7 +143,8 @@ function parseInputPath(expression: string): PathPart[] | null {
 
 function resolvePathValue(inputData: Record<string, unknown> = {}, expression: string): unknown {
   const expr = expression.trim()
-  if (!hasExpressionSyntax(expr) && Object.prototype.hasOwnProperty.call(inputData, expr)) return inputData[expr]
+  // ponytail: exact key wins over expression parsing — `ocp-apim-subscription-key` is a key, not a subtraction
+  if (Object.prototype.hasOwnProperty.call(inputData, expr)) return inputData[expr]
 
   const parts = parseInputPath(expr)
   if (!parts) return undefined
@@ -473,6 +474,8 @@ function applyBinaryOperator(left: unknown, operator: string, right: unknown): u
     if (typeof left === 'string' || typeof right === 'string') return `${left ?? ''}${right ?? ''}`
     return Number(left) + Number(right)
   }
+  // unresolved operand must stay unresolved, never become the string "NaN" in a live request
+  if ('-*/%'.includes(operator) && (left === undefined || right === undefined)) return undefined
   if (operator === '-') return Number(left) - Number(right)
   if (operator === '*') return Number(left) * Number(right)
   if (operator === '/') return Number(left) / Number(right)

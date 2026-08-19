@@ -8,6 +8,7 @@
     "dev": "electron-vite dev",
     "build": "electron-vite build",
     "preview": "electron-vite preview",
+    "check:interpolate": "node scripts/check-interpolate.mjs",
     "version:stamp": "node scripts/stamp-version.cjs",
     "prepare:mac-icon": "bash scripts/prepare-mac-icon.sh",
     "release:manual": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/publish-release.ps1",
