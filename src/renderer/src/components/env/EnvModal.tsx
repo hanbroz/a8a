@@ -1,5 +1,6 @@
 import { useState, useRef } from 'react'
 import { IcoX, IcoPlus, IcoTrash } from '../Icon'
+import { JsonCopyButton } from '../canvas/JsonInspector'
 import { useI18n } from '../../i18n'
 import type { Environment, EnvVar } from './EnvSection'
 
@@ -43,6 +44,15 @@ export default function EnvModal({ env, onSave, onClose }: Props): JSX.Element {
   )
   const [keyPct, setKeyPct] = useState(40)
   const containerRef = useRef<HTMLDivElement>(null)
+  const [copied, setCopied] = useState<{ id: string; text: string } | null>(null)
+  const copiedTimerRef = useRef<number | null>(null)
+
+  // 값 복사 알림 토스트: 다른 행을 연달아 눌러도 마지막 복사 기준으로 시간이 다시 흐르게 한다.
+  const showCopiedToast = (id: string, text: string): void => {
+    setCopied({ id, text })
+    if (copiedTimerRef.current !== null) window.clearTimeout(copiedTimerRef.current)
+    copiedTimerRef.current = window.setTimeout(() => setCopied(null), 1800)
+  }
 
   const updateVar = (id: string, field: keyof EnvVar, val: string | boolean): void => {
     setVars(prev => prev.map(v => v.id === id ? { ...v, [field]: val } : v))
@@ -257,7 +267,16 @@ export default function EnvModal({ env, onSave, onClose }: Props): JSX.Element {
                   placeholder="value"
                 />
               </div>
+              {copied?.id === v.id && (
+                <div className="env-copy-toast" role="status">
+                  <span className="env-copy-toast-label">{t('common.copied')}</span>
+                  <span className="env-copy-toast-value">{copied.text}</span>
+                </div>
+              )}
               <div className="env-var-del-col">
+                {v.value !== '' && (
+                  <JsonCopyButton value={v.value} onCopied={text => showCopiedToast(v.id, text)} />
+                )}
                 <button
                   className="btn ghost icon env-var-del-btn"
                   onClick={() => removeVar(v.id)}

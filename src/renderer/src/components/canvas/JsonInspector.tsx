@@ -264,15 +264,17 @@ async function copyText(text: string): Promise<void> {
   }
 }
 
-export function JsonCopyButton({ value }: { value: unknown }): JSX.Element {
+export function JsonCopyButton({ value, onCopied }: { value: unknown; onCopied?: (text: string) => void }): JSX.Element {
   const { t } = useI18n()
   const [state, setState] = useState<'idle' | 'copied' | 'failed'>('idle')
 
   const handleCopy = async (e: MouseEvent): Promise<void> => {
     e.stopPropagation()
     try {
-      await copyText(copyTextForValue(value))
+      const text = copyTextForValue(value)
+      await copyText(text)
       setState('copied')
+      onCopied?.(text)
     } catch {
       setState('failed')
     }
