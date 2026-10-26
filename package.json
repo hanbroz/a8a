@@ -45,7 +45,9 @@
       "target": [
         {
           "target": "nsis",
-          "arch": ["x64"]
+          "arch": [
+            "x64"
+          ]
         }
       ],
       "artifactName": "${productName}-Setup-${version}.${ext}"
@@ -79,7 +81,7 @@
     "@types/react": "^19.1.5",
     "@types/react-dom": "^19.1.5",
     "@vitejs/plugin-react": "^4.7.0",
-    "electron": "^42.2.0",
+    "electron": "^45.0.0",
     "electron-builder": "^26.0.12",
     "electron-vite": "^5.0.0",
     "react": "^19.2.6",
